@@ -1,0 +1,400 @@
+import { normalize2D } from "./math";
+
+type StickKey = "left" | "right";
+
+type StickState = {
+  zone: HTMLElement;
+  knob: HTMLElement;
+  activePointerId: number | null;
+  vectorX: number;
+  vectorY: number;
+};
+
+export type InputCallbacks = {
+  onPauseRequested?: () => void;
+  onInteractRequested?: () => void;
+  onWeaponSwapRequested?: () => void;
+};
+
+export class InputManager {
+  private readonly canvas: HTMLCanvasElement;
+  private readonly useTouchControls: boolean;
+  private readonly keys = new Set<string>();
+  private readonly leftStick: StickState;
+  private readonly rightStick: StickState;
+  private fireHeld = false;
+  private restartRequested = false;
+  private reloadRequested = false;
+  private gameOver = false;
+  private paused = false;
+  private inputBlocked = false;
+  private accumulatedLookX = 0;
+  private accumulatedLookY = 0;
+  private callbacks: InputCallbacks = {};
+
+  constructor(canvas: HTMLCanvasElement, hudRoot: HTMLElement) {
+    this.canvas = canvas;
+    /**
+     * Treat as “touch UI” only when there is no fine pointer (mouse/trackpad),
+     * or on a narrow viewport where touch is the expected primary input.
+     * Hybrid laptops used to always flip this on via maxTouchPoints and then
+     * pointer-lock + mouse look broke while WASD felt “dead” to mouse-first players.
+     */
+    const anyFine = window.matchMedia("(any-pointer: fine)").matches;
+    const anyCoarse = window.matchMedia("(any-pointer: coarse)").matches;
+    const narrowViewport = window.matchMedia("(max-width: 900px)").matches;
+    this.useTouchControls = anyCoarse && (!anyFine || narrowViewport);
+
+    const leftStick = hudRoot.querySelector<HTMLElement>("#left-stick");
+    const leftKnob = hudRoot.querySelector<HTMLElement>("#left-knob");
+    const rightStick = hudRoot.querySelector<HTMLElement>("#right-stick");
+    const rightKnob = hudRoot.querySelector<HTMLElement>("#right-knob");
+    const fireButton = hudRoot.querySelector<HTMLButtonElement>("#fire-button");
+    const reloadButton = hudRoot.querySelector<HTMLButtonElement>("#reload-button");
+    const pauseButton = hudRoot.querySelector<HTMLButtonElement>("#pause-button");
+    const interactButton = hudRoot.querySelector<HTMLButtonElement>("#interact-button");
+    const swapButton = hudRoot.querySelector<HTMLButtonElement>("#swap-button");
+
+    if (
+      !leftStick ||
+      !leftKnob ||
+      !rightStick ||
+      !rightKnob ||
+      !fireButton ||
+      !reloadButton ||
+      !pauseButton ||
+      !interactButton ||
+      !swapButton
+    ) {
+      throw new Error("Touch control elements are missing.");
+    }
+
+    this.leftStick = {
+      zone: leftStick,
+      knob: leftKnob,
+      activePointerId: null,
+      vectorX: 0,
+      vectorY: 0
+    };
+
+    this.rightStick = {
+      zone: rightStick,
+      knob: rightKnob,
+      activePointerId: null,
+      vectorX: 0,
+      vectorY: 0
+    };
+
+    this.bindDesktopInput();
+    this.bindTouchControls(fireButton, reloadButton, pauseButton, interactButton, swapButton);
+
+    document.body.classList.toggle("touch-mode", this.useTouchControls);
+  }
+
+  setCallbacks(callbacks: InputCallbacks): void {
+    this.callbacks = callbacks;
+  }
+
+  setPaused(paused: boolean): void {
+    this.paused = paused;
+    if (paused) {
+      this.fireHeld = false;
+      this.accumulatedLookX = 0;
+      this.accumulatedLookY = 0;
+      if (document.pointerLockElement === this.canvas) {
+        document.exitPointerLock();
+      }
+    }
+  }
+
+  setInputBlocked(blocked: boolean): void {
+    this.inputBlocked = blocked;
+    if (blocked) {
+      this.fireHeld = false;
+    }
+  }
+
+  isPaused(): boolean {
+    return this.paused;
+  }
+
+  update(dt: number): void {
+    if (!this.useTouchControls || this.paused || this.inputBlocked) {
+      return;
+    }
+
+    this.accumulatedLookX += this.rightStick.vectorX * 95 * dt;
+    this.accumulatedLookY += this.rightStick.vectorY * 95 * dt;
+  }
+
+  getMoveVector(): { x: number; y: number } {
+    if (this.paused || this.inputBlocked) {
+      return { x: 0, y: 0 };
+    }
+
+    const keyboardX =
+      (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0);
+    const keyboardY =
+      (this.keys.has("KeyW") ? 1 : 0) - (this.keys.has("KeyS") ? 1 : 0);
+
+    const combinedX = keyboardX + this.leftStick.vectorX;
+    const combinedY = keyboardY - this.leftStick.vectorY;
+    const normalized = normalize2D(combinedX, combinedY);
+
+    return {
+      x: normalized.x,
+      y: normalized.y
+    };
+  }
+
+  consumeLookDelta(): { x: number; y: number } {
+    if (this.paused || this.inputBlocked) {
+      this.accumulatedLookX = 0;
+      this.accumulatedLookY = 0;
+      return { x: 0, y: 0 };
+    }
+
+    const look = {
+      x: this.accumulatedLookX,
+      y: this.accumulatedLookY
+    };
+
+    this.accumulatedLookX = 0;
+    this.accumulatedLookY = 0;
+
+    return look;
+  }
+
+  isFiring(): boolean {
+    if (this.paused || this.inputBlocked) return false;
+    return this.fireHeld;
+  }
+
+  isSprinting(): boolean {
+    if (this.paused || this.inputBlocked) return false;
+    return this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+  }
+
+  consumeRestartRequest(): boolean {
+    const requested = this.restartRequested;
+    this.restartRequested = false;
+    return requested;
+  }
+
+  consumeReloadRequest(): boolean {
+    const requested = this.reloadRequested;
+    this.reloadRequested = false;
+    return requested;
+  }
+
+  setGameOver(gameOver: boolean): void {
+    this.gameOver = gameOver;
+  }
+
+  isTouchMode(): boolean {
+    return this.useTouchControls;
+  }
+
+  requestPointerLockIfNeeded(): void {
+    if (this.useTouchControls) return;
+    if (this.paused) return;
+    if (document.pointerLockElement === this.canvas) return;
+    void this.canvas.requestPointerLock();
+  }
+
+  private bindDesktopInput(): void {
+    window.addEventListener("keydown", (event) => {
+      this.keys.add(event.code);
+
+      if (event.code === "Escape") {
+        event.preventDefault();
+        this.callbacks.onPauseRequested?.();
+        return;
+      }
+
+      if (event.code === "KeyR") {
+        this.reloadRequested = true;
+      }
+
+      if (event.code === "KeyE" || event.code === "KeyF") {
+        this.callbacks.onInteractRequested?.();
+      }
+
+      if (event.code === "KeyQ" || event.code === "Tab" || event.code === "Digit1" || event.code === "Digit2") {
+        if (event.code === "Tab") event.preventDefault();
+        this.callbacks.onWeaponSwapRequested?.();
+      }
+
+      if (this.gameOver && event.code === "Enter") {
+        this.restartRequested = true;
+      }
+    });
+
+    window.addEventListener(
+      "wheel",
+      (event) => {
+        if (this.paused || this.inputBlocked) return;
+        if (Math.abs(event.deltaY) < 4) return;
+        this.callbacks.onWeaponSwapRequested?.();
+      },
+      { passive: true }
+    );
+
+    window.addEventListener("keyup", (event) => {
+      this.keys.delete(event.code);
+    });
+
+    window.addEventListener("mousedown", (event) => {
+      if (event.button !== 0 || this.useTouchControls || this.inputBlocked) {
+        return;
+      }
+
+      if (this.paused) {
+        return;
+      }
+
+      if (document.pointerLockElement !== this.canvas) {
+        void this.canvas.requestPointerLock();
+      } else {
+        this.fireHeld = true;
+      }
+    });
+
+    window.addEventListener("mouseup", (event) => {
+      if (event.button === 0) {
+        this.fireHeld = false;
+      }
+    });
+
+    document.addEventListener("mousemove", (event) => {
+      if (this.paused || this.inputBlocked) {
+        return;
+      }
+
+      if (document.pointerLockElement !== this.canvas) {
+        return;
+      }
+
+      this.accumulatedLookX -= event.movementX;
+      this.accumulatedLookY -= event.movementY;
+    });
+
+    this.canvas.addEventListener("click", () => {
+      if (this.gameOver) {
+        this.restartRequested = true;
+      }
+    });
+  }
+
+  private bindTouchControls(
+    fireButton: HTMLButtonElement,
+    reloadButton: HTMLButtonElement,
+    pauseButton: HTMLButtonElement,
+    interactButton: HTMLButtonElement,
+    swapButton: HTMLButtonElement
+  ): void {
+    for (const stickKey of ["left", "right"] as const) {
+      const stick = stickKey === "left" ? this.leftStick : this.rightStick;
+
+      stick.zone.addEventListener("pointerdown", (event) => {
+        if (!this.useTouchControls || stick.activePointerId !== null) {
+          return;
+        }
+
+        stick.activePointerId = event.pointerId;
+        this.updateStick(stickKey, event.clientX, event.clientY);
+      });
+    }
+
+    window.addEventListener("pointermove", (event) => {
+      if (!this.useTouchControls) {
+        return;
+      }
+
+      if (event.pointerId === this.leftStick.activePointerId) {
+        this.updateStick("left", event.clientX, event.clientY);
+      }
+
+      if (event.pointerId === this.rightStick.activePointerId) {
+        this.updateStick("right", event.clientX, event.clientY);
+      }
+    });
+
+    window.addEventListener("pointerup", (event) => {
+      if (event.pointerId === this.leftStick.activePointerId) {
+        this.resetStick(this.leftStick);
+      }
+
+      if (event.pointerId === this.rightStick.activePointerId) {
+        this.resetStick(this.rightStick);
+      }
+    });
+
+    window.addEventListener("pointercancel", (event) => {
+      if (event.pointerId === this.leftStick.activePointerId) {
+        this.resetStick(this.leftStick);
+      }
+
+      if (event.pointerId === this.rightStick.activePointerId) {
+        this.resetStick(this.rightStick);
+      }
+    });
+
+    fireButton.addEventListener("pointerdown", () => {
+      if (this.paused || this.inputBlocked) return;
+      this.fireHeld = true;
+    });
+
+    fireButton.addEventListener("pointerup", () => {
+      this.fireHeld = false;
+    });
+
+    fireButton.addEventListener("pointercancel", () => {
+      this.fireHeld = false;
+    });
+
+    reloadButton.addEventListener("pointerup", () => {
+      this.reloadRequested = true;
+    });
+
+    pauseButton.addEventListener("pointerup", () => {
+      this.callbacks.onPauseRequested?.();
+    });
+
+    interactButton.addEventListener("pointerup", () => {
+      this.callbacks.onInteractRequested?.();
+    });
+
+    swapButton.addEventListener("pointerup", () => {
+      this.callbacks.onWeaponSwapRequested?.();
+    });
+  }
+
+  private updateStick(stickKey: StickKey, clientX: number, clientY: number): void {
+    const stick = stickKey === "left" ? this.leftStick : this.rightStick;
+    const rect = stick.zone.getBoundingClientRect();
+    const radius = rect.width * 0.36;
+    const centerX = rect.left + rect.width * 0.5;
+    const centerY = rect.top + rect.height * 0.5;
+    const rawX = clientX - centerX;
+    const rawY = clientY - centerY;
+    const length = Math.hypot(rawX, rawY);
+    const clampedLength = Math.min(length, radius);
+    const normalizedX = length > 0 ? rawX / length : 0;
+    const normalizedY = length > 0 ? rawY / length : 0;
+    const offsetX = normalizedX * clampedLength;
+    const offsetY = normalizedY * clampedLength;
+
+    stick.vectorX = radius > 0 ? offsetX / radius : 0;
+    stick.vectorY = radius > 0 ? offsetY / radius : 0;
+
+    stick.knob.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
+  }
+
+  private resetStick(stick: StickState): void {
+    stick.activePointerId = null;
+    stick.vectorX = 0;
+    stick.vectorY = 0;
+    stick.knob.style.transform = "translate(0px, 0px)";
+  }
+}

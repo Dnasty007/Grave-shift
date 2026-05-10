@@ -1,0 +1,21 @@
+{
+  "name": "grave-shift",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "check": "tsc --noEmit",
+    "convert-map": "obj2gltf -i public/maps/Map1test.obj -o public/maps/Map1test.glb -b"
+  },
+  "dependencies": {
+    "playcanvas": "^2.18.0"
+  },
+  "devDependencies": {
+    "obj2gltf": "^3.2.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

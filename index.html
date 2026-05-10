@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <title>Grave Shift</title>
+  </head>
+  <body data-menu="title">
+    <div id="app-shell">
+      <canvas id="game-canvas"></canvas>
+
+      <div id="film-grain" aria-hidden="true"></div>
+      <div id="vignette" aria-hidden="true"></div>
+      <div id="low-health-vignette" aria-hidden="true"></div>
+      <div id="damage-vignette" aria-hidden="true"></div>
+      <div id="blood-overlay" aria-hidden="true"></div>
+
+      <div id="hud">
+        <div class="hud-top">
+          <div class="hud-left">
+            <div class="stat-card health-card">
+              <span class="stat-label">Vitals</span>
+              <div class="health-bar">
+                <div class="health-bar-fill" id="health-bar"></div>
+              </div>
+              <span class="stat-value" id="health-value">100</span>
+            </div>
+          </div>
+          <div class="hud-center">
+            <div class="wave-pill">
+              <span class="wave-pill-label">Wave</span>
+              <span class="wave-pill-value" id="wave-value">0</span>
+            </div>
+            <div id="status-text" class="status-text">Booting yard floodlights...</div>
+          </div>
+          <div class="hud-right">
+            <div class="stat-card threat-card">
+              <span class="stat-label">Threat</span>
+              <span class="stat-value" id="zombies-value">0</span>
+            </div>
+            <div class="stat-card score-card">
+              <span class="stat-label">Score</span>
+              <span class="stat-value" id="points-value">0</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="message-text" class="message-text">
+          Click PLAY to drop into the yard.
+        </div>
+
+        <div class="hud-freeze-wrap">
+          <button
+            type="button"
+            id="btn-freeze-zombies"
+            class="hud-freeze-btn"
+            aria-pressed="false"
+          >
+            Freeze zombies
+          </button>
+          <button
+            type="button"
+            id="btn-drop-to-ground"
+            class="hud-freeze-btn hud-dev-btn"
+            title="Sample terrain under you and fall until feet hit the mesh"
+          >
+            Drop to ground
+          </button>
+        </div>
+
+        <div id="hit-marker" aria-hidden="true">
+          <span></span><span></span><span></span><span></span>
+        </div>
+
+        <div id="kill-popups" aria-hidden="true"></div>
+
+        <div id="wave-banner" aria-hidden="true">
+          <div class="wave-banner-inner">
+            <div class="wave-banner-tag">Incoming</div>
+            <div class="wave-banner-label" id="wave-banner-label">Wave 1</div>
+            <div class="wave-banner-sub" id="wave-banner-sub">Hold the line</div>
+          </div>
+        </div>
+
+        <div id="crosshair" aria-hidden="true">
+          <span class="crosshair-line crosshair-top"></span>
+          <span class="crosshair-line crosshair-bottom"></span>
+          <span class="crosshair-line crosshair-left"></span>
+          <span class="crosshair-line crosshair-right"></span>
+          <span class="crosshair-dot"></span>
+        </div>
+
+        <div id="ammo-panel">
+          <div class="weapon-name" id="weapon-name">SIDEARM M1908</div>
+          <div class="ammo-mag">
+            <span class="ammo-mag-value" id="ammo-mag-value">12</span>
+            <span class="ammo-mag-divider">/</span>
+            <span class="ammo-reserve-value" id="ammo-reserve-value">96</span>
+          </div>
+          <div class="ammo-label" id="weapon-caliber">9mm · LOAD</div>
+          <div class="ammo-reload-bar">
+            <div class="ammo-reload-fill" id="ammo-reload-fill"></div>
+          </div>
+        </div>
+
+        <div id="interact-prompt" aria-hidden="true">
+          <div class="interact-row">
+            <span class="interact-key" id="interact-key">E</span>
+            <div class="interact-text">
+              <div class="interact-headline">
+                <span class="interact-badge" id="interact-badge">SMG</span>
+                <span class="interact-title" id="interact-title">Burst SMG</span>
+              </div>
+              <div class="interact-meta">
+                <span class="interact-subtitle" id="interact-subtitle">WALL BUY</span>
+                <span class="interact-cost" id="interact-cost">$1,200</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="touch-controls" aria-hidden="true">
+          <div class="touch-stick" id="left-stick">
+            <div class="touch-knob" id="left-knob"></div>
+          </div>
+          <div class="touch-stick" id="right-stick">
+            <div class="touch-knob" id="right-knob"></div>
+          </div>
+          <button id="fire-button" class="touch-button">Fire</button>
+          <button id="reload-button" class="touch-button reload-button">Reload</button>
+          <button id="interact-button" class="touch-button interact-button">Use</button>
+          <button id="swap-button" class="touch-button swap-button">Swap</button>
+          <button id="pause-button" class="touch-button pause-button" aria-label="Pause">
+            ⏸
+          </button>
+        </div>
+      </div>
+
+      <div id="menu-root">
+        <section id="title-screen" class="menu-screen is-visible" aria-hidden="false">
+          <div class="menu-backdrop"></div>
+          <div class="menu-content">
+            <p class="menu-tagline">Industrial Yard · Endless Shift</p>
+            <h1 class="menu-title">
+              <span>GRAVE</span><span class="menu-title-accent">SHIFT</span>
+            </h1>
+            <p class="menu-blurb">
+              Floodlights buzz. Something's wrong with the night crew.
+              Hold the yard. Stack the score.
+            </p>
+            <div class="menu-actions">
+              <button id="btn-start" class="menu-button menu-button-primary">PLAY</button>
+              <button id="btn-title-settings" class="menu-button">Settings</button>
+              <button id="btn-title-controls" class="menu-button">Controls</button>
+            </div>
+            <p class="menu-hint">
+              Press <kbd>Esc</kbd> in-game to pause. Tap <kbd>⏸</kbd> on mobile.
+            </p>
+          </div>
+        </section>
+
+        <section id="pause-screen" class="menu-screen" aria-hidden="true">
+          <div class="menu-backdrop"></div>
+          <div class="menu-content">
+            <p class="menu-tagline">Yard frozen</p>
+            <h2 class="menu-heading">PAUSED</h2>
+            <div class="menu-actions">
+              <button id="btn-resume" class="menu-button menu-button-primary">Resume</button>
+              <button id="btn-pause-settings" class="menu-button">Settings</button>
+              <button id="btn-pause-controls" class="menu-button">Controls</button>
+              <button id="btn-pause-restart" class="menu-button">Restart Run</button>
+              <button id="btn-pause-title" class="menu-button menu-button-quiet">
+                Quit to Title
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section id="settings-screen" class="menu-screen" aria-hidden="true">
+          <div class="menu-backdrop"></div>
+          <div class="menu-content menu-content-wide">
+            <h2 class="menu-heading">SETTINGS</h2>
+
+            <div class="settings-grid">
+              <div class="settings-group">
+                <h3>Look & Feel</h3>
+                <label class="settings-row">
+                  <span>Mouse Sensitivity</span>
+                  <input id="setting-mouse-sens" type="range" min="20" max="250" step="1" />
+                  <span class="settings-value" id="setting-mouse-sens-value">1.00x</span>
+                </label>
+                <label class="settings-row">
+                  <span>Touch Sensitivity</span>
+                  <input id="setting-touch-sens" type="range" min="20" max="250" step="1" />
+                  <span class="settings-value" id="setting-touch-sens-value">1.00x</span>
+                </label>
+                <label class="settings-row">
+                  <span>Field of View</span>
+                  <input id="setting-fov" type="range" min="60" max="100" step="1" />
+                  <span class="settings-value" id="setting-fov-value">78°</span>
+                </label>
+                <label class="settings-row settings-toggle">
+                  <span>Invert Vertical Look</span>
+                  <input id="setting-invert-y" type="checkbox" />
+                </label>
+              </div>
+
+              <div class="settings-group">
+                <h3>Audio</h3>
+                <label class="settings-row">
+                  <span>Master Volume</span>
+                  <input id="setting-master" type="range" min="0" max="100" step="1" />
+                  <span class="settings-value" id="setting-master-value">100%</span>
+                </label>
+                <label class="settings-row">
+                  <span>SFX Volume</span>
+                  <input id="setting-sfx" type="range" min="0" max="100" step="1" />
+                  <span class="settings-value" id="setting-sfx-value">100%</span>
+                </label>
+                <label class="settings-row">
+                  <span>Ambient Drone</span>
+                  <input id="setting-music" type="range" min="0" max="100" step="1" />
+                  <span class="settings-value" id="setting-music-value">100%</span>
+                </label>
+              </div>
+
+              <div class="settings-group">
+                <h3>FX & UI</h3>
+                <label class="settings-row settings-toggle">
+                  <span>Screen Shake</span>
+                  <input id="setting-shake" type="checkbox" />
+                </label>
+                <label class="settings-row settings-toggle">
+                  <span>Damage Vignette</span>
+                  <input id="setting-vignette" type="checkbox" />
+                </label>
+                <label class="settings-row settings-toggle">
+                  <span>Blood FX</span>
+                  <input id="setting-blood" type="checkbox" />
+                </label>
+                <label class="settings-row settings-toggle">
+                  <span>Show Hit Marker</span>
+                  <input id="setting-hitmarker" type="checkbox" />
+                </label>
+              </div>
+            </div>
+
+            <div class="menu-actions menu-actions-row">
+              <button id="btn-settings-reset" class="menu-button menu-button-quiet">
+                Reset Defaults
+              </button>
+              <button id="btn-settings-back" class="menu-button menu-button-primary">
+                Back
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section id="controls-screen" class="menu-screen" aria-hidden="true">
+          <div class="menu-backdrop"></div>
+          <div class="menu-content menu-content-wide">
+            <h2 class="menu-heading">CONTROLS</h2>
+            <div class="controls-grid">
+              <div class="controls-block">
+                <h3>Desktop</h3>
+                <ul>
+                  <li><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> — Move</li>
+                  <li><kbd>Shift</kbd> — Sprint</li>
+                  <li><kbd>R</kbd> — Reload</li>
+                  <li><kbd>E</kbd> / <kbd>F</kbd> — Use / Buy</li>
+                  <li><kbd>Q</kbd> / <kbd>Tab</kbd> / Scroll — Swap weapons</li>
+                  <li><kbd>Mouse</kbd> — Aim</li>
+                  <li><kbd>Left Click</kbd> — Fire</li>
+                  <li><kbd>Esc</kbd> — Pause</li>
+                  <li><kbd>Enter</kbd> — Restart on death</li>
+                  <li>HUD — <strong>Freeze zombies</strong> (click to pause AI for testing)</li>
+                </ul>
+              </div>
+              <div class="controls-block">
+                <h3>Mobile</h3>
+                <ul>
+                  <li>Left thumb — Move</li>
+                  <li>Right thumb — Aim</li>
+                  <li>Fire button — Shoot</li>
+                  <li>Reload button — Reload</li>
+                  <li>Use button — Buy / open gates</li>
+                  <li>Swap button — Switch weapons</li>
+                  <li>Pause button — Pause</li>
+                </ul>
+              </div>
+            </div>
+            <div class="menu-actions menu-actions-row">
+              <button id="btn-controls-back" class="menu-button menu-button-primary">
+                Back
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section id="game-over-screen" class="menu-screen" aria-hidden="true">
+          <div class="menu-backdrop"></div>
+          <div class="menu-content">
+            <p class="menu-tagline menu-tagline-danger">The yard has been overrun</p>
+            <h2 class="menu-heading menu-heading-danger">SHIFT OVER</h2>
+            <div class="game-over-stats">
+              <div class="stat-pair"><span>Wave Reached</span><strong id="go-wave">0</strong></div>
+              <div class="stat-pair"><span>Score</span><strong id="go-points">0</strong></div>
+              <div class="stat-pair"><span>Kills</span><strong id="go-kills">0</strong></div>
+              <div class="stat-pair"><span>Headshots</span><strong id="go-headshots">0</strong></div>
+              <div class="stat-pair"><span>Accuracy</span><strong id="go-accuracy">0%</strong></div>
+              <div class="stat-pair"><span>Survived</span><strong id="go-time">0:00</strong></div>
+            </div>
+            <div class="menu-actions">
+              <button id="btn-game-over-restart" class="menu-button menu-button-primary">
+                Run It Back
+              </button>
+              <button id="btn-game-over-title" class="menu-button menu-button-quiet">
+                Quit to Title
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
