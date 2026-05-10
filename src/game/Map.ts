@@ -887,29 +887,37 @@ export class Map {
     });
     this.wallBuys.push(shotgun);
 
-    const smg = new WallBuy({
+    const autoPistolBuy = new WallBuy({
       parent: this.root,
-      weaponId: "smg",
+      weaponId: "autoPistol",
       position: new pc.Vec3(28.6, 0, 0),
       rotationY: 90
     });
-    this.wallBuys.push(smg);
+    this.wallBuys.push(autoPistolBuy);
 
-    const rifle = new WallBuy({
+    const ar15Buy = new WallBuy({
       parent: this.root,
-      weaponId: "rifle",
+      weaponId: "ar15",
       position: new pc.Vec3(-28.6, 0, 0),
       rotationY: -90
     });
-    this.wallBuys.push(rifle);
+    this.wallBuys.push(ar15Buy);
 
-    const magnum = new WallBuy({
+    const ak47Buy = new WallBuy({
       parent: this.root,
-      weaponId: "magnum",
+      weaponId: "ak47",
       position: new pc.Vec3(0, 0, -28.6),
       rotationY: 0
     });
-    this.wallBuys.push(magnum);
+    this.wallBuys.push(ak47Buy);
+
+    const autoShotgunBuy = new WallBuy({
+      parent: this.root,
+      weaponId: "autoShotgun",
+      position: new pc.Vec3(5.5, 0, -28.6),
+      rotationY: 0
+    });
+    this.wallBuys.push(autoShotgunBuy);
   }
 
   private buildSpawnGates(): void {

@@ -1,6 +1,20 @@
-export type WeaponId = "pistol" | "shotgun" | "smg" | "rifle" | "magnum";
+export type WeaponId =
+  | "pistol"
+  | "shotgun"
+  | "autoPistol"
+  | "ar15"
+  | "ak47"
+  | "autoShotgun";
 
 export type WeaponShotProfile = "single" | "burst" | "pellet";
+
+/** Optional first-person GLB under `/public` (see `public/models/weapons/`). */
+export type WeaponViewModelGltf = {
+  url: string;
+  scale: number;
+  position: [number, number, number];
+  eulerDegrees: [number, number, number];
+};
 
 export type WeaponDefinition = {
   id: WeaponId;
@@ -23,16 +37,34 @@ export type WeaponDefinition = {
   refillCost: number;
   viewModelTint: [number, number, number];
   viewModelLength: number;
+  viewModelGltf?: WeaponViewModelGltf;
   audio: {
     shot: "shot" | "shotgunShot" | "smgShot" | "rifleShot" | "magnumShot";
   };
 };
 
+/** Stable order for cycling UI / preload (scroll wraps in this order among owned guns). */
+export const WEAPON_IDS: WeaponId[] = [
+  "pistol",
+  "shotgun",
+  "autoPistol",
+  "ar15",
+  "ak47",
+  "autoShotgun"
+];
+
+const vm = (
+  url: string,
+  scale: number,
+  position: [number, number, number],
+  eulerDegrees: [number, number, number]
+): WeaponViewModelGltf => ({ url, scale, position, eulerDegrees });
+
 export const WEAPON_DEFINITIONS: Record<WeaponId, WeaponDefinition> = {
   pistol: {
     id: "pistol",
-    name: "Sidearm M1908",
-    shortName: "Sidearm",
+    name: "Pistol",
+    shortName: "Pistol",
     caliber: "9mm",
     shotProfile: "single",
     damage: 30,
@@ -50,11 +82,12 @@ export const WEAPON_DEFINITIONS: Record<WeaponId, WeaponDefinition> = {
     refillCost: 250,
     viewModelTint: [0.18, 0.18, 0.2],
     viewModelLength: 0.5,
+    viewModelGltf: vm("/models/weapons/pistol.glb", 0.36, [0.38, -0.22, -0.52], [-4, 8, 0]),
     audio: { shot: "shot" }
   },
   shotgun: {
     id: "shotgun",
-    name: "Pump 12g",
+    name: "Pump Shotgun",
     shortName: "Pump",
     caliber: "12 GAUGE",
     shotProfile: "pellet",
@@ -73,12 +106,13 @@ export const WEAPON_DEFINITIONS: Record<WeaponId, WeaponDefinition> = {
     refillCost: 750,
     viewModelTint: [0.32, 0.18, 0.1],
     viewModelLength: 0.7,
+    viewModelGltf: vm("/models/weapons/shotgun.glb", 0.31, [0.32, -0.28, -0.48], [-2, 12, 0]),
     audio: { shot: "shotgunShot" }
   },
-  smg: {
-    id: "smg",
-    name: "Burst SMG",
-    shortName: "SMG",
+  autoPistol: {
+    id: "autoPistol",
+    name: "Auto Pistol",
+    shortName: "Auto PST",
     caliber: "9mm",
     shotProfile: "burst",
     damage: 18,
@@ -96,53 +130,80 @@ export const WEAPON_DEFINITIONS: Record<WeaponId, WeaponDefinition> = {
     refillCost: 600,
     viewModelTint: [0.15, 0.15, 0.16],
     viewModelLength: 0.55,
+    viewModelGltf: vm("/models/weapons/auto-pistol.glb", 0.34, [0.36, -0.24, -0.5], [-4, 10, 0]),
     audio: { shot: "smgShot" }
   },
-  rifle: {
-    id: "rifle",
-    name: "Marksman M44",
-    shortName: "Marksman",
-    caliber: "7.62",
+  ar15: {
+    id: "ar15",
+    name: "AR-15",
+    shortName: "AR-15",
+    caliber: "5.56",
     shotProfile: "single",
-    damage: 95,
-    headshotMultiplier: 2.6,
-    fireIntervalSeconds: 0.55,
-    range: 95,
-    hitRadius: 0.42,
-    spreadDegrees: 0.4,
+    damage: 36,
+    headshotMultiplier: 2.2,
+    fireIntervalSeconds: 0.085,
+    range: 88,
+    hitRadius: 0.45,
+    spreadDegrees: 0.85,
     pelletsPerShot: 1,
-    recoilKick: 0.05,
-    magazineSize: 5,
-    reserveAmmo: 30,
-    reloadSeconds: 2.6,
+    recoilKick: 0.032,
+    magazineSize: 30,
+    reserveAmmo: 210,
+    reloadSeconds: 2.2,
     buyCost: 1750,
     refillCost: 900,
-    viewModelTint: [0.22, 0.16, 0.1],
-    viewModelLength: 0.85,
+    viewModelTint: [0.2, 0.17, 0.12],
+    viewModelLength: 0.82,
+    viewModelGltf: vm("/models/weapons/ar15.glb", 0.3, [0.3, -0.26, -0.42], [-2, 14, 0]),
     audio: { shot: "rifleShot" }
   },
-  magnum: {
-    id: "magnum",
-    name: "Hand Cannon .50",
-    shortName: "Hand Cannon",
-    caliber: ".50",
+  ak47: {
+    id: "ak47",
+    name: "AK-47",
+    shortName: "AK-47",
+    caliber: "7.62",
     shotProfile: "single",
-    damage: 140,
-    headshotMultiplier: 2.4,
-    fireIntervalSeconds: 0.42,
-    range: 62,
-    hitRadius: 0.5,
-    spreadDegrees: 1.1,
+    damage: 40,
+    headshotMultiplier: 2.3,
+    fireIntervalSeconds: 0.1,
+    range: 92,
+    hitRadius: 0.45,
+    spreadDegrees: 1.15,
     pelletsPerShot: 1,
-    recoilKick: 0.06,
-    magazineSize: 6,
-    reserveAmmo: 24,
-    reloadSeconds: 2.2,
+    recoilKick: 0.038,
+    magazineSize: 30,
+    reserveAmmo: 180,
+    reloadSeconds: 2.35,
     buyCost: 2400,
     refillCost: 1100,
-    viewModelTint: [0.3, 0.22, 0.12],
-    viewModelLength: 0.55,
-    audio: { shot: "magnumShot" }
+    viewModelTint: [0.26, 0.19, 0.11],
+    viewModelLength: 0.8,
+    viewModelGltf: vm("/models/weapons/ak47.glb", 0.29, [0.3, -0.27, -0.44], [-3, 16, 0]),
+    audio: { shot: "rifleShot" }
+  },
+  autoShotgun: {
+    id: "autoShotgun",
+    name: "Auto Shotgun",
+    shortName: "Auto SG",
+    caliber: "12 GAUGE",
+    shotProfile: "pellet",
+    damage: 16,
+    headshotMultiplier: 1.35,
+    fireIntervalSeconds: 0.44,
+    range: 26,
+    hitRadius: 0.58,
+    spreadDegrees: 6.8,
+    pelletsPerShot: 7,
+    recoilKick: 0.038,
+    magazineSize: 10,
+    reserveAmmo: 50,
+    reloadSeconds: 2.55,
+    buyCost: 2000,
+    refillCost: 950,
+    viewModelTint: [0.28, 0.16, 0.1],
+    viewModelLength: 0.68,
+    viewModelGltf: vm("/models/weapons/auto-shotgun.glb", 0.31, [0.3, -0.28, -0.46], [-2, 11, 0]),
+    audio: { shot: "shotgunShot" }
   }
 };
 
@@ -171,49 +232,60 @@ export class Weapon {
   }
 }
 
+const MAX_OWNED_WEAPONS = 6;
+
 export class WeaponInventory {
-  private slots: (Weapon | null)[] = [null, null];
-  private currentSlot = 0;
+  private owned: Weapon[] = [];
+  private currentIndex = 0;
 
   constructor(starter: WeaponId) {
-    this.slots[0] = new Weapon(WEAPON_DEFINITIONS[starter]);
+    this.owned = [new Weapon(WEAPON_DEFINITIONS[starter])];
+    this.currentIndex = 0;
   }
 
   reset(starter: WeaponId): void {
-    this.slots = [new Weapon(WEAPON_DEFINITIONS[starter]), null];
-    this.currentSlot = 0;
+    this.owned = [new Weapon(WEAPON_DEFINITIONS[starter])];
+    this.currentIndex = 0;
   }
 
   getCurrent(): Weapon {
-    const weapon = this.slots[this.currentSlot];
+    const weapon = this.owned[this.currentIndex];
     if (!weapon) {
-      const fallback = this.slots[1 - this.currentSlot];
-      if (fallback) {
-        this.currentSlot = 1 - this.currentSlot;
-        return fallback;
-      }
-      throw new Error("WeaponInventory has no weapons.");
+      throw new Error("WeaponInventory has no current weapon.");
     }
     return weapon;
   }
 
   hasWeapon(id: WeaponId): boolean {
-    return this.slots.some((w) => w?.definition.id === id);
+    return this.owned.some((w) => w.definition.id === id);
   }
 
   getWeapon(id: WeaponId): Weapon | null {
-    return this.slots.find((w) => w?.definition.id === id) ?? null;
+    return this.owned.find((w) => w.definition.id === id) ?? null;
   }
 
+  /**
+   * Advance active weapon (scroll / Tab / Q). `delta` +1 = next, -1 = previous.
+   * Returns false if there is only one weapon.
+   */
+  cycle(delta: number): boolean {
+    if (this.owned.length <= 1) return false;
+    const n = this.owned.length;
+    this.currentIndex = (((this.currentIndex + delta) % n) + n) % n;
+    return true;
+  }
+
+  /**
+   * @deprecated Use {@link cycle} with ±1; kept for call sites expecting a two-slot flip.
+   */
   swap(): void {
-    if (!this.slots[1 - this.currentSlot]) return;
-    this.currentSlot = 1 - this.currentSlot;
+    this.cycle(1);
   }
 
   /**
    * Buy or refill the given weapon. Returns true if any change happened.
    * - If owned: refill reserve to max.
-   * - Else: place in empty slot, or replace current slot.
+   * - Else: append (up to {@link MAX_OWNED_WEAPONS}) or replace current slot.
    */
   buyOrRefill(id: WeaponId, refundCurrentInsteadOfReplace = false): "bought" | "refilled" | "noChange" {
     const def = WEAPON_DEFINITIONS[id];
@@ -228,10 +300,9 @@ export class WeaponInventory {
       return "refilled";
     }
 
-    const emptySlot = this.slots.findIndex((w) => w === null);
-    if (emptySlot !== -1) {
-      this.slots[emptySlot] = new Weapon(def);
-      this.currentSlot = emptySlot;
+    if (this.owned.length < MAX_OWNED_WEAPONS) {
+      this.owned.push(new Weapon(def));
+      this.currentIndex = this.owned.length - 1;
       return "bought";
     }
 
@@ -239,15 +310,32 @@ export class WeaponInventory {
       return "noChange";
     }
 
-    this.slots[this.currentSlot] = new Weapon(def);
+    this.owned[this.currentIndex] = new Weapon(def);
     return "bought";
   }
 
-  getSlots(): ReadonlyArray<Weapon | null> {
-    return this.slots;
+  getSlots(): ReadonlyArray<Weapon> {
+    return this.owned;
   }
 
   getCurrentSlotIndex(): number {
-    return this.currentSlot;
+    return this.currentIndex;
+  }
+
+  /**
+   * Jump to an owned slot by index (weapon wheel). Returns true if the active gun changed.
+   */
+  setCurrentSlotIndex(index: number): boolean {
+    if (this.owned.length === 0) return false;
+    const clamped = Math.max(0, Math.min(this.owned.length - 1, index));
+    if (clamped === this.currentIndex) {
+      return false;
+    }
+    this.currentIndex = clamped;
+    return true;
+  }
+
+  getOwnedCount(): number {
+    return this.owned.length;
   }
 }

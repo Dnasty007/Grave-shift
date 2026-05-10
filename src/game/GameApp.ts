@@ -13,7 +13,8 @@ import { PlayerController } from "./PlayerController";
 import { ScreenEffects } from "./ScreenEffects";
 import { Settings } from "./Settings";
 import { WaveDirector } from "./WaveDirector";
-import { Weapon, WEAPON_DEFINITIONS, WeaponInventory } from "./Weapon";
+import { Weapon, WEAPON_DEFINITIONS, WEAPON_IDS, WeaponInventory, type WeaponId } from "./Weapon";
+import { WeaponWheel } from "./WeaponWheel";
 import { Zombie, type EnemyModelKit } from "./Zombie";
 import type { Door } from "./Door";
 import {
@@ -93,12 +94,17 @@ export class GameApp {
   private playerGravityDropTargetY: number | null = null;
 
   private readonly enemyModelKits: EnemyModelKit[] = [];
+  private readonly weaponViewAssetEntries: ReadonlyMap<WeaponId, { asset: pc.Asset }>;
 
   /** Last lobby picks (restart / Run it back skips map & operator screens). */
   private lastMapId: MapPresetId = "castle";
   private lastPlayerId: PlayerModelId = "soldier";
   private playerVisualLoadSerial = 0;
   private sunEntity: pc.Entity | null = null;
+
+  private readonly weaponWheel: WeaponWheel;
+  private weaponWheelWasOpen = false;
+  private weaponWheelHighlight = 0;
 
   constructor(canvas: HTMLCanvasElement, hudRoot: HTMLElement) {
     this.canvas = canvas;
@@ -133,6 +139,8 @@ export class GameApp {
       }
     }
 
+    this.weaponViewAssetEntries = this.createWeaponViewAssetEntries();
+
     this.collision = new CollisionWorld();
     this.inventory = new WeaponInventory("pistol");
     this.map = new ZoneMap(this.app, this.collision);
@@ -144,14 +152,24 @@ export class GameApp {
       },
       onDropToGroundClick: () => this.beginPlayerGravityDrop()
     });
+    this.weaponWheel = new WeaponWheel(hudRoot.querySelector("#weapon-wheel"));
     this.input = new InputManager(canvas, hudRoot);
     this.player = new PlayerController(
       this.input,
       this.settings,
       this.inventory,
       this.collision,
-      this.map
+      this.map,
+      this.weaponViewAssetEntries
     );
+    for (const id of WEAPON_IDS) {
+      const row = this.weaponViewAssetEntries.get(id);
+      if (row) {
+        row.asset.ready(() => {
+          this.player.refreshWeaponViewmodel();
+        });
+      }
+    }
 
     this.menus = new MenuController(document.body, this.settings, {
       onBeginRun: (sel) => {
@@ -168,7 +186,8 @@ export class GameApp {
     this.input.setCallbacks({
       onPauseRequested: () => this.togglePause(),
       onInteractRequested: () => this.attemptInteraction(),
-      onWeaponSwapRequested: () => this.attemptWeaponSwap()
+      onWeaponCycleRequested: (dir) => this.attemptWeaponCycle(dir),
+      onWeaponWheelSlotPick: (slot) => this.pickWeaponWheelSlot(slot)
     });
 
     this.interactions = new InteractionController();
@@ -269,11 +288,13 @@ export class GameApp {
   // --- Main loop: simulation order (input → player → zombies → waves → HUD) ---
 
   private update(dt: number): void {
-    this.effects.update(dt);
-    this.screenEffects.update(dt);
-    this.map.update(dt);
-
     if (this.phase === "title" || this.phase === "paused") {
+      this.effects.update(dt);
+      this.screenEffects.update(dt);
+      this.map.update(dt);
+      this.input.setWeaponWheelOpen(false);
+      void this.weaponWheel.sync(false, [], 0, 0, 0);
+      this.weaponWheelWasOpen = false;
       return;
     }
 
@@ -283,16 +304,64 @@ export class GameApp {
     }
 
     if (this.phase === "gameOver") {
+      this.effects.update(dt);
+      this.screenEffects.update(dt);
+      this.map.update(dt);
+      this.input.setWeaponWheelOpen(false);
+      void this.weaponWheel.sync(false, [], 0, 0, 0);
+      this.weaponWheelWasOpen = false;
       this.renderHud();
       return;
     }
 
+    const wantWeaponWheel =
+      !this.settings.get().flyMode &&
+      !this.input.isTouchMode() &&
+      this.inventory.getOwnedCount() > 2 &&
+      this.input.isKeyHeld("KeyV");
+
+    this.input.setWeaponWheelOpen(wantWeaponWheel);
+
+    if (wantWeaponWheel) {
+      if (!this.weaponWheelWasOpen && document.pointerLockElement === this.canvas) {
+        document.exitPointerLock();
+      }
+      if (!this.weaponWheelWasOpen) {
+        this.weaponWheelHighlight = this.inventory.getCurrentSlotIndex();
+      }
+      const ptr = this.input.getPointerClient();
+      this.weaponWheelHighlight = this.weaponWheel.sync(
+        true,
+        this.inventory.getSlots(),
+        this.weaponWheelHighlight,
+        ptr.x,
+        ptr.y
+      );
+    } else {
+      void this.weaponWheel.sync(false, [], 0, 0, 0);
+      if (this.weaponWheelWasOpen) {
+        const changed = this.inventory.setCurrentSlotIndex(this.weaponWheelHighlight);
+        if (changed) {
+          this.player.notifyWeaponInventoryChanged();
+          this.audio.play("weaponSwap");
+        }
+        this.renderHud();
+      }
+    }
+    this.weaponWheelWasOpen = wantWeaponWheel;
+
+    const simDt = wantWeaponWheel ? dt * GAME_CONFIG.fx.weaponWheelTimeScale : dt;
+
+    this.effects.update(simDt);
+    this.screenEffects.update(simDt);
+    this.map.update(simDt);
+
     this.input.update(dt);
 
     const wasReloading = this.player.isCurrentlyReloading();
-    const shot = this.player.update(dt, this.zombies);
+    const shot = this.player.update(simDt, this.zombies);
 
-    this.applyPlayerGravityDrop(dt);
+    this.applyPlayerGravityDrop(simDt);
 
     if (this.player.isCurrentlyReloading() && !wasReloading) {
       this.audio.play("reload");
@@ -308,7 +377,7 @@ export class GameApp {
     for (const zombie of this.zombies) {
       const wasAlive = zombie.alive;
       zombie.update(
-        dt,
+        simDt,
         this.player.getPosition(),
         this.zombies,
         (damage, sourcePosition) => {
@@ -332,10 +401,10 @@ export class GameApp {
 
     this.zombies = this.zombies.filter((zombie) => zombie.alive);
 
-    this.applyOpenWorldTerrainCling(dt);
+    this.applyOpenWorldTerrainCling(simDt);
 
     this.waveDirector.update(
-      dt,
+      simDt,
       this.zombies.length,
       this.player.getPosition()
     );
@@ -533,11 +602,19 @@ export class GameApp {
     }
   }
 
-  private attemptWeaponSwap(): void {
+  private attemptWeaponCycle(dir: number): void {
     if (this.phase !== "playing") return;
-    if (this.player.tryWeaponSwap()) {
+    if (this.player.tryWeaponCycle(dir)) {
       this.audio.play("weaponSwap");
     }
+  }
+
+  private pickWeaponWheelSlot(slot: number): void {
+    if (this.phase !== "playing") return;
+    if (!this.input.isWeaponWheelOpen()) return;
+    const n = this.inventory.getOwnedCount();
+    if (slot < 0 || slot >= n) return;
+    this.weaponWheelHighlight = slot;
   }
 
   // --- Hitscan feedback: tracers, impact FX, score, kill banner ---
@@ -657,6 +734,10 @@ export class GameApp {
 
     this.inventory.reset("pistol");
     this.player.reset();
+    this.weaponWheelWasOpen = false;
+    this.weaponWheelHighlight = 0;
+    this.input.setWeaponWheelOpen(false);
+    void this.weaponWheel.sync(false, [], 0, 0, 0);
     await this.loadPlayerCharacterModel();
     this.player.notifyWeaponInventoryChanged();
     this.waveDirector.reset();
@@ -684,10 +765,10 @@ export class GameApp {
       MAP_CONFIG.importVisual.replacesArena
         ? this.input.isTouchMode()
           ? "Hold Fire. Tap Reload. Explore the map — voxel collision comes later."
-          : "Click to lock the mouse. WASD to move. R to reload. Q swaps weapons."
+          : "Click to lock the mouse. WASD to move. R to reload. Mouse wheel or Q cycles weapons. Hold V for the weapon wheel when you carry three or more guns."
         : this.input.isTouchMode()
           ? "Hold Fire. Tap Reload. Walk up to wall buys and tap Use."
-          : "Click to lock the mouse. R to reload. E to buy. Q to swap weapons."
+          : "Click to lock the mouse. R to reload. E to buy. Mouse wheel or Q cycles weapons. Hold V for the weapon wheel with three or more guns."
     );
     this.hud.setInteractPrompt(null);
 
@@ -792,6 +873,10 @@ export class GameApp {
     this.playerGravityDropActive = false;
     this.playerGravityDropVelocity = 0;
     this.playerGravityDropTargetY = null;
+    this.weaponWheelWasOpen = false;
+    this.weaponWheelHighlight = 0;
+    this.input.setWeaponWheelOpen(false);
+    void this.weaponWheel.sync(false, [], 0, 0, 0);
     this.hud.setStatus(
       MAP_CONFIG.importVisual.replacesArena
         ? "Reloading world slice..."
@@ -902,6 +987,22 @@ export class GameApp {
     return Math.min(window.devicePixelRatio, openImport ? 1.45 : 1.8);
   }
 
+  private createWeaponViewAssetEntries(): Map<WeaponId, { asset: pc.Asset }> {
+    const m = new Map<WeaponId, { asset: pc.Asset }>();
+    for (const id of WEAPON_IDS) {
+      const url = WEAPON_DEFINITIONS[id].viewModelGltf?.url;
+      if (!url) continue;
+      const asset = new pc.Asset(`weapon-vm-${id}`, "container", { url });
+      this.app.assets.add(asset);
+      asset.on("error", (err: string) => {
+        console.warn(`[GameApp] Weapon view glTF (${url}):`, err);
+      });
+      m.set(id, { asset });
+      this.app.assets.load(asset);
+    }
+    return m;
+  }
+
   private pickEnemyModelKit(): EnemyModelKit | null {
     if (!GAME_CONFIG.enemyVisual.useGltf || this.enemyModelKits.length === 0) {
       return null;
@@ -913,5 +1014,3 @@ export class GameApp {
     return kits[0]!;
   }
 }
-
-void WEAPON_DEFINITIONS;

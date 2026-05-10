@@ -13,7 +13,10 @@ type StickState = {
 export type InputCallbacks = {
   onPauseRequested?: () => void;
   onInteractRequested?: () => void;
-  onWeaponSwapRequested?: () => void;
+  /** +1 = next weapon, -1 = previous (mouse wheel). */
+  onWeaponCycleRequested?: (direction: number) => void;
+  /** Weapon wheel: pick slot by keyboard (Digit1 = 0, …). */
+  onWeaponWheelSlotPick?: (slotIndex: number) => void;
 };
 
 /**
@@ -36,6 +39,10 @@ export class InputManager {
   private inputBlocked = false;
   private accumulatedLookX = 0;
   private accumulatedLookY = 0;
+  /** Desktop weapon wheel: blocks look / fire / weapon cycle while open. */
+  private weaponWheelOpen = false;
+  private lastPointerClientX = 0;
+  private lastPointerClientY = 0;
   private callbacks: InputCallbacks = {};
 
   constructor(canvas: HTMLCanvasElement, hudRoot: HTMLElement) {
@@ -94,6 +101,9 @@ export class InputManager {
     this.bindDesktopInput();
     this.bindTouchControls(fireButton, reloadButton, pauseButton, interactButton, swapButton);
 
+    this.lastPointerClientX = window.innerWidth * 0.5;
+    this.lastPointerClientY = window.innerHeight * 0.5;
+
     document.body.classList.toggle("touch-mode", this.useTouchControls);
   }
 
@@ -108,6 +118,7 @@ export class InputManager {
       this.jumpRequested = false;
       this.accumulatedLookX = 0;
       this.accumulatedLookY = 0;
+      this.weaponWheelOpen = false;
       if (document.pointerLockElement === this.canvas) {
         document.exitPointerLock();
       }
@@ -120,6 +131,30 @@ export class InputManager {
       this.fireHeld = false;
       this.jumpRequested = false;
     }
+  }
+
+  /**
+   * Radial weapon wheel (hold V) — set each frame from `GameApp` before `update` / look consumption.
+   */
+  setWeaponWheelOpen(open: boolean): void {
+    this.weaponWheelOpen = open;
+    if (open) {
+      this.fireHeld = false;
+      this.accumulatedLookX = 0;
+      this.accumulatedLookY = 0;
+    }
+  }
+
+  isWeaponWheelOpen(): boolean {
+    return this.weaponWheelOpen;
+  }
+
+  isKeyHeld(code: string): boolean {
+    return this.keys.has(code);
+  }
+
+  getPointerClient(): { x: number; y: number } {
+    return { x: this.lastPointerClientX, y: this.lastPointerClientY };
   }
 
   isPaused(): boolean {
@@ -156,7 +191,7 @@ export class InputManager {
   }
 
   consumeLookDelta(): { x: number; y: number } {
-    if (this.paused || this.inputBlocked) {
+    if (this.paused || this.inputBlocked || this.weaponWheelOpen) {
       this.accumulatedLookX = 0;
       this.accumulatedLookY = 0;
       return { x: 0, y: 0 };
@@ -174,7 +209,7 @@ export class InputManager {
   }
 
   isFiring(): boolean {
-    if (this.paused || this.inputBlocked) return false;
+    if (this.paused || this.inputBlocked || this.weaponWheelOpen) return false;
     return this.fireHeld;
   }
 
@@ -184,10 +219,10 @@ export class InputManager {
   }
 
   /**
-   * Fly mode: move up (V — Space is reserved for jump so it doesn’t activate focused UI buttons).
+   * Fly mode: move up (V — blocked while weapon wheel is open).
    */
   isFlyAscend(): boolean {
-    if (this.paused || this.inputBlocked) return false;
+    if (this.paused || this.inputBlocked || this.weaponWheelOpen) return false;
     return this.keys.has("KeyV");
   }
 
@@ -258,9 +293,35 @@ export class InputManager {
         this.callbacks.onInteractRequested?.();
       }
 
-      if (event.code === "KeyQ" || event.code === "Tab" || event.code === "Digit1" || event.code === "Digit2") {
+      if (event.code === "KeyQ" || event.code === "Tab") {
+        if (this.weaponWheelOpen) {
+          if (event.code === "Tab") event.preventDefault();
+          return;
+        }
         if (event.code === "Tab") event.preventDefault();
-        this.callbacks.onWeaponSwapRequested?.();
+        this.callbacks.onWeaponCycleRequested?.(1);
+      }
+
+      if (
+        this.weaponWheelOpen &&
+        (event.code === "Digit1" ||
+          event.code === "Digit2" ||
+          event.code === "Digit3" ||
+          event.code === "Digit4" ||
+          event.code === "Digit5" ||
+          event.code === "Digit6")
+      ) {
+        const map: Record<string, number> = {
+          Digit1: 0,
+          Digit2: 1,
+          Digit3: 2,
+          Digit4: 3,
+          Digit5: 4,
+          Digit6: 5
+        };
+        this.callbacks.onWeaponWheelSlotPick?.(map[event.code] ?? 0);
+        event.preventDefault();
+        return;
       }
 
       if (this.gameOver && event.code === "Enter") {
@@ -271,9 +332,10 @@ export class InputManager {
     window.addEventListener(
       "wheel",
       (event) => {
-        if (this.paused || this.inputBlocked) return;
+        if (this.paused || this.inputBlocked || this.weaponWheelOpen) return;
         if (Math.abs(event.deltaY) < 4) return;
-        this.callbacks.onWeaponSwapRequested?.();
+        const dir = event.deltaY > 0 ? 1 : -1;
+        this.callbacks.onWeaponCycleRequested?.(dir);
       },
       { passive: true }
     );
@@ -291,6 +353,10 @@ export class InputManager {
         return;
       }
 
+      if (this.weaponWheelOpen) {
+        return;
+      }
+
       if (document.pointerLockElement !== this.canvas) {
         void this.canvas.requestPointerLock();
       } else {
@@ -305,7 +371,10 @@ export class InputManager {
     });
 
     document.addEventListener("mousemove", (event) => {
-      if (this.paused || this.inputBlocked) {
+      this.lastPointerClientX = event.clientX;
+      this.lastPointerClientY = event.clientY;
+
+      if (this.paused || this.inputBlocked || this.weaponWheelOpen) {
         return;
       }
 
@@ -404,7 +473,7 @@ export class InputManager {
     });
 
     swapButton.addEventListener("pointerup", () => {
-      this.callbacks.onWeaponSwapRequested?.();
+      this.callbacks.onWeaponCycleRequested?.(1);
     });
   }
 

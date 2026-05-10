@@ -137,6 +137,22 @@
             ⏸
           </button>
         </div>
+
+        <div
+          id="weapon-wheel"
+          class="weapon-wheel"
+          aria-hidden="true"
+          data-open="0"
+        >
+          <div class="weapon-wheel-vignette"></div>
+          <div class="weapon-wheel-panel">
+            <p class="weapon-wheel-hint">
+              Aim with mouse · <kbd>1</kbd>–<kbd>6</kbd> · release <kbd>V</kbd>
+            </p>
+            <div class="weapon-wheel-items" id="weapon-wheel-items"></div>
+            <div class="weapon-wheel-center-ring" aria-hidden="true"></div>
+          </div>
+        </div>
       </div>
 
       <div id="menu-root">
@@ -325,10 +341,14 @@
                   <li><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> — Move</li>
                   <li><kbd>Shift</kbd> — Sprint</li>
                   <li><kbd>Space</kbd> — Jump</li>
-                  <li><kbd>V</kbd> / <kbd>Ctrl</kbd> — Fly up / down (enable Fly mode in Settings)</li>
+                  <li>
+                    <kbd>V</kbd> — Hold: weapon wheel (with 3+ guns, desktop). Release <kbd>V</kbd> to
+                    equip.
+                  </li>
+                  <li><kbd>V</kbd> / <kbd>Ctrl</kbd> — Fly up / down when Fly mode is on in Settings</li>
                   <li><kbd>R</kbd> — Reload</li>
                   <li><kbd>E</kbd> / <kbd>F</kbd> — Use / Buy</li>
-                  <li><kbd>Q</kbd> / <kbd>Tab</kbd> / Scroll — Swap weapons</li>
+                  <li><kbd>Q</kbd> / <kbd>Tab</kbd> / mouse wheel — Cycle weapons (owned)</li>
                   <li><kbd>Mouse</kbd> — Aim</li>
                   <li><kbd>Left Click</kbd> — Fire</li>
                   <li><kbd>Esc</kbd> — Pause</li>
@@ -344,7 +364,7 @@
                   <li>Fire button — Shoot</li>
                   <li>Reload button — Reload</li>
                   <li>Use button — Buy / open gates</li>
-                  <li>Swap button — Switch weapons</li>
+                  <li>Swap button — Next weapon</li>
                   <li>Pause button — Pause</li>
                 </ul>
               </div>

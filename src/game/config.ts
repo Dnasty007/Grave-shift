@@ -238,7 +238,12 @@ export const GAME_CONFIG = {
     muzzleFlashSeconds: 0.06,
     tracerSeconds: 0.05,
     bloodBurstSeconds: 0.45,
-    killPopupSeconds: 0.85
+    killPopupSeconds: 0.85,
+    /**
+     * Gameplay + visuals time scale while the radial weapon wheel is open (hold V).
+     * ~0.35–0.45 matches a Doom-style slowdown; 1 = no slowdown.
+     */
+    weaponWheelTimeScale: 0.38
   },
   audio: {
     defaultMaster: 0.75,

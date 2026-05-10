@@ -5,7 +5,7 @@ import { clamp, raySphereIntersection } from "./math";
 import type { CollisionWorld } from "./CollisionWorld";
 import type { InputManager } from "./InputManager";
 import type { Settings, SettingsState } from "./Settings";
-import type { Weapon, WeaponInventory } from "./Weapon";
+import type { Weapon, WeaponId, WeaponInventory } from "./Weapon";
 import { WEAPON_DEFINITIONS } from "./Weapon";
 import { WeaponViewmodel } from "./WeaponViewmodel";
 import type { EnemyModelKit, Zombie } from "./Zombie";
@@ -75,7 +75,8 @@ export class PlayerController {
     settings: Settings,
     inventory: WeaponInventory,
     collision: CollisionWorld,
-    gameMap: GameMap
+    gameMap: GameMap,
+    weaponViewAssets: ReadonlyMap<WeaponId, { asset: pc.Asset }>
   ) {
     this.input = input;
     this.settings = settings;
@@ -90,6 +91,7 @@ export class PlayerController {
       clearColor: importOn
         ? new pc.Color(0.55, 0.68, 0.82)
         : new pc.Color(0.02, 0.03, 0.05),
+      nearClip: 0.04,
       farClip: openWorld ? MAP_CONFIG.importVisual.cameraFarClip : 200,
       fov: settings.get().fov
     });
@@ -107,7 +109,7 @@ export class PlayerController {
     this.root.addChild(this.pivot);
     this.pivot.addChild(this.camera);
 
-    this.viewmodel = new WeaponViewmodel(this.camera);
+    this.viewmodel = new WeaponViewmodel(this.camera, weaponViewAssets);
     this.viewmodel.setWeapon(this.inventory.getCurrent());
 
     this.reset();
@@ -294,16 +296,18 @@ export class PlayerController {
   }
 
   /**
-   * Try to swap to the other weapon in the inventory. Returns true if a swap actually happened.
+   * Cycle equipped weapon (`delta` +1 = next, -1 = previous among owned guns).
    */
-  tryWeaponSwap(): boolean {
-    const before = this.inventory.getCurrentSlotIndex();
-    this.inventory.swap();
-    const after = this.inventory.getCurrentSlotIndex();
-    if (before === after) return false;
+  tryWeaponCycle(delta: number): boolean {
+    if (!this.inventory.cycle(delta)) return false;
     this.viewmodel.setWeapon(this.inventory.getCurrent());
     this.fireCooldown = Math.max(this.fireCooldown, 0.4);
     return true;
+  }
+
+  /** When a view glTF finishes loading, rebuild the model if it is the active weapon. */
+  refreshWeaponViewmodel(): void {
+    this.viewmodel.refreshIfCurrent(this.inventory.getCurrent().definition.id);
   }
 
   notifyWeaponInventoryChanged(): void {
