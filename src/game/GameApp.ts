@@ -16,6 +16,18 @@ import { Weapon, WEAPON_DEFINITIONS, WeaponInventory } from "./Weapon";
 import { Zombie } from "./Zombie";
 import type { Door } from "./Door";
 
+/**
+ * Top-level game shell: owns the PlayCanvas `Application`, wires every subsystem, and runs the frame loop.
+ *
+ * | Area in this file          | What you feel in-game                          |
+ * | -------------------------- | ---------------------------------------------- |
+ * | Constructor + load map     | Boot, imported GLB, initial camera clip      |
+ * | `update()`                 | Player, zombies, waves, interact prompt       |
+ * | Open-world terrain blocks  | Feet stay on mesh; optional gravity drop      |
+ * | `handleShot`               | Hits, kills, points, kill FX                   |
+ * | `startRun` / `endRun`…     | PLAY, game over, pause, title                  |
+ * | `configureScene`           | Fog / ambient / exposure look                  |
+ */
 type GamePhase = "title" | "playing" | "paused" | "gameOver";
 
 type RunStats = {
@@ -58,6 +70,8 @@ export class GameApp {
   private playerGravityDropActive = false;
   private playerGravityDropVelocity = 0;
   private playerGravityDropTargetY: number | null = null;
+
+  // --- Boot: PlayCanvas app, audio/FX, player, map load, wave director, HUD/menu bindings ---
 
   constructor(canvas: HTMLCanvasElement, hudRoot: HTMLElement) {
     this.canvas = canvas;
@@ -203,6 +217,8 @@ export class GameApp {
     });
   }
 
+  // --- Main loop: simulation order (input → player → zombies → waves → HUD) ---
+
   private update(dt: number): void {
     this.effects.update(dt);
     this.screenEffects.update(dt);
@@ -293,6 +309,8 @@ export class GameApp {
 
     this.renderHud();
   }
+
+  // --- Open world: GLB terrain height — MAP_CONFIG.importVisual (cling + HUD “Drop to ground”) ---
 
   /**
    * Open world: keep feet on the GLB while moving (XZ-only locomotion) using periodic depth samples.
@@ -395,6 +413,8 @@ export class GameApp {
     this.player.root.setPosition(p.x, ny, p.z);
   }
 
+  // --- Arena: wall buys, doors (E), weapon swap — idle when replacesArena ---
+
   private attemptInteraction(): void {
     if (this.phase !== "playing") return;
     const result = this.interactions.trigger(this.points, this.inventory);
@@ -457,6 +477,8 @@ export class GameApp {
     }
   }
 
+  // --- Hitscan feedback: tracers, impact FX, score, kill banner ---
+
   private handleShot(shot: ReturnType<PlayerController["update"]>): void {
     if (!shot) return;
 
@@ -503,6 +525,8 @@ export class GameApp {
       }
     }
   }
+
+  // --- Session: start run, game over, pause, return to title ---
 
   private startRun(): void {
     for (const zombie of this.zombies) {
@@ -663,6 +687,8 @@ export class GameApp {
     this.renderHud();
   }
 
+  // --- DOM HUD: vitals, ammo, dev toggles (snapshotted each playing frame) ---
+
   private renderHud(): void {
     const weapon: Weapon = this.player.getCurrentWeapon();
     this.hud.render({
@@ -681,6 +707,8 @@ export class GameApp {
     });
   }
 
+  // --- Per-run counters (fed into game-over modal) ---
+
   private makeStats(): RunStats {
     return {
       kills: 0,
@@ -690,6 +718,8 @@ export class GameApp {
       startTime: performance.now()
     };
   }
+
+  // --- Scene look: ambient, fog ranges, sun key light (open-world vs arena) ---
 
   private configureScene(): void {
     this.app.scene.ambientLight = new pc.Color(0.13, 0.1, 0.08);

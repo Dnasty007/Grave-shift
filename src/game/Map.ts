@@ -5,6 +5,17 @@ import { Door } from "./Door";
 import { SpawnGate } from "./SpawnGate";
 import { WallBuy } from "./WallBuy";
 
+/**
+ * World root under PlayCanvas `app.root`: procedural arena **or** empty shell + imported GLB.
+ *
+ * | Area | Game effect |
+ * | ---- | ----------- |
+ * | `build()` + `build*` private | Yard geometry, gates, wall buys, 2D collision boxes (arena only) |
+ * | `loadImportedVisual` | Mineways GLB parented under map root |
+ * | Terrain pick helpers | Player/zombie feet Y on mesh (`MAP_CONFIG` gated) |
+ * | `pickRandomActiveSpawnPosition` | Zombie spawn: gate pulse vs open-world ring |
+ * | `update` | Doors, gate pulse, lamp flicker |
+ */
 export type ZoneId = "hub" | "loadingBay" | "office" | "powerYard";
 
 export type MapBuildResult = {
@@ -92,6 +103,8 @@ export class Map {
     this.lampMaterial.update();
   }
 
+  // --- Arena build pipeline (skipped entirely when `replacesArena`) ---
+
   build(): MapBuildResult {
     if (this.replacesArena) {
       return { doors: [], wallBuys: [], spawnGates: [] };
@@ -133,6 +146,8 @@ export class Map {
     }
   }
 
+  // --- Runtime: animated doors, gate pulse, lamp flicker ---
+
   update(dt: number): void {
     for (const door of this.doors) door.update(dt);
     for (const gate of this.gates) gate.update(dt);
@@ -164,6 +179,8 @@ export class Map {
   isZoneOpen(zoneId: ZoneId): boolean {
     return this.openedZones.has(zoneId);
   }
+
+  // --- Spawning: gate entities vs open-world ring around player ---
 
   pickRandomActiveSpawnPosition(playerPosition: pc.Vec3, minDistance = 12): pc.Vec3 | null {
     if (this.replacesArena) {
@@ -201,6 +218,8 @@ export class Map {
   getRoot(): pc.Entity {
     return this.root;
   }
+
+  // --- Imported Mineways mesh (`MAP_CONFIG.importVisual.glbUrl`) ---
 
   /**
    * Loads the converted GLB (see `MAP_CONFIG.importVisual`). Safe to call on every boot;
@@ -255,6 +274,8 @@ export class Map {
       app.assets.load(asset);
     });
   }
+
+  // --- Terrain height under (wx,wz): median depth picks for feet / cling ---
 
   /**
    * World-space terrain height under (wx, wz): median of several depth picks in one pass
@@ -412,6 +433,8 @@ export class Map {
     }
     return this.terrainSnapCam;
   }
+
+  // --- Procedural pieces (arena yard only) ---
 
   private buildGround(): void {
     if (!this.hideProceduralDecor) {

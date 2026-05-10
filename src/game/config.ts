@@ -1,4 +1,11 @@
 /**
+ * Central tuning for Grave Shift.
+ *
+ * • **MAP_CONFIG** — Imported world (`Map.ts`, open-world branches elsewhere): GLB path/transform,
+ *   spawn, zombie ring, first-person eye height, terrain depth-pick + cling + HUD “Drop to ground”.
+ * • **GAME_CONFIG** — Procedural arena scale, player movement/health, weapons, zombie/wave math,
+ *   scoring, FX timing. Consumed by `PlayerController`, `Zombie`, `WaveDirector`, `Effects`, etc.
+ *
  * Mineways: typically 1 block = 1 m in the OBJ (`1000 mm` block height).
  * Convert with `npm run convert-map`, then tune spawn + fog if the world feels wrong.
  *

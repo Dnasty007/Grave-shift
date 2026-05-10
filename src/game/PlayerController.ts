@@ -9,6 +9,16 @@ import { WEAPON_DEFINITIONS } from "./Weapon";
 import { WeaponViewmodel } from "./WeaponViewmodel";
 import type { Zombie } from "./Zombie";
 
+/**
+ * First-person rig + combat for one `player` entity.
+ *
+ * | Block | In-game effect |
+ * | ----- | -------------- |
+ * | Camera graph (`root` → pivot → camera) | Eye height, look pitch/yaw, weapon viewmodel parent |
+ * | `update()` | WASD / touch move, sprint, reload timer, hitscan fire |
+ * | `reset()` | Spawn position: arena yard vs MAP_CONFIG open-world spawn |
+ * | `fire` / `emptyShot` | Ray vs zombie capsules; headshot vs body |
+ */
 export type ShotResult = {
   fired: boolean;
   hit: boolean;
@@ -30,6 +40,8 @@ export class PlayerController {
 
   health: number = GAME_CONFIG.player.maxHealth;
 
+  /** Camera rig: root = feet/world move; pivot = eye height; camera = shoot ray origin */
+
   private readonly pivot = new pc.Entity("camera-pivot");
   private readonly camera = new pc.Entity("camera");
   private readonly input: InputManager;
@@ -45,6 +57,8 @@ export class PlayerController {
   private didFireThisFrame = false;
   private lastDamageDirection: { x: number; y: number } | null = null;
   private recoilPitchKick = 0;
+
+  // --- Construction: camera + subscribe FOV; eye height from MAP_CONFIG in open world ---
 
   constructor(
     input: InputManager,
@@ -84,6 +98,8 @@ export class PlayerController {
     this.reset();
   }
 
+  // --- Camera tuning: pivot Y = eye height; far clip set from GameApp for big maps ---
+
   private applyCameraPivotHeight(): void {
     const openWorld =
       MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena;
@@ -97,6 +113,8 @@ export class PlayerController {
       cameraComponent.farClip = distance;
     }
   }
+
+  // --- World/camera readouts + reload state (HUD, FX, interactions) ---
 
   getPosition(): pc.Vec3 {
     return this.root.getPosition();
@@ -124,6 +142,8 @@ export class PlayerController {
     if (!weapon._reloadTimer) return 0;
     return 1 - weapon._reloadTimer / weapon.definition.reloadSeconds;
   }
+
+  // --- Run reset: health, spawn (arena vs MAP_CONFIG), ammo ---
 
   reset(): void {
     this.health = GAME_CONFIG.player.maxHealth;
@@ -173,6 +193,8 @@ export class PlayerController {
     this.viewmodel.setWeapon(this.inventory.getCurrent());
     this.fireCooldown = Math.max(this.fireCooldown, 0.3);
   }
+
+  // --- Main tick: movement (XZ + collision), look, reload, firing ---
 
   update(dt: number, zombies: Zombie[]): ShotResult | null {
     this.fireCooldown = Math.max(0, this.fireCooldown - dt);
@@ -282,6 +304,8 @@ export class PlayerController {
     return result;
   }
 
+  // --- Incoming zombie damage → health + flash direction for UI ---
+
   damage(amount: number, sourcePosition?: pc.Vec3): void {
     this.health = Math.max(0, this.health - amount);
 
@@ -320,6 +344,8 @@ export class PlayerController {
     internal._reloadTimer = weapon.definition.reloadSeconds;
     return true;
   }
+
+  // --- Hitscan vs zombies (spread rays, capsule tests, damage application) ---
 
   private emptyShot(weapon: Weapon): ShotResult {
     const origin = this.camera.getPosition().clone();

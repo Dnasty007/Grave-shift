@@ -17,6 +17,10 @@ type WaveCallbacks = {
   onIntermission: (wave: number, seconds: number) => void;
 };
 
+/**
+ * Wave scheduler: intermission countdown → spawn quota per wave → clears when all dead.
+ * Spawn **positions** come from `Map.pickRandomActiveSpawnPosition` via injected `spawnPicker`.
+ */
 export class WaveDirector {
   currentWave = 0;
 
@@ -39,6 +43,8 @@ export class WaveDirector {
     this.spawnCooldown = 0;
     this.waveActive = false;
   }
+
+  // --- Wave tick: intermission HUD → staggered spawns → wave cleared detection ---
 
   update(dt: number, activeZombieCount: number, playerPosition: pc.Vec3): void {
     this.spawnCooldown = Math.max(0, this.spawnCooldown - dt);

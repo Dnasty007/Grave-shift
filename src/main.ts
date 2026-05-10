@@ -1,6 +1,7 @@
 import "./styles.css";
 import { GameApp } from "./game/GameApp";
 
+/** DOM bootstrap: single GameApp owns PlayCanvas + HUD + menus. */
 const canvas = document.querySelector<HTMLCanvasElement>("#game-canvas");
 const hudRoot = document.querySelector<HTMLElement>("#hud");
 

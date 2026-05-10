@@ -2,6 +2,10 @@ import { GAME_CONFIG } from "./config";
 import type { InteractPrompt } from "./Interactable";
 import type { Weapon } from "./Weapon";
 
+/**
+ * DOM HUD bound from `GameApp.renderHud`: health, wave, ammo, status copy, interact card, dev buttons.
+ * Keeps TypeScript snapshots explicit so gameplay state → DOM mapping stays in one `render()` call.
+ */
 export type HudSnapshot = {
   health: number;
   points: number;
@@ -45,6 +49,8 @@ export class Hud {
   private readonly interactCost: HTMLElement;
   private readonly freezeZombiesButton: HTMLButtonElement;
   private readonly dropToGroundButton: HTMLButtonElement;
+
+  // --- Construction: query DOM nodes + wire non-gameplay button callbacks ---
 
   constructor(root: HTMLElement, options?: HudOptions) {
     const required = (id: string) => {
@@ -96,6 +102,8 @@ export class Hud {
     });
   }
 
+  // --- Push model → DOM (called every playing frame from GameApp) ---
+
   render(snapshot: HudSnapshot): void {
     const health = Math.max(0, Math.round(snapshot.health));
     this.healthValue.textContent = `${health}`;
@@ -136,6 +144,8 @@ export class Hud {
     this.dropToGroundButton.disabled = snapshot.playerGravityDropping;
     this.dropToGroundButton.textContent = snapshot.playerGravityDropping ? "Falling…" : "Drop to ground";
   }
+
+  // --- Copy-driven HUD regions (status / prompts) ---
 
   setStatus(text: string): void {
     this.statusText.textContent = text;

@@ -12,6 +12,10 @@ let zombieId = 0;
 const HEAD_RADIUS = 0.32;
 const ZOMBIE_RADIUS = 0.5;
 
+/**
+ * One enemy actor: procedurally scaled box/capsule mesh, simple seek + melee vs player.
+ * `CollisionWorld` nudges XZ out of arena props; Y comes from GameApp open-world snaps.
+ */
 export class Zombie {
   readonly id = zombieId++;
   readonly root = new pc.Entity(`zombie-${this.id}`);
@@ -37,6 +41,8 @@ export class Zombie {
   private armSwingPhase = Math.random() * Math.PI * 2;
   private moaned = false;
   private spawnAlpha = 0;
+
+  // --- Visual assembly + materials (PlayCanvas primitives) ---
 
   constructor(position: pc.Vec3, stats: ZombieStats, collision: CollisionWorld | null = null) {
     this.maxHealth = stats.health;
@@ -132,6 +138,8 @@ export class Zombie {
     }, 1200 + Math.random() * 1200);
     return true;
   }
+
+  // --- AI tick: spawn scale-in, chase player XZ, attack cadence, bob animation ---
 
   update(
     dt: number,

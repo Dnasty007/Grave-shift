@@ -16,6 +16,10 @@ export type InputCallbacks = {
   onWeaponSwapRequested?: () => void;
 };
 
+/**
+ * All player-facing input: keyboard/mouse, pointer lock, and on-screen sticks on touch-first devices.
+ * Feeds `PlayerController`; E / Q / Esc reach `GameApp` through `InputCallbacks`.
+ */
 export class InputManager {
   private readonly canvas: HTMLCanvasElement;
   private readonly useTouchControls: boolean;

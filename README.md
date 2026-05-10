@@ -1,24 +1,46 @@
 # Grave Shift
 
-`Grave Shift` is a browser-first zombie survival prototype built to be easy to
-extend in Cursor. The current foundation is intentionally small but real:
+**Grave Shift** is a **browser-first, first-person survival shooter** we are
+building in the spirit of **Call of Duty: World at War Zombies**—the slow push of
+rounds, the pressure to keep moving and aiming clean, points for kills, and
+that “one more wave” loop. We are **not** cloning maps or assets; we want the
+**feel and readability** of that mode, then layer **our own setting and
+gameplay twist**.
 
-- First-person movement for desktop and touch devices
-- Wave-based zombie spawning
-- Hitscan shooting
-- Health, points, game over, and restart flow
-- PlayCanvas + TypeScript structure that can grow into a larger project
+### What we are trying to capture (WaW DNA)
+
+- **Round-based horde pressure**—waves escalate, spacing and headshots matter.
+- **Simple, legible combat**—hitscan shooting, clear feedback, room to kite.
+- **Score economy**—points for hits and kills; room for doors, buys, and
+  upgrades as the project grows (arena mode already has wall buys and gates;
+  open-world experiments use a spawn ring and pass-through map geometry).
+
+### Our twist (direction)
+
+- **Own art direction and spaces**—including **large exported “block” worlds**
+  (e.g. Mineways → GLB) for a different kind of yard than the classic theater /
+  bunker tileset, while we tune movement, spawns, and fog to match that pace.
+- **Web-native workflow**—ship in the browser first, iterate fast in Cursor,
+  then optional mobile wrap later.
+
+### What’s in the repo today (foundation)
+
+The codebase is **small but real**: first-person movement (desktop + touch),
+wave spawning, multiple weapons with reload, health and game over, HUD, audio
+and screen FX hooks, and a **PlayCanvas + TypeScript** layout that can grow
+into the full WaW-style experience above.
 
 ## Why this stack
 
-This project is set up for a `web first -> mobile wrapper later` workflow:
+This project is set up for a **web first → mobile wrapper later** workflow:
 
-- `PlayCanvas` handles the 3D game runtime and performs well in browsers.
-- `Vite` keeps the dev loop fast in Cursor.
-- `TypeScript` gives us safer code as the project grows.
+- **PlayCanvas** runs the 3D game in the browser with solid performance.
+- **Vite** keeps the dev loop fast in Cursor (fixed dev port **5733** so it
+  doesn’t fight other apps).
+- **TypeScript** keeps the growing systems safer to change.
 
-Once the core loop feels good, we can wrap this same game with `Capacitor` for
-iOS packaging on a Mac with Xcode.
+Once the core loop feels right, we can wrap the same build with **Capacitor**
+for iOS packaging on a Mac with Xcode.
 
 ## Run it
 
@@ -53,27 +75,32 @@ with `host: true`, so you can use the LAN URL it prints.
 ```text
 src/
   game/
-    GameApp.ts
-    Hud.ts
-    InputManager.ts
+    GameApp.ts        # run loop, waves, combat feedback, menus
+    Map.ts            # procedural arena vs imported GLB, terrain snap
     PlayerController.ts
     WaveDirector.ts
     Zombie.ts
-    config.ts
-    math.ts
+    Hud.ts
+    InputManager.ts
+    config.ts         # MAP_CONFIG / GAME_CONFIG tuning
+    …
   main.ts
   styles.css
 ```
 
-## Good next steps
+## Good next steps (toward the WaW-style loop)
 
-These are the best upgrades after the foundation is running:
+Work that best serves the vision above:
 
-1. Add one real weapon system with ammo and reload.
-2. Add barricades, doors, or a second lane of the map.
-3. Add a mystery-reward mechanic with original theming.
-4. Add audio, hit feedback, and stronger death animation.
-5. Wrap the game with Capacitor for iOS testing.
+1. **Tighter “yard” design**—risk/reward lanes in arena mode; open-world mode:
+   collision + climbable cover so kiting uses the map, not just empty space.
+2. **Economy depth**—more wall buys, door pricing curves, or an original
+   perk-style station (theming stays ours).
+3. **Enemy variety**—faster “runner” type, or armored head—same readability,
+   different cadence.
+4. **Presentation**—replace primitive zombie meshes with a single stylized GLB
+   + simple animations when gameplay is locked.
+5. **Capacitor**—when the web build is the source of truth, package for iOS.
 
 ## Cursor workflow
 
