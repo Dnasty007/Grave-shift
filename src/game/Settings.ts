@@ -12,6 +12,14 @@ export type SettingsState = {
   damageVignette: boolean;
   bloodFx: boolean;
   showHitMarker: boolean;
+  /** Multiplier on GAME_CONFIG.player.sprintSpeed (slider 50%–200%). */
+  sprintSpeedMultiplier: number;
+  /** Fly mode: hold V / Ctrl (Space = jump); skips terrain cling and gravity drop. */
+  flyMode: boolean;
+  /** Skip CollisionWorld + imported mesh collision; ignore terrain cling helpers. */
+  noclip: boolean;
+  /** When imported map replaces arena, block player with horizontal mesh raycasts. */
+  importMeshCollision: boolean;
 };
 
 const STORAGE_KEY = "grave-shift.settings.v1";
@@ -66,7 +74,11 @@ export class Settings {
       screenShake: true,
       damageVignette: true,
       bloodFx: true,
-      showHitMarker: true
+      showHitMarker: true,
+      sprintSpeedMultiplier: 1,
+      flyMode: false,
+      noclip: false,
+      importMeshCollision: true
     };
   }
 

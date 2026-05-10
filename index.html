@@ -162,6 +162,36 @@
           </div>
         </section>
 
+        <section id="map-select-screen" class="menu-screen" aria-hidden="true">
+          <div class="menu-backdrop"></div>
+          <div class="menu-content lobby-screen">
+            <p class="menu-tagline">Briefing</p>
+            <h2 class="menu-heading">SELECT MAP</h2>
+            <p class="lobby-hint">Each map changes how the horde arrives and how you move.</p>
+            <div id="lobby-map-cards" class="lobby-card-grid"></div>
+            <div class="menu-actions">
+              <button type="button" id="btn-lobby-map-back" class="menu-button menu-button-quiet">
+                Back
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section id="player-select-screen" class="menu-screen" aria-hidden="true">
+          <div class="menu-backdrop"></div>
+          <div class="menu-content lobby-screen">
+            <p class="menu-tagline">Loadout</p>
+            <h2 class="menu-heading">SELECT OPERATOR</h2>
+            <p class="lobby-hint">Same height as zombies; first-person body stays hidden to avoid clipping.</p>
+            <div id="lobby-player-cards" class="lobby-card-grid"></div>
+            <div class="menu-actions">
+              <button type="button" id="btn-lobby-player-back" class="menu-button menu-button-quiet">
+                Back
+              </button>
+            </div>
+          </div>
+        </section>
+
         <section id="pause-screen" class="menu-screen" aria-hidden="true">
           <div class="menu-backdrop"></div>
           <div class="menu-content">
@@ -228,6 +258,31 @@
               </div>
 
               <div class="settings-group">
+                <h3>Movement & Map</h3>
+                <label class="settings-row">
+                  <span>Sprint speed</span>
+                  <input id="setting-sprint-mult" type="range" min="50" max="200" step="5" />
+                  <span class="settings-value" id="setting-sprint-mult-value">100%</span>
+                </label>
+                <p class="settings-hint">Relative to the game’s default sprint pace. Hold Shift to sprint.</p>
+                <label class="settings-row settings-toggle">
+                  <span>Fly mode (V up, Ctrl down; Space = jump)</span>
+                  <input id="setting-fly-mode" type="checkbox" />
+                </label>
+                <label class="settings-row settings-toggle">
+                  <span>No clip (walk through walls)</span>
+                  <input id="setting-noclip" type="checkbox" />
+                </label>
+                <label class="settings-row settings-toggle">
+                  <span>Solid imported map (block walls)</span>
+                  <input id="setting-import-mesh-collision" type="checkbox" />
+                </label>
+                <p class="settings-hint">
+                  With solid map on, movement uses the Mineways mesh. Turn off or use No clip if you get stuck.
+                </p>
+              </div>
+
+              <div class="settings-group">
                 <h3>FX & UI</h3>
                 <label class="settings-row settings-toggle">
                   <span>Screen Shake</span>
@@ -269,6 +324,8 @@
                 <ul>
                   <li><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> — Move</li>
                   <li><kbd>Shift</kbd> — Sprint</li>
+                  <li><kbd>Space</kbd> — Jump</li>
+                  <li><kbd>V</kbd> / <kbd>Ctrl</kbd> — Fly up / down (enable Fly mode in Settings)</li>
                   <li><kbd>R</kbd> — Reload</li>
                   <li><kbd>E</kbd> / <kbd>F</kbd> — Use / Buy</li>
                   <li><kbd>Q</kbd> / <kbd>Tab</kbd> / Scroll — Swap weapons</li>

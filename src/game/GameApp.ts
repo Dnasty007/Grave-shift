@@ -1,20 +1,26 @@
 import * as pc from "playcanvas";
-import { GAME_CONFIG, MAP_CONFIG } from "./config";
+import type { AnimTrack } from "playcanvas";
+import { GAME_CONFIG, MAP_CONFIG, applyMapPreset, type MapPresetId } from "./config";
 import { AudioEngine } from "./AudioEngine";
 import { CollisionWorld } from "./CollisionWorld";
 import { Effects } from "./Effects";
 import { Hud } from "./Hud";
 import { InputManager } from "./InputManager";
 import { InteractionController } from "./Interactable";
-import { Map as ZoneMap } from "./Map";
+import { Map as ZoneMap, type MapBuildResult } from "./Map";
 import { MenuController } from "./MenuController";
 import { PlayerController } from "./PlayerController";
 import { ScreenEffects } from "./ScreenEffects";
 import { Settings } from "./Settings";
 import { WaveDirector } from "./WaveDirector";
 import { Weapon, WEAPON_DEFINITIONS, WeaponInventory } from "./Weapon";
-import { Zombie } from "./Zombie";
+import { Zombie, type EnemyModelKit } from "./Zombie";
 import type { Door } from "./Door";
+import {
+  applyPlayerModelPreset,
+  getPlayerVisualRuntime,
+  type PlayerModelId
+} from "./runSession";
 
 /**
  * Top-level game shell: owns the PlayCanvas `Application`, wires every subsystem, and runs the frame loop.
@@ -25,7 +31,7 @@ import type { Door } from "./Door";
  * | `update()`                 | Player, zombies, waves, interact prompt       |
  * | Open-world terrain blocks  | Feet stay on mesh; optional gravity drop      |
  * | `handleShot`               | Hits, kills, points, kill FX                   |
- * | `startRun` / `endRun`…     | PLAY, game over, pause, title                  |
+ * | `beginRunWithSetup` / `endRun`… | Lobby → play, game over, pause, title   |
  * | `configureScene`           | Fog / ambient / exposure look                  |
  */
 type GamePhase = "title" | "playing" | "paused" | "gameOver";
@@ -37,6 +43,21 @@ type RunStats = {
   shotsHit: number;
   startTime: number;
 };
+
+function kitFromContainerAsset(asset: pc.Asset): EnemyModelKit {
+  const res = asset.resource as pc.ContainerResource & { animations?: pc.Asset[] };
+  const byName = new Map<string, AnimTrack>();
+  for (const animAsset of res.animations ?? []) {
+    const tr = animAsset.resource as AnimTrack | undefined;
+    if (tr && typeof tr.name === "string") {
+      byName.set(tr.name, tr);
+    }
+  }
+  return {
+    instantiate: () => res.instantiateRenderEntity(),
+    getAnimTrack: (name: string) => byName.get(name)
+  };
+}
 
 const ZONE_FOR_DOOR_INDEX = ["loadingBay", "office", "powerYard"] as const;
 
@@ -71,7 +92,13 @@ export class GameApp {
   private playerGravityDropVelocity = 0;
   private playerGravityDropTargetY: number | null = null;
 
-  // --- Boot: PlayCanvas app, audio/FX, player, map load, wave director, HUD/menu bindings ---
+  private readonly enemyModelKits: EnemyModelKit[] = [];
+
+  /** Last lobby picks (restart / Run it back skips map & operator screens). */
+  private lastMapId: MapPresetId = "castle";
+  private lastPlayerId: PlayerModelId = "soldier";
+  private playerVisualLoadSerial = 0;
+  private sunEntity: pc.Entity | null = null;
 
   constructor(canvas: HTMLCanvasElement, hudRoot: HTMLElement) {
     this.canvas = canvas;
@@ -91,8 +118,24 @@ export class GameApp {
     this.effects = new Effects(this.app);
     this.screenEffects = new ScreenEffects(canvas, document.body, this.settings);
 
+    if (GAME_CONFIG.enemyVisual.useGltf) {
+      for (let i = 0; i < GAME_CONFIG.enemyVisual.gltfUrls.length; i++) {
+        const url = GAME_CONFIG.enemyVisual.gltfUrls[i];
+        const asset = new pc.Asset(`enemy-visual-${i}`, "container", { url });
+        this.app.assets.add(asset);
+        asset.on("error", (err: string) => {
+          console.warn(`[GameApp] Enemy glTF failed (${url}):`, err);
+        });
+        asset.ready(() => {
+          this.enemyModelKits.push(kitFromContainerAsset(asset));
+        });
+        this.app.assets.load(asset);
+      }
+    }
+
     this.collision = new CollisionWorld();
     this.inventory = new WeaponInventory("pistol");
+    this.map = new ZoneMap(this.app, this.collision);
 
     this.hud = new Hud(hudRoot, {
       onZombieFreezeToggle: () => {
@@ -102,12 +145,22 @@ export class GameApp {
       onDropToGroundClick: () => this.beginPlayerGravityDrop()
     });
     this.input = new InputManager(canvas, hudRoot);
-    this.player = new PlayerController(this.input, this.settings, this.inventory, this.collision);
+    this.player = new PlayerController(
+      this.input,
+      this.settings,
+      this.inventory,
+      this.collision,
+      this.map
+    );
 
     this.menus = new MenuController(document.body, this.settings, {
-      onStart: () => this.startRun(),
+      onBeginRun: (sel) => {
+        this.lastMapId = sel.mapId;
+        this.lastPlayerId = sel.playerId;
+        void this.beginRunWithSetup();
+      },
       onResume: () => this.resume(),
-      onRestart: () => this.startRun(),
+      onRestart: () => void this.beginRunWithSetup(),
       onReturnToTitle: () => this.returnToTitle(),
       onPauseToggleRequested: () => this.togglePause()
     });
@@ -119,17 +172,16 @@ export class GameApp {
     });
 
     this.interactions = new InteractionController();
-    this.map = new ZoneMap(this.app, this.collision);
 
     this.waveDirector = new WaveDirector(
       0,
       {
         onSpawn: ({ position, health, speed }) => {
-          const zombie = new Zombie(position, { health, speed }, this.collision);
+          const zombie = new Zombie(position, { health, speed }, this.collision, this.pickEnemyModelKit());
           this.zombies.push(zombie);
           this.app.root.addChild(zombie.root);
           if (MAP_CONFIG.importVisual.replacesArena && MAP_CONFIG.importVisual.snapFeetToGround) {
-            void this.map.snapEntityFeetToImportedGround(this.app, zombie.root, position.x, position.z);
+            this.map.snapEntityFeetToImportedGround(zombie.root, position.x, position.z, position.y);
           }
         },
         onWaveStarted: (wave) => {
@@ -140,7 +192,7 @@ export class GameApp {
           this.hud.setMessage(
             wave === 1
               ? open
-                ? "Stay moving. Use distance. Geometry is still pass-through for now."
+                ? "Stay moving. Use distance. Imported walls block you (disable in Settings if stuck)."
                 : "Hold the line. Reload often. Aim for the head."
               : open
                 ? "More of them. Keep kiting and aim for the head."
@@ -175,25 +227,22 @@ export class GameApp {
     this.app.root.addChild(this.player.root);
 
     this.configureScene();
+
+    if (MAP_CONFIG.importVisual.enabled) {
+      this.collision.clear();
+    }
     const built = this.map.build();
-    void this.map.loadImportedVisual(this.app).then(async () => {
+    this.wireArenaFromBuilt(built);
+    void this.map.loadImportedVisual(this.app).then(() => {
       if (MAP_CONFIG.importVisual.enabled) {
         this.player.setCameraFarClip(MAP_CONFIG.importVisual.cameraFarClip);
         if (MAP_CONFIG.importVisual.replacesArena && MAP_CONFIG.importVisual.snapFeetToGround) {
-          const ok = await this.map.snapPlayerFeetToImportedGround(this.app, this.player.root);
-          if (ok) {
+          if (this.map.snapPlayerFeetToImportedGround(this.player.root)) {
             this.renderHud();
           }
         }
       }
     });
-    this.doors.push(...built.doors);
-    for (const wallBuy of built.wallBuys) {
-      this.interactions.register(wallBuy);
-    }
-    for (const door of built.doors) {
-      this.interactions.register(door);
-    }
 
     this.menus.showTitle();
     this.input.setInputBlocked(true);
@@ -229,7 +278,7 @@ export class GameApp {
     }
 
     if (this.input.consumeRestartRequest() && this.phase === "gameOver") {
-      this.startRun();
+      void this.beginRunWithSetup();
       return;
     }
 
@@ -313,9 +362,15 @@ export class GameApp {
   // --- Open world: GLB terrain height — MAP_CONFIG.importVisual (cling + HUD “Drop to ground”) ---
 
   /**
-   * Open world: keep feet on the GLB while moving (XZ-only locomotion) using periodic depth samples.
+   * Open world: keep feet on the GLB while moving (XZ-only locomotion) using CPU ray tests.
    */
   private applyOpenWorldTerrainCling(dt: number): void {
+    if (this.settings.get().flyMode || this.settings.get().noclip) {
+      return;
+    }
+    if (this.player.suppressesTerrainCling()) {
+      return;
+    }
     if (
       this.phase !== "playing" ||
       !MAP_CONFIG.importVisual.replacesArena ||
@@ -334,15 +389,15 @@ export class GameApp {
     ) {
       this.terrainFollowTimer = 0;
       const pos = this.player.root.getPosition();
-      void this.map.sampleImportedTerrainY(this.app, pos.x, pos.z).then((y) => {
-        if (y == null || this.phase !== "playing") return;
+      const y = this.map.sampleImportedTerrainYNearFeet(pos.x, pos.z, pos.y);
+      if (y != null && this.phase === "playing") {
         const targetFeetY = y + up;
         const cur = this.player.root.getPosition();
         let newY = targetFeetY;
         if (newY > cur.y + maxStep) newY = cur.y + maxStep;
         if (newY < cur.y - maxStep) newY = cur.y - maxStep;
         this.player.root.setPosition(cur.x, newY, cur.z);
-      });
+      }
     }
 
     this.zombieTerrainTimer += dt;
@@ -356,15 +411,16 @@ export class GameApp {
         const zombie = alive[this.zombieTerrainCursor % alive.length]!;
         this.zombieTerrainCursor++;
         const p = zombie.getPosition();
-        void this.map.sampleImportedTerrainY(this.app, p.x, p.z).then((y) => {
-          if (y == null || this.phase !== "playing" || !zombie.alive) return;
-          const targetFeetY = y + up;
+        const yz = this.map.sampleImportedTerrainYNearFeet(p.x, p.z, p.y);
+        if (yz != null && this.phase === "playing" && zombie.alive) {
+          const targetFeetY = yz + up;
           const cur = zombie.getPosition();
           let newY = targetFeetY;
-          if (newY > cur.y + maxStep) newY = cur.y + maxStep;
-          if (newY < cur.y - maxStep) newY = cur.y - maxStep;
+          const zStep = GAME_CONFIG.zombie.terrainSnapMaxStepY;
+          if (newY > cur.y + zStep) newY = cur.y + zStep;
+          if (newY < cur.y - zStep) newY = cur.y - zStep;
           zombie.root.setPosition(cur.x, newY, cur.z);
-        });
+        }
       }
     }
   }
@@ -374,26 +430,33 @@ export class GameApp {
    */
   private beginPlayerGravityDrop(): void {
     if (this.phase !== "playing") return;
+    if (this.settings.get().flyMode || this.settings.get().noclip) return;
     if (!MAP_CONFIG.importVisual.replacesArena || !MAP_CONFIG.importVisual.snapFeetToGround) return;
     if (this.playerGravityDropActive) return;
 
     const p = this.player.root.getPosition();
-    void this.map.sampleImportedTerrainY(this.app, p.x, p.z).then((y) => {
-      if (y == null || this.phase !== "playing") return;
-      const targetFeetY = y + MAP_CONFIG.importVisual.groundSnapClearance;
-      const here = this.player.root.getPosition();
-      if (here.y <= targetFeetY + 0.04) {
-        this.player.root.setPosition(here.x, targetFeetY, here.z);
-        return;
-      }
-      this.playerGravityDropTargetY = targetFeetY;
-      this.playerGravityDropVelocity = 0;
-      this.playerGravityDropActive = true;
-      this.renderHud();
-    });
+    const y = this.map.sampleImportedTerrainYNearFeet(p.x, p.z, p.y);
+    if (y == null || this.phase !== "playing") return;
+    const targetFeetY = y + MAP_CONFIG.importVisual.groundSnapClearance;
+    const here = this.player.root.getPosition();
+    if (here.y <= targetFeetY + 0.04) {
+      this.player.root.setPosition(here.x, targetFeetY, here.z);
+      return;
+    }
+    this.playerGravityDropTargetY = targetFeetY;
+    this.playerGravityDropVelocity = 0;
+    this.playerGravityDropActive = true;
+    this.renderHud();
   }
 
   private applyPlayerGravityDrop(dt: number): void {
+    if (this.settings.get().flyMode || this.settings.get().noclip) {
+      this.playerGravityDropActive = false;
+      this.playerGravityDropTargetY = null;
+      this.playerGravityDropVelocity = 0;
+      return;
+    }
+
     if (!this.playerGravityDropActive || this.playerGravityDropTargetY == null) return;
 
     const p = this.player.root.getPosition();
@@ -528,7 +591,46 @@ export class GameApp {
 
   // --- Session: start run, game over, pause, return to title ---
 
-  private startRun(): void {
+  private wireArenaFromBuilt(built: MapBuildResult): void {
+    this.doors.length = 0;
+    if (MAP_CONFIG.importVisual.enabled) {
+      return;
+    }
+    this.doors.push(...built.doors);
+    for (const wallBuy of built.wallBuys) {
+      this.interactions.register(wallBuy);
+    }
+    for (const door of built.doors) {
+      this.interactions.register(door);
+    }
+  }
+
+  private loadPlayerCharacterModel(): Promise<void> {
+    const cfg = getPlayerVisualRuntime();
+    if (!cfg.useGltf) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const serial = ++this.playerVisualLoadSerial;
+      const asset = new pc.Asset(`player-v-${serial}`, "container", { url: cfg.gltfUrl });
+      asset.on("error", (err: string) => {
+        console.warn(`[GameApp] Player glTF failed (${cfg.gltfUrl}):`, err);
+        resolve();
+      });
+      asset.ready(() => {
+        if (serial !== this.playerVisualLoadSerial) {
+          resolve();
+          return;
+        }
+        this.player.attachCharacterModel(kitFromContainerAsset(asset));
+        resolve();
+      });
+      this.app.assets.add(asset);
+      this.app.assets.load(asset);
+    });
+  }
+
+  private async beginRunWithSetup(): Promise<void> {
     for (const zombie of this.zombies) {
       zombie.root.destroy();
     }
@@ -542,13 +644,26 @@ export class GameApp {
     this.playerGravityDropActive = false;
     this.playerGravityDropVelocity = 0;
     this.playerGravityDropTargetY = null;
+
+    applyMapPreset(this.lastMapId);
+    applyPlayerModelPreset(this.lastPlayerId);
+
+    const built = await this.map.rebuildWorld(this.app);
+    this.configureScene();
+
+    if (MAP_CONFIG.importVisual.enabled) {
+      this.player.setCameraFarClip(MAP_CONFIG.importVisual.cameraFarClip);
+    }
+
     this.inventory.reset("pistol");
     this.player.reset();
+    await this.loadPlayerCharacterModel();
     this.player.notifyWeaponInventoryChanged();
     this.waveDirector.reset();
     this.map.reset();
 
     this.interactions.clear();
+    this.wireArenaFromBuilt(built);
     this.rebuildInteractions();
 
     this.phase = "playing";
@@ -578,14 +693,15 @@ export class GameApp {
 
     this.menus.hide();
     this.input.requestPointerLockIfNeeded();
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     this.renderHud();
 
     if (MAP_CONFIG.importVisual.replacesArena && MAP_CONFIG.importVisual.snapFeetToGround) {
-      void this.map.snapPlayerFeetToImportedGround(this.app, this.player.root).then((ok) => {
-        if (ok) {
-          this.renderHud();
-        }
-      });
+      if (this.map.snapPlayerFeetToImportedGround(this.player.root)) {
+        this.renderHud();
+      }
     }
   }
 
@@ -644,6 +760,9 @@ export class GameApp {
     this.audio.setDroneIntensity(Math.min(1, this.waveDirector.currentWave * 0.18));
     this.menus.hide();
     this.input.requestPointerLockIfNeeded();
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
   }
 
   private returnToTitle(): void {
@@ -722,37 +841,76 @@ export class GameApp {
   // --- Scene look: ambient, fog ranges, sun key light (open-world vs arena) ---
 
   private configureScene(): void {
-    this.app.scene.ambientLight = new pc.Color(0.13, 0.1, 0.08);
-    this.app.scene.exposure = 1.05;
-    this.app.scene.fog.type = pc.FOG_LINEAR;
-    if (MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena) {
-      this.app.scene.fog.start = 85;
-      this.app.scene.fog.end = 780;
-    } else if (MAP_CONFIG.importVisual.enabled) {
-      this.app.scene.fog.start = 38;
-      this.app.scene.fog.end = 210;
+    if (this.sunEntity) {
+      this.sunEntity.destroy();
+      this.sunEntity = null;
+    }
+
+    const openImport =
+      MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena;
+
+    if (MAP_CONFIG.importVisual.enabled) {
+      // Daytime readability for Mineways / large imports (was night-orange + dark fog).
+      this.app.scene.ambientLight = new pc.Color(0.42, 0.48, 0.55);
+      this.app.scene.exposure = 1.25;
+      this.app.scene.fog.type = pc.FOG_LINEAR;
+      if (openImport) {
+        this.app.scene.fog.start = 120;
+        this.app.scene.fog.end = 900;
+      } else {
+        this.app.scene.fog.start = 50;
+        this.app.scene.fog.end = 240;
+      }
+      this.app.scene.fog.color = new pc.Color(0.62, 0.72, 0.85);
     } else {
+      this.app.scene.ambientLight = new pc.Color(0.13, 0.1, 0.08);
+      this.app.scene.exposure = 1.05;
+      this.app.scene.fog.type = pc.FOG_LINEAR;
       this.app.scene.fog.start = 22;
       this.app.scene.fog.end = 70;
+      this.app.scene.fog.color = new pc.Color(0.04, 0.03, 0.04);
     }
-    this.app.scene.fog.color = new pc.Color(0.04, 0.03, 0.04);
 
     const sun = new pc.Entity("sun");
-    sun.addComponent("light", {
-      type: "directional",
-      castShadows: false,
-      color: new pc.Color(0.7, 0.4, 0.22),
-      intensity: 0.45
-    });
-    sun.setEulerAngles(58, 32, 0);
+    if (MAP_CONFIG.importVisual.enabled) {
+      sun.addComponent("light", {
+        type: "directional",
+        castShadows: false,
+        color: new pc.Color(1, 0.96, 0.88),
+        intensity: 1.15
+      });
+      sun.setEulerAngles(52, -35, 0);
+    } else {
+      sun.addComponent("light", {
+        type: "directional",
+        castShadows: false,
+        color: new pc.Color(0.7, 0.4, 0.22),
+        intensity: 0.45
+      });
+      sun.setEulerAngles(58, 32, 0);
+    }
     this.app.root.addChild(sun);
+    this.sunEntity = sun;
   }
 
   private targetPixelRatio(): number {
+    const openImport =
+      MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena;
     if (window.matchMedia("(pointer: coarse)").matches) {
-      return Math.min(window.devicePixelRatio, 1.3);
+      return Math.min(window.devicePixelRatio, openImport ? 1.15 : 1.3);
     }
-    return Math.min(window.devicePixelRatio, 1.8);
+    return Math.min(window.devicePixelRatio, openImport ? 1.45 : 1.8);
+  }
+
+  private pickEnemyModelKit(): EnemyModelKit | null {
+    if (!GAME_CONFIG.enemyVisual.useGltf || this.enemyModelKits.length === 0) {
+      return null;
+    }
+    const kits = this.enemyModelKits;
+    if (GAME_CONFIG.enemyVisual.randomizeVariant && kits.length > 1) {
+      return kits[Math.floor(Math.random() * kits.length)]!;
+    }
+    return kits[0]!;
   }
 }
 

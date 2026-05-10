@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "check": "tsc --noEmit",
-    "convert-map": "obj2gltf -i public/maps/Map1test.obj -o public/maps/Map1test.glb -b"
+    "convert-map": "obj2gltf -i public/maps/world.obj -o public/maps/world.glb -b"
   },
   "dependencies": {
     "playcanvas": "^2.18.0"

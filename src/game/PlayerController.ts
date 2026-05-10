@@ -1,13 +1,16 @@
 import * as pc from "playcanvas";
+import type { AnimTrack } from "playcanvas";
 import { GAME_CONFIG, MAP_CONFIG } from "./config";
 import { clamp, raySphereIntersection } from "./math";
 import type { CollisionWorld } from "./CollisionWorld";
 import type { InputManager } from "./InputManager";
-import type { Settings } from "./Settings";
+import type { Settings, SettingsState } from "./Settings";
 import type { Weapon, WeaponInventory } from "./Weapon";
 import { WEAPON_DEFINITIONS } from "./Weapon";
 import { WeaponViewmodel } from "./WeaponViewmodel";
-import type { Zombie } from "./Zombie";
+import type { EnemyModelKit, Zombie } from "./Zombie";
+import type { Map as GameMap } from "./Map";
+import { getPlayerVisualRuntime } from "./runSession";
 
 /**
  * First-person rig + combat for one `player` entity.
@@ -49,6 +52,7 @@ export class PlayerController {
   private readonly inventory: WeaponInventory;
   private readonly viewmodel: WeaponViewmodel;
   private readonly collision: CollisionWorld;
+  private readonly gameMap: GameMap;
 
   private yaw = 0;
   private pitch = -6;
@@ -57,24 +61,35 @@ export class PlayerController {
   private didFireThisFrame = false;
   private lastDamageDirection: { x: number; y: number } | null = null;
   private recoilPitchKick = 0;
+  /** Jump / fall vertical speed on feet (ignored in fly or noclip). */
+  private verticalVelocity = 0;
+  private characterVisual: pc.Entity | null = null;
+  private characterAnim: pc.AnimComponent | null = null;
+  private resolveCharacterAnim: ((name: string) => AnimTrack | undefined) | null = null;
+  private characterLocoMode: "walk" | "run" | null = null;
 
-  // --- Construction: camera + subscribe FOV; eye height from MAP_CONFIG in open world ---
+  // --- Construction: camera + subscribe FOV; imported mode uses 1.7 m eye height ---
 
   constructor(
     input: InputManager,
     settings: Settings,
     inventory: WeaponInventory,
-    collision: CollisionWorld
+    collision: CollisionWorld,
+    gameMap: GameMap
   ) {
     this.input = input;
     this.settings = settings;
     this.inventory = inventory;
     this.collision = collision;
+    this.gameMap = gameMap;
 
+    const importOn = MAP_CONFIG.importVisual.enabled;
     const openWorld =
       MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena;
     this.camera.addComponent("camera", {
-      clearColor: new pc.Color(0.02, 0.03, 0.05),
+      clearColor: importOn
+        ? new pc.Color(0.55, 0.68, 0.82)
+        : new pc.Color(0.02, 0.03, 0.05),
       farClip: openWorld ? MAP_CONFIG.importVisual.cameraFarClip : 200,
       fov: settings.get().fov
     });
@@ -98,12 +113,13 @@ export class PlayerController {
     this.reset();
   }
 
-  // --- Camera tuning: pivot Y = eye height; far clip set from GameApp for big maps ---
+  // --- Camera tuning: pivot Y = 1.7 when GLB import is on (arena: 1.65) ---
 
+  /** Eye height: import mode uses `GAME_CONFIG.player.importEyeHeightAboveFeet` (tune with voxel rig scale). */
   private applyCameraPivotHeight(): void {
-    const openWorld =
-      MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena;
-    const y = openWorld ? MAP_CONFIG.importVisual.playerEyeHeight : 1.65;
+    const y = MAP_CONFIG.importVisual.enabled
+      ? GAME_CONFIG.player.importEyeHeightAboveFeet
+      : 1.65;
     this.pivot.setLocalPosition(0, y, 0);
   }
 
@@ -112,6 +128,106 @@ export class PlayerController {
     if (cameraComponent) {
       cameraComponent.farClip = distance;
     }
+  }
+
+  /**
+   * Attach a Blockbench / Hytopia glTF under `root` (same `voxelAvatar` scale as zombies).
+   * Body renders are optional (`playerVisual.hideBodyInFirstPerson`).
+   */
+  attachCharacterModel(kit: EnemyModelKit): void {
+    if (this.characterVisual) {
+      this.characterVisual.destroy();
+      this.characterVisual = null;
+      this.characterAnim = null;
+      this.resolveCharacterAnim = null;
+      this.characterLocoMode = null;
+    }
+    let ent: pc.Entity;
+    try {
+      ent = kit.instantiate();
+    } catch (e) {
+      console.warn("[PlayerController] glTF instantiate failed.", e);
+      return;
+    }
+    ent.name = "player-gltf";
+    const av = GAME_CONFIG.voxelAvatar;
+    const s = av.modelScale;
+    ent.setLocalScale(s, s, s);
+    ent.setLocalPosition(0, av.yOffset, 0);
+    ent.setLocalEulerAngles(0, av.yawOffsetDeg, 0);
+    this.root.insertChild(ent, 0);
+    if (getPlayerVisualRuntime().hideBodyInFirstPerson) {
+      const renders = ent.findComponents("render") as pc.RenderComponent[];
+      for (let i = 0; i < renders.length; i++) {
+        renders[i].enabled = false;
+      }
+    }
+    this.attachPlayerLocomotion(ent, kit);
+    this.characterVisual = ent;
+  }
+
+  private attachPlayerLocomotion(visual: pc.Entity, kit: EnemyModelKit): void {
+    visual.addComponent("anim");
+    this.characterAnim = visual.anim ?? null;
+    if (!this.characterAnim) {
+      return;
+    }
+    const pv = getPlayerVisualRuntime();
+    const walk = kit.getAnimTrack(pv.animWalkName);
+    const run = kit.getAnimTrack(pv.animRunName);
+    const fallback = kit.getAnimTrack(pv.animFallbackName);
+    const track = walk ?? run ?? fallback;
+    if (!track) {
+      console.warn("[PlayerController] No glTF clips matched player anim names.");
+      return;
+    }
+    this.resolveCharacterAnim = kit.getAnimTrack.bind(kit);
+    this.characterAnim.activate = true;
+    this.characterAnim.playing = true;
+    this.characterAnim.assignAnimation("Locomotion", track, undefined, 1, true);
+    this.characterLocoMode = walk ? "walk" : run ? "run" : "walk";
+  }
+
+  private updatePlayerCharacterLocomotion(
+    settingsState: SettingsState,
+    moveInput: { x: number; y: number }
+  ): void {
+    if (!this.characterAnim || !this.resolveCharacterAnim) {
+      return;
+    }
+    const pv = getPlayerVisualRuntime();
+    const fly = settingsState.flyMode;
+    const noclip = settingsState.noclip;
+    const hasMove =
+      !fly &&
+      !noclip &&
+      (Math.abs(moveInput.x) > 0.001 || Math.abs(moveInput.y) > 0.001);
+
+    if (!hasMove || this.currentSpeed < pv.animIdleThreshold) {
+      this.characterAnim.speed = 0;
+      return;
+    }
+
+    const runTrack = this.resolveCharacterAnim(pv.animRunName);
+    const wantRun =
+      this.input.isSprinting() && this.currentSpeed >= pv.animRunMinSpeed && !!runTrack;
+    const mode: "walk" | "run" = wantRun ? "run" : "walk";
+    const clipName = mode === "run" ? pv.animRunName : pv.animWalkName;
+    let track = this.resolveCharacterAnim(clipName);
+    if (!track) {
+      track =
+        this.resolveCharacterAnim(pv.animWalkName) ??
+        this.resolveCharacterAnim(pv.animRunName) ??
+        this.resolveCharacterAnim(pv.animFallbackName);
+    }
+    if (track && this.characterLocoMode !== mode) {
+      this.characterAnim.assignAnimation("Locomotion", track, undefined, 1, true);
+      this.characterLocoMode = mode;
+    }
+
+    const ref = GAME_CONFIG.player.moveSpeed;
+    const mul = pc.math.clamp(this.currentSpeed / ref, pv.animSpeedMin, pv.animSpeedMax);
+    this.characterAnim.speed = mul * pv.animBaseSpeed;
   }
 
   // --- World/camera readouts + reload state (HUD, FX, interactions) ---
@@ -151,6 +267,7 @@ export class PlayerController {
     this.fireCooldown = 0;
     this.currentSpeed = 0;
     this.recoilPitchKick = 0;
+    this.verticalVelocity = 0;
     this.lastDamageDirection = null;
 
     if (MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena) {
@@ -194,6 +311,150 @@ export class PlayerController {
     this.fireCooldown = Math.max(this.fireCooldown, 0.3);
   }
 
+  /**
+   * True while jumping/falling so `GameApp` terrain cling does not cancel airborne motion.
+   */
+  suppressesTerrainCling(): boolean {
+    if (Math.abs(this.verticalVelocity) > 0.2) {
+      return true;
+    }
+    const pos = this.root.getPosition();
+    if (!MAP_CONFIG.importVisual.enabled) {
+      return false;
+    }
+    const g = this.gameMap.sampleImportedTerrainYNearFeet(pos.x, pos.z, pos.y);
+    if (g == null) {
+      return false;
+    }
+    const feet = g + MAP_CONFIG.importVisual.groundSnapClearance;
+    return pos.y > feet + 0.055;
+  }
+
+  private applyJumpAndGravity(dt: number, settingsState: SettingsState): void {
+    if (settingsState.flyMode) {
+      return;
+    }
+
+    const pos = this.root.getPosition();
+    const clearance = MAP_CONFIG.importVisual.groundSnapClearance;
+    let groundY: number | null;
+
+    if (MAP_CONFIG.importVisual.enabled) {
+      groundY = this.gameMap.sampleImportedTerrainYNearFeet(pos.x, pos.z, pos.y);
+    } else {
+      groundY = 0;
+    }
+    if (groundY == null || !Number.isFinite(groundY)) {
+      void this.input.consumeJumpRequest();
+      return;
+    }
+
+    const feetTarget = groundY + clearance;
+    const onGround = pos.y <= feetTarget + 0.085 && this.verticalVelocity <= 0.45;
+
+    const wantJump = this.input.consumeJumpRequest();
+    if (wantJump && onGround) {
+      this.verticalVelocity = GAME_CONFIG.player.jumpImpulse;
+    }
+
+    this.verticalVelocity -= GAME_CONFIG.player.jumpGravity * dt;
+
+    let y = pos.y + this.verticalVelocity * dt;
+    if (y < feetTarget) {
+      y = feetTarget;
+      if (this.verticalVelocity < 0) {
+        this.verticalVelocity = 0;
+      }
+    }
+    this.root.setPosition(pos.x, y, pos.z);
+  }
+
+  /**
+   * When mesh collision clips XZ, snap feet onto the next tread / lip. Uses both a "stuck" path
+   * and a forward ground probe so voxels stairs work before movement is fully zeroed.
+   */
+  private tryImportedMeshAutoStep(
+    current: pc.Vec3,
+    after: pc.Vec3,
+    target: pc.Vec3,
+    settingsState: SettingsState
+  ): pc.Vec3 {
+    if (!MAP_CONFIG.importVisual.enabled || !MAP_CONFIG.importVisual.replacesArena) {
+      return after;
+    }
+    if (!settingsState.importMeshCollision || settingsState.flyMode || settingsState.noclip) {
+      return after;
+    }
+
+    const cfg = GAME_CONFIG.player;
+    const up = MAP_CONFIG.importVisual.groundSnapClearance;
+    const maxRise = cfg.importAutoStepMaxRise;
+    const bias = cfg.importAutoStepGroundRefBias;
+
+    const flatInX = target.x - current.x;
+    const flatInZ = target.z - current.z;
+    const lenIn = Math.hypot(flatInX, flatInZ);
+    if (lenIn < 0.035) {
+      return after;
+    }
+
+    const dirX = flatInX / lenIn;
+    const dirZ = flatInZ / lenIn;
+
+    const flatOutX = after.x - current.x;
+    const flatOutZ = after.z - current.z;
+    const lenOut = Math.hypot(flatOutX, flatOutZ);
+    const stuck = lenOut < lenIn * cfg.importAutoStepStuckRatio;
+
+    const considerFeet = (groundY: number | null): number | null => {
+      if (groundY == null || !Number.isFinite(groundY)) {
+        return null;
+      }
+      const targetFeet = groundY + up;
+      if (targetFeet > after.y + 0.016 && targetFeet <= after.y + maxRise + 0.1) {
+        return targetFeet;
+      }
+      return null;
+    };
+
+    let bestFeet: number | null = null;
+    const pushFeet = (feet: number | null) => {
+      if (feet == null) return;
+      if (bestFeet == null || feet > bestFeet) {
+        bestFeet = feet;
+      }
+    };
+
+    const gx = (x: number, z: number, refY: number) =>
+      considerFeet(this.gameMap.sampleImportedTerrainYNearFeet(x, z, refY));
+
+    const probe = cfg.importAutoStepProbeAhead;
+
+    if (stuck) {
+      const refStuck = Math.max(after.y, current.y) + bias;
+      pushFeet(gx(after.x + dirX * probe, after.z + dirZ * probe, refStuck));
+      pushFeet(
+        gx(
+          current.x + dirX * probe * 0.52,
+          current.z + dirZ * probe * 0.52,
+          current.y + maxRise * 0.92
+        )
+      );
+    }
+
+    const lead = Math.min(
+      cfg.importAutoStepLeadForward,
+      Math.max(lenIn + PLAYER_RADIUS * 0.98, PLAYER_RADIUS * 1.12)
+    );
+    const refFwd = current.y + Math.min(maxRise * 0.64, 0.55);
+    pushFeet(gx(current.x + dirX * lead, current.z + dirZ * lead, refFwd));
+
+    if (bestFeet != null) {
+      return new pc.Vec3(after.x, bestFeet, after.z);
+    }
+    return after;
+  }
+
   // --- Main tick: movement (XZ + collision), look, reload, firing ---
 
   update(dt: number, zombies: Zombie[]): ShotResult | null {
@@ -234,7 +495,8 @@ export class PlayerController {
     }
 
     let speed = this.input.isSprinting()
-      ? GAME_CONFIG.player.sprintSpeed
+      ? GAME_CONFIG.player.sprintSpeed *
+        clamp(settingsState.sprintSpeedMultiplier, 0.5, 2.5)
       : GAME_CONFIG.player.moveSpeed;
 
     if (MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena) {
@@ -242,18 +504,59 @@ export class PlayerController {
     }
 
     const currentPosition = this.root.getPosition().clone();
-    const targetPosition = currentPosition
+    let targetPosition = currentPosition
       .clone()
       .add(desiredMovement.mulScalar(speed * dt));
 
-    const resolved = this.collision.resolvePlayerMovement(
-      currentPosition,
-      targetPosition,
-      PLAYER_RADIUS
-    );
-    this.root.setPosition(resolved);
+    const fly = settingsState.flyMode;
+    const noclip = settingsState.noclip;
 
-    this.currentSpeed = currentPosition.distance(resolved) / Math.max(0.0001, dt);
+    if (fly) {
+      let flyDelta = 0;
+      if (this.input.isFlyAscend()) flyDelta += 1;
+      if (this.input.isFlyDescend()) flyDelta -= 1;
+      if (flyDelta !== 0) {
+        targetPosition.y += flyDelta * GAME_CONFIG.player.flyVerticalSpeed * dt;
+      }
+    }
+
+    if (fly || noclip) {
+      this.root.setPosition(targetPosition);
+    } else {
+      const resolved = this.collision.resolvePlayerMovement(
+        currentPosition,
+        targetPosition,
+        PLAYER_RADIUS
+      );
+      let after = resolved;
+      if (
+        MAP_CONFIG.importVisual.enabled &&
+        MAP_CONFIG.importVisual.replacesArena &&
+        settingsState.importMeshCollision
+      ) {
+        after = this.gameMap.resolveImportedWallCollision(
+          currentPosition,
+          resolved,
+          PLAYER_RADIUS
+        );
+        after = this.tryImportedMeshAutoStep(currentPosition, after, targetPosition, settingsState);
+        after = this.gameMap.resolveImportedWallCollision(
+          currentPosition,
+          after,
+          PLAYER_RADIUS,
+          after.y
+        );
+      }
+      this.root.setPosition(after);
+    }
+
+    if (!fly) {
+      this.applyJumpAndGravity(dt, settingsState);
+    }
+
+    this.currentSpeed = currentPosition.distance(this.root.getPosition()) / Math.max(0.0001, dt);
+
+    this.updatePlayerCharacterLocomotion(settingsState, moveInput);
 
     const weapon = this.inventory.getCurrent();
     const internal = weapon as Weapon & { _isReloading?: boolean; _reloadTimer?: number };

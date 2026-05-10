@@ -29,6 +29,8 @@ export class InputManager {
   private fireHeld = false;
   private restartRequested = false;
   private reloadRequested = false;
+  /** Space: one-shot jump (consumed by PlayerController). */
+  private jumpRequested = false;
   private gameOver = false;
   private paused = false;
   private inputBlocked = false;
@@ -103,6 +105,7 @@ export class InputManager {
     this.paused = paused;
     if (paused) {
       this.fireHeld = false;
+      this.jumpRequested = false;
       this.accumulatedLookX = 0;
       this.accumulatedLookY = 0;
       if (document.pointerLockElement === this.canvas) {
@@ -115,6 +118,7 @@ export class InputManager {
     this.inputBlocked = blocked;
     if (blocked) {
       this.fireHeld = false;
+      this.jumpRequested = false;
     }
   }
 
@@ -179,6 +183,27 @@ export class InputManager {
     return this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
   }
 
+  /**
+   * Fly mode: move up (V — Space is reserved for jump so it doesn’t activate focused UI buttons).
+   */
+  isFlyAscend(): boolean {
+    if (this.paused || this.inputBlocked) return false;
+    return this.keys.has("KeyV");
+  }
+
+  /** True once per Space press; clears after read (not used while fly mode handles vertical). */
+  consumeJumpRequest(): boolean {
+    const r = this.jumpRequested;
+    this.jumpRequested = false;
+    return r;
+  }
+
+  /** Fly mode: move down (Ctrl). */
+  isFlyDescend(): boolean {
+    if (this.paused || this.inputBlocked) return false;
+    return this.keys.has("ControlLeft") || this.keys.has("ControlRight");
+  }
+
   consumeRestartRequest(): boolean {
     const requested = this.restartRequested;
     this.restartRequested = false;
@@ -214,6 +239,15 @@ export class InputManager {
         event.preventDefault();
         this.callbacks.onPauseRequested?.();
         return;
+      }
+
+      if (event.code === "Space") {
+        if (!this.paused && !this.inputBlocked && !event.repeat) {
+          this.jumpRequested = true;
+        }
+        if (document.pointerLockElement === this.canvas) {
+          event.preventDefault();
+        }
       }
 
       if (event.code === "KeyR") {

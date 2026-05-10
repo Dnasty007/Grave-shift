@@ -55,3 +55,52 @@ export function raySphereIntersection(
 
   return null;
 }
+
+/**
+ * Möller–Trumbore ray–triangle. Ray: origin + t * dir (dir must be unit length).
+ * Returns t > 0 along the ray, or null.
+ */
+export function rayIntersectTriangle(
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  v0x: number,
+  v0y: number,
+  v0z: number,
+  v1x: number,
+  v1y: number,
+  v1z: number,
+  v2x: number,
+  v2y: number,
+  v2z: number
+): number | null {
+  const eps = 1e-10;
+  const e1x = v1x - v0x;
+  const e1y = v1y - v0y;
+  const e1z = v1z - v0z;
+  const e2x = v2x - v0x;
+  const e2y = v2y - v0y;
+  const e2z = v2z - v0z;
+  const hx = dy * e2z - dz * e2y;
+  const hy = dz * e2x - dx * e2z;
+  const hz = dx * e2y - dy * e2x;
+  const a = e1x * hx + e1y * hy + e1z * hz;
+  if (a > -eps && a < eps) return null;
+  const f = 1 / a;
+  const sx = ox - v0x;
+  const sy = oy - v0y;
+  const sz = oz - v0z;
+  const u = f * (sx * hx + sy * hy + sz * hz);
+  if (u < 0 || u > 1) return null;
+  const qx = sy * e1z - sz * e1y;
+  const qy = sz * e1x - sx * e1z;
+  const qz = sx * e1y - sy * e1x;
+  const v = f * (dx * qx + dy * qy + dz * qz);
+  if (v < 0 || u + v > 1) return null;
+  const t = f * (e2x * qx + e2y * qy + e2z * qz);
+  if (t > eps) return t;
+  return null;
+}

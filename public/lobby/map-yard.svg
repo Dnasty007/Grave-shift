@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+  <defs>
+    <linearGradient id="night" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1210"/>
+      <stop offset="100%" stop-color="#0a0606"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="360" fill="url(#night)"/>
+  <rect x="0" y="260" width="640" height="100" fill="#141008"/>
+  <rect x="40" y="120" width="560" height="8" fill="#ff6a2a" opacity="0.45"/>
+  <rect x="60" y="60" width="24" height="200" fill="#2a2018"/>
+  <rect x="556" y="60" width="24" height="200" fill="#2a2018"/>
+  <circle cx="120" cy="100" r="28" fill="#ffd27a" opacity="0.85"/>
+  <circle cx="520" cy="95" r="22" fill="#ffd27a" opacity="0.65"/>
+  <text x="24" y="44" fill="#ffb060" font-family="system-ui,sans-serif" font-size="22" font-weight="800">INDUSTRIAL YARD</text>
+</svg>

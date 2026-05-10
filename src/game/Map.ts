@@ -1,5 +1,6 @@
 import * as pc from "playcanvas";
 import { MAP_CONFIG } from "./config";
+import { rayIntersectTriangle } from "./math";
 import { CollisionWorld } from "./CollisionWorld";
 import { Door } from "./Door";
 import { SpawnGate } from "./SpawnGate";
@@ -50,8 +51,17 @@ export class Map {
   private readonly openedZones = new Set<ZoneId>(["hub"]);
 
   private importedMapRoot: pc.Entity | null = null;
-  private terrainPicker: pc.Picker | null = null;
-  private terrainSnapCam: pc.Entity | null = null;
+  private importedMapAsset: pc.Asset | null = null;
+  private mapAssetSerial = 0;
+
+  /** Scratch for wall-hit world position (foliage pass-through, no per-triangle alloc). */
+  private readonly wallHitLocal = new pc.Vec3();
+  private readonly wallHitWorld = new pc.Vec3();
+
+  private readonly meshGeometryCache = new WeakMap<
+    pc.Mesh,
+    { positions: Float32Array; indexBuf: Uint16Array | Uint32Array | null }
+  >();
 
   private readonly lampMaterial: pc.StandardMaterial;
   private readonly groundMaterial: pc.StandardMaterial;
@@ -63,12 +73,14 @@ export class Map {
   private flickerPhase = 0;
   private flickerStrength = 0;
 
-  private readonly replacesArena =
-    MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena;
+  private get replacesArena(): boolean {
+    return MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena;
+  }
 
   /** Old “dollhouse” mode: import visible but keep procedural yard + collision. */
-  private readonly hideProceduralDecor =
-    MAP_CONFIG.importVisual.enabled && !MAP_CONFIG.importVisual.replacesArena;
+  private get hideProceduralDecor(): boolean {
+    return MAP_CONFIG.importVisual.enabled && !MAP_CONFIG.importVisual.replacesArena;
+  }
 
   constructor(app: pc.Application, collision: CollisionWorld) {
     this.app = app;
@@ -103,10 +115,11 @@ export class Map {
     this.lampMaterial.update();
   }
 
-  // --- Arena build pipeline (skipped entirely when `replacesArena`) ---
+  // --- Arena build pipeline (skipped when import is on: no procedural mesh, no 2D box collision) ---
 
   build(): MapBuildResult {
-    if (this.replacesArena) {
+    if (MAP_CONFIG.importVisual.enabled) {
+      this.collision.clear();
       return { doors: [], wallBuys: [], spawnGates: [] };
     }
 
@@ -131,7 +144,7 @@ export class Map {
   }
 
   reset(): void {
-    if (this.replacesArena) {
+    if (MAP_CONFIG.importVisual.enabled) {
       return;
     }
 
@@ -219,6 +232,42 @@ export class Map {
     return this.root;
   }
 
+  private unloadImportedMapAsset(app: pc.Application): void {
+    if (this.importedMapAsset) {
+      app.assets.remove(this.importedMapAsset);
+      this.importedMapAsset = null;
+    }
+  }
+
+  /** Destroys all world entities and clears arena/import bookkeeping (before `build` + `loadImportedVisual`). */
+  teardownWorld(app: pc.Application): void {
+    this.unloadImportedMapAsset(app);
+    const children = this.root.children;
+    while (children.length > 0) {
+      children[0].destroy();
+    }
+    this.importedMapRoot = null;
+    this.doors.length = 0;
+    this.gates.length = 0;
+    this.wallBuys.length = 0;
+    for (const z of Object.keys(this.doorsByZone) as ZoneId[]) {
+      this.doorsByZone[z].length = 0;
+      this.gatesByZone[z].length = 0;
+    }
+    this.lampLights.length = 0;
+    this.openedZones.clear();
+    this.openedZones.add("hub");
+    this.collision.clear();
+  }
+
+  /** Full reload when switching map mode at run start (import vs procedural yard). */
+  async rebuildWorld(app: pc.Application): Promise<MapBuildResult> {
+    this.teardownWorld(app);
+    const built = this.build();
+    await this.loadImportedVisual(app);
+    return built;
+  }
+
   // --- Imported Mineways mesh (`MAP_CONFIG.importVisual.glbUrl`) ---
 
   /**
@@ -230,9 +279,14 @@ export class Map {
       return Promise.resolve();
     }
 
+    this.unloadImportedMapAsset(app);
+
     return new Promise((resolve) => {
       const { glbUrl } = MAP_CONFIG.importVisual;
-      const asset = new pc.Asset("imported-map", "container", { url: glbUrl });
+      const asset = new pc.Asset(`imported-map-${++this.mapAssetSerial}`, "container", {
+        url: glbUrl
+      });
+      this.importedMapAsset = asset;
       asset.on("error", (err: string) => {
         console.warn("[Map] Could not load imported map:", err);
         resolve();
@@ -275,79 +329,412 @@ export class Map {
     });
   }
 
-  // --- Terrain height under (wx,wz): median depth picks for feet / cling ---
+  /** One-time copy of mesh positions + index buffer for CPU ray tests (hot path). */
+  private getCachedMeshGeometry(mesh: pc.Mesh): {
+    positions: Float32Array;
+    indexBuf: Uint16Array | Uint32Array | null;
+  } | null {
+    const existing = this.meshGeometryCache.get(mesh);
+    if (existing) {
+      return existing;
+    }
+    const vb = mesh.vertexBuffer;
+    const numVertices = vb?.numVertices ?? 0;
+    if (numVertices <= 0) {
+      return null;
+    }
+    const positions = new Float32Array(numVertices * 3);
+    mesh.getPositions(positions);
+    const ib0 = mesh.indexBuffer[0];
+    const hasIdx = ib0 != null && ib0.numIndices > 0;
+    let indexBuf: Uint16Array | Uint32Array | null = null;
+    if (hasIdx && ib0) {
+      indexBuf =
+        ib0.numIndices > 65535
+          ? new Uint32Array(ib0.numIndices)
+          : new Uint16Array(ib0.numIndices);
+      mesh.getIndices(indexBuf);
+    }
+    const row = { positions, indexBuf };
+    this.meshGeometryCache.set(mesh, row);
+    return row;
+  }
+
+  // --- Terrain height under (wx,wz): vertical CPU ray vs imported mesh triangles ---
 
   /**
-   * World-space terrain height under (wx, wz): median of several depth picks in one pass
-   * (rejects isolated treetop / roof hits). Returns null if the mesh is missing or all picks miss.
+   * Long downward ray from `terrainRayTopY` (outdoor / legacy). Prefer
+   * `sampleImportedTerrainYNearFeet` for characters so ceilings are not treated as floor.
    */
-  async sampleImportedTerrainY(
-    app: pc.Application,
-    wx: number,
-    wz: number
-  ): Promise<number | null> {
-    if (
-      !this.importedMapRoot ||
-      !MAP_CONFIG.importVisual.replacesArena ||
-      !MAP_CONFIG.importVisual.snapFeetToGround
-    ) {
+  sampleImportedTerrainY(wx: number, wz: number): number | null {
+    if (!this.importedMapRoot || !MAP_CONFIG.importVisual.enabled) {
+      return null;
+    }
+    const topY = MAP_CONFIG.importVisual.terrainRayTopY;
+    const botY = MAP_CONFIG.importVisual.terrainRayBottomY;
+    return this.sampleTerrainAlongDownRay(wx, wz, topY, topY - botY);
+  }
+
+  /**
+   * Samples ground under `(wx,wz)` using **current feet height** as a hint so the first hit is
+   * local floor/stairs, not the building roof or sky shell when indoors.
+   */
+  sampleImportedTerrainYNearFeet(wx: number, wz: number, referenceFeetY: number): number | null {
+    if (!this.importedMapRoot || !MAP_CONFIG.importVisual.enabled) {
+      return null;
+    }
+    const cfg = MAP_CONFIG.importVisual;
+    const startY = Math.min(cfg.terrainRayTopY, referenceFeetY + cfg.terrainRayStartAboveFeet);
+    const minEndY = Math.max(cfg.terrainRayBottomY, referenceFeetY - cfg.terrainRayMaxDropFromRef);
+    const maxRange = Math.max(0.65, startY - minEndY);
+    return this.sampleTerrainAlongDownRay(wx, wz, startY, maxRange);
+  }
+
+  /**
+   * World down-ray from `(wx, rayTopY, wz)`, returns first hit Y below the origin within `maxRange`.
+   */
+  private sampleTerrainAlongDownRay(wx: number, wz: number, rayTopY: number, maxRange: number): number | null {
+    if (!this.importedMapRoot || !MAP_CONFIG.importVisual.enabled) {
       return null;
     }
 
-    const bounds = this.getImportedRenderWorldYBounds();
-    if (!bounds) {
-      console.warn("[Map] Ground snap: could not infer mesh bounds.");
+    const rayOrigin = new pc.Vec3(wx, rayTopY, wz);
+    const rayDirWorld = new pc.Vec3(0, -1, 0);
+    const ray = new pc.Ray(rayOrigin, rayDirWorld);
+
+    const worldMat = new pc.Mat4();
+    const invMat = new pc.Mat4();
+    const oLocal = new pc.Vec3();
+    const dLocal = new pc.Vec3();
+    const dirWorldScratch = new pc.Vec3();
+    const hitLocal = new pc.Vec3();
+    const hitWorld = new pc.Vec3();
+
+    let bestTWorld = Infinity;
+    let bestY: number | null = null;
+
+    const renders = this.importedMapRoot.findComponents("render") as pc.RenderComponent[];
+    for (const render of renders) {
+      const list = render.meshInstances;
+      if (!list) continue;
+
+      for (let m = 0; m < list.length; m++) {
+        const mi = list[m];
+        const mesh = mi.mesh;
+        if (!mesh) continue;
+
+        if (!mi.aabb.intersectsRay(ray)) {
+          continue;
+        }
+
+        worldMat.copy(mi.node.getWorldTransform());
+        invMat.copy(worldMat).invert();
+        invMat.transformPoint(rayOrigin, oLocal);
+        dirWorldScratch.copy(rayDirWorld);
+        invMat.transformVector(dirWorldScratch, dLocal);
+        const dLen = dLocal.length();
+        if (dLen < 1e-10) continue;
+        dLocal.mulScalar(1 / dLen);
+
+        const geo = this.getCachedMeshGeometry(mesh);
+        if (!geo) continue;
+        const { positions, indexBuf } = geo;
+
+        const processTri = (ia: number, ib: number, ic: number): void => {
+          const t = rayIntersectTriangle(
+            oLocal.x,
+            oLocal.y,
+            oLocal.z,
+            dLocal.x,
+            dLocal.y,
+            dLocal.z,
+            positions[ia],
+            positions[ia + 1],
+            positions[ia + 2],
+            positions[ib],
+            positions[ib + 1],
+            positions[ib + 2],
+            positions[ic],
+            positions[ic + 1],
+            positions[ic + 2]
+          );
+          if (t == null || t > maxRange * 4) return;
+
+          hitLocal.set(
+            oLocal.x + dLocal.x * t,
+            oLocal.y + dLocal.y * t,
+            oLocal.z + dLocal.z * t
+          );
+          worldMat.transformPoint(hitLocal, hitWorld);
+
+          const tWorld = rayOrigin.y - hitWorld.y;
+          if (tWorld >= -0.01 && tWorld <= maxRange + 0.02 && tWorld < bestTWorld) {
+            bestTWorld = tWorld;
+            bestY = hitWorld.y;
+          }
+        };
+
+        const prims = mesh.primitive;
+
+        for (let p = 0; p < prims.length; p++) {
+          const prim = prims[p];
+          if (prim.type !== pc.PRIMITIVE_TRIANGLES) continue;
+
+          if (prim.indexed && indexBuf) {
+            for (let j = 0; j + 2 < prim.count; j += 3) {
+              const i0 = indexBuf[prim.base + j] * 3;
+              const i1 = indexBuf[prim.base + j + 1] * 3;
+              const i2 = indexBuf[prim.base + j + 2] * 3;
+              processTri(i0, i1, i2);
+            }
+          } else {
+            for (let j = 0; j + 2 < prim.count; j += 3) {
+              const i0 = (prim.base + j + prim.baseVertex) * 3;
+              const i1 = (prim.base + j + 1 + prim.baseVertex) * 3;
+              const i2 = (prim.base + j + 2 + prim.baseVertex) * 3;
+              if (i2 + 2 < positions.length) {
+                processTri(i0, i1, i2);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (bestY == null || !Number.isFinite(bestY)) {
+      return null;
+    }
+    return bestY;
+  }
+
+  /**
+   * Blocks horizontal moves into imported Mineways geometry (steep faces only; floors ignored).
+   * Call after `CollisionWorld.resolvePlayerMovement` when mesh collision is enabled.
+   * @param rayFeetY Optional feet height for chest ray (default `current.y`). Use after a step-up
+   * so the riser is cast from the raised body and forward motion can finish onto the tread.
+   */
+  resolveImportedWallCollision(
+    current: pc.Vec3,
+    target: pc.Vec3,
+    radius: number,
+    rayFeetY: number = current.y
+  ): pc.Vec3 {
+    if (!this.importedMapRoot || !MAP_CONFIG.importVisual.replacesArena) {
+      return target.clone();
+    }
+
+    const rayYOffset = 0.82;
+    const skin = 0.06;
+    const cap = 64;
+    const rayY = rayFeetY + rayYOffset;
+
+    let nx = target.x;
+    let nz = target.z;
+
+    const dx = target.x - current.x;
+    if (Math.abs(dx) > 1e-6) {
+      const sign = Math.sign(dx);
+      const dist = this.horizontalWallHitDistance(
+        current.x,
+        rayY,
+        current.z,
+        sign,
+        0,
+        Math.min(cap, Math.abs(dx) + radius + skin),
+        rayFeetY
+      );
+      if (dist != null) {
+        const allow = Math.max(0, dist - radius - skin);
+        nx = current.x + sign * Math.min(Math.abs(dx), allow);
+      }
+    }
+
+    const dz = target.z - current.z;
+    if (Math.abs(dz) > 1e-6) {
+      const sign = Math.sign(dz);
+      const dist = this.horizontalWallHitDistance(
+        nx,
+        rayY,
+        current.z,
+        0,
+        sign,
+        Math.min(cap, Math.abs(dz) + radius + skin),
+        rayFeetY
+      );
+      if (dist != null) {
+        const allow = Math.max(0, dist - radius - skin);
+        nz = current.z + sign * Math.min(Math.abs(dz), allow);
+      }
+    }
+
+    return new pc.Vec3(nx, target.y, nz);
+  }
+
+  /** World-space distance along horizontal (dx,0,dz) to nearest mostly-vertical mesh face. */
+  private horizontalWallHitDistance(
+    ox: number,
+    oy: number,
+    oz: number,
+    dirx: number,
+    dirz: number,
+    maxDist: number,
+    feetRefForFoliage: number | undefined
+  ): number | null {
+    const root = this.importedMapRoot;
+    if (!root || !MAP_CONFIG.importVisual.replacesArena || maxDist <= 1e-4) {
       return null;
     }
 
-    const { minY, maxY } = bounds;
-    const pickRes = MAP_CONFIG.importVisual.terrainPickResolution;
-    const picker = this.getOrCreateTerrainPicker(app, pickRes);
-    const camEnt = this.ensureTerrainSnapCamera(app, minY, maxY);
+    const rayDirWorld = new pc.Vec3(dirx, 0, dirz);
+    const len = rayDirWorld.length();
+    if (len < 1e-10) return null;
+    rayDirWorld.mulScalar(1 / len);
 
-    const camY = maxY + 120;
-    camEnt.setPosition(wx, camY, wz);
-    camEnt.lookAt(wx, minY - 50, wz, 0, 1, 0);
+    const rayOrigin = new pc.Vec3(ox, oy, oz);
+    const ray = new pc.Ray(rayOrigin, rayDirWorld);
 
-    await waitAppFrames(app, 2);
+    const worldMat = new pc.Mat4();
+    const invMat = new pc.Mat4();
+    const oLocal = new pc.Vec3();
+    const dLocal = new pc.Vec3();
+    const dirWorldScratch = new pc.Vec3();
+    const e1 = new pc.Vec3();
+    const e2 = new pc.Vec3();
+    const nLocal = new pc.Vec3();
+    const nWorld = new pc.Vec3();
+    const nTmp = new pc.Vec3();
 
-    const cam = camEnt.camera;
-    if (!cam) {
-      return null;
+    const wallNyMax = MAP_CONFIG.importVisual.importWallNormalYNMax;
+    const passH = MAP_CONFIG.importVisual.importMeshFoliagePassThroughHeight;
+    const groundClear = MAP_CONFIG.importVisual.groundSnapClearance;
+
+    let bestT: number | null = null;
+
+    const renders = root.findComponents("render") as pc.RenderComponent[];
+    for (const render of renders) {
+      const list = render.meshInstances;
+      if (!list) continue;
+
+      for (let m = 0; m < list.length; m++) {
+        const mi = list[m];
+        const mesh = mi.mesh;
+        if (!mesh) continue;
+
+        if (!mi.aabb.intersectsRay(ray)) continue;
+
+        worldMat.copy(mi.node.getWorldTransform());
+        invMat.copy(worldMat).invert();
+        invMat.transformPoint(rayOrigin, oLocal);
+        dirWorldScratch.copy(rayDirWorld);
+        invMat.transformVector(dirWorldScratch, dLocal);
+        const dl = dLocal.length();
+        if (dl < 1e-10) continue;
+        dLocal.mulScalar(1 / dl);
+
+        const geo = this.getCachedMeshGeometry(mesh);
+        if (!geo) continue;
+        const { positions, indexBuf } = geo;
+
+        const processTri = (ia: number, ib: number, ic: number): void => {
+          const ax = positions[ia];
+          const ay = positions[ia + 1];
+          const az = positions[ia + 2];
+          const bx = positions[ib];
+          const by = positions[ib + 1];
+          const bz = positions[ib + 2];
+          const cx = positions[ic];
+          const cy = positions[ic + 1];
+          const cz = positions[ic + 2];
+
+          e1.set(bx - ax, by - ay, bz - az);
+          e2.set(cx - ax, cy - ay, cz - az);
+          nLocal.cross(e1, e2);
+          const nMag = nLocal.length();
+          if (nMag < 1e-14) return;
+          nLocal.mulScalar(1 / nMag);
+
+          nTmp.copy(nLocal);
+          worldMat.transformVector(nTmp, nWorld);
+          const nwLen = nWorld.length();
+          if (nwLen < 1e-14) return;
+          nWorld.mulScalar(1 / nwLen);
+          if (Math.abs(nWorld.y) > wallNyMax) return;
+
+          const t = rayIntersectTriangle(
+            oLocal.x,
+            oLocal.y,
+            oLocal.z,
+            dLocal.x,
+            dLocal.y,
+            dLocal.z,
+            ax,
+            ay,
+            az,
+            bx,
+            by,
+            bz,
+            cx,
+            cy,
+            cz
+          );
+          if (t == null || t <= 1e-4 || t > maxDist + 1e-3) return;
+          if (passH > 0 && feetRefForFoliage != null) {
+            this.wallHitLocal.set(
+              oLocal.x + dLocal.x * t,
+              oLocal.y + dLocal.y * t,
+              oLocal.z + dLocal.z * t
+            );
+            worldMat.transformPoint(this.wallHitLocal, this.wallHitWorld);
+            const ground = this.sampleImportedTerrainYNearFeet(
+              this.wallHitWorld.x,
+              this.wallHitWorld.z,
+              feetRefForFoliage
+            );
+            if (ground != null && this.wallHitWorld.y <= ground + groundClear + passH) {
+              return;
+            }
+          }
+          if (bestT == null || t < bestT) {
+            bestT = t;
+          }
+        };
+
+        const prims = mesh.primitive;
+
+        for (let p = 0; p < prims.length; p++) {
+          const prim = prims[p];
+          if (prim.type !== pc.PRIMITIVE_TRIANGLES) continue;
+
+          if (prim.indexed && indexBuf) {
+            for (let j = 0; j + 2 < prim.count; j += 3) {
+              const i0 = indexBuf[prim.base + j] * 3;
+              const i1 = indexBuf[prim.base + j + 1] * 3;
+              const i2 = indexBuf[prim.base + j + 2] * 3;
+              processTri(i0, i1, i2);
+            }
+          } else {
+            for (let j = 0; j + 2 < prim.count; j += 3) {
+              const i0 = (prim.base + j + prim.baseVertex) * 3;
+              const i1 = (prim.base + j + 1 + prim.baseVertex) * 3;
+              const i2 = (prim.base + j + 2 + prim.baseVertex) * 3;
+              if (i2 + 2 < positions.length) {
+                processTri(i0, i1, i2);
+              }
+            }
+          }
+        }
+      }
     }
 
-    picker.prepare(cam, app.scene);
-
-    const half = pickRes * 0.5;
-    const samples: number[] = [];
-    const maxPx = pickRes - 1;
-    for (const [ox, oy] of MAP_CONFIG.importVisual.terrainSamplePixelOffsets) {
-      const px = Math.min(maxPx, Math.max(0, Math.floor(half + ox)));
-      const py = Math.min(maxPx, Math.max(0, Math.floor(half + oy)));
-      const hit = await picker.getWorldPointAsync(px, py);
-      if (!hit) continue;
-      if (hit.y < minY - 4 || hit.y > maxY + 4) continue;
-      samples.push(hit.y);
-    }
-
-    if (samples.length === 0) {
-      console.warn("[Map] Ground snap: no depth hits at", wx, wz);
-      return null;
-    }
-
-    return median(samples);
+    return bestT;
   }
 
   /**
    * Places entity feet at (wx, ·, wz) on the imported mesh (open world + snap on).
    */
-  async snapEntityFeetToImportedGround(
-    app: pc.Application,
-    entity: pc.Entity,
-    wx: number,
-    wz: number
-  ): Promise<boolean> {
-    const y = await this.sampleImportedTerrainY(app, wx, wz);
+  snapEntityFeetToImportedGround(entity: pc.Entity, wx: number, wz: number, referenceFeetY?: number): boolean {
+    const ref = referenceFeetY ?? entity.getPosition().y;
+    const y = this.sampleImportedTerrainYNearFeet(wx, wz, ref);
     if (y == null) {
       return false;
     }
@@ -357,12 +744,9 @@ export class Map {
   }
 
   /**
-   * Places `playerRoot` feet on the imported mesh under playerSpawn.x/z using depth picks.
+   * Places `playerRoot` feet on the imported mesh under playerSpawn.x/z.
    */
-  async snapPlayerFeetToImportedGround(
-    app: pc.Application,
-    playerRoot: pc.Entity
-  ): Promise<boolean> {
+  snapPlayerFeetToImportedGround(playerRoot: pc.Entity): boolean {
     if (
       !this.importedMapRoot ||
       !MAP_CONFIG.importVisual.replacesArena ||
@@ -372,66 +756,14 @@ export class Map {
     }
 
     const { x: sx, z: sz } = MAP_CONFIG.importVisual.playerSpawn;
-    const y = await this.sampleImportedTerrainY(app, sx, sz);
+    const refY = MAP_CONFIG.importVisual.playerSpawn.y + 3;
+    const y = this.sampleImportedTerrainYNearFeet(sx, sz, refY);
     if (y == null) {
       return false;
     }
     const up = MAP_CONFIG.importVisual.groundSnapClearance;
     playerRoot.setPosition(sx, y + up, sz);
     return true;
-  }
-
-  private getImportedRenderWorldYBounds(): { minY: number; maxY: number } | null {
-    if (!this.importedMapRoot) {
-      return null;
-    }
-
-    let maxY = -Infinity;
-    let minY = Infinity;
-    const renders = this.importedMapRoot.findComponents("render") as pc.RenderComponent[];
-    for (const render of renders) {
-      const list = render.meshInstances;
-      if (!list) continue;
-      for (const mi of list) {
-        const hi = mi.aabb.getMax().y;
-        const lo = mi.aabb.getMin().y;
-        maxY = Math.max(maxY, hi);
-        minY = Math.min(minY, lo);
-      }
-    }
-
-    if (!Number.isFinite(maxY) || !Number.isFinite(minY) || maxY <= minY) {
-      return null;
-    }
-    return { minY, maxY };
-  }
-
-  private getOrCreateTerrainPicker(app: pc.Application, size: number): pc.Picker {
-    if (!this.terrainPicker) {
-      this.terrainPicker = new pc.Picker(app, size, size, true);
-    }
-    this.terrainPicker.resize(size, size);
-    return this.terrainPicker;
-  }
-
-  private ensureTerrainSnapCamera(app: pc.Application, minY: number, maxY: number): pc.Entity {
-    if (!this.terrainSnapCam) {
-      const ent = new pc.Entity("terrain-snap-cam");
-      ent.addComponent("camera", {
-        clearColor: new pc.Color(0.02, 0.02, 0.03),
-        fov: 50,
-        nearClip: 0.25,
-        farClip: Math.max(4000, maxY - minY + 400),
-        enabled: false
-      });
-      app.root.addChild(ent);
-      this.terrainSnapCam = ent;
-    }
-    const cam = this.terrainSnapCam.camera;
-    if (cam) {
-      cam.farClip = Math.max(4000, maxY - minY + 400);
-    }
-    return this.terrainSnapCam;
   }
 
   // --- Procedural pieces (arena yard only) ---
@@ -756,26 +1088,4 @@ export class Map {
     this.root.addChild(center);
     this.lampLights.push(center);
   }
-}
-
-function median(values: number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1
-    ? sorted[mid]!
-    : (sorted[mid - 1]! + sorted[mid]!) * 0.5;
-}
-
-function waitAppFrames(app: pc.Application, count: number): Promise<void> {
-  return new Promise((resolve) => {
-    let left = count;
-    const onFrame = () => {
-      left--;
-      if (left <= 0) {
-        app.off("update", onFrame);
-        resolve();
-      }
-    };
-    app.on("update", onFrame);
-  });
 }

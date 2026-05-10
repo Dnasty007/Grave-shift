@@ -787,6 +787,96 @@ body.touch-mode #touch-controls .touch-button {
   text-align: left;
 }
 
+.lobby-screen.menu-content {
+  max-width: 920px;
+  max-height: min(92vh, 860px);
+  overflow-y: auto;
+  text-align: center;
+}
+
+.lobby-hint {
+  margin: 0 0 22px;
+  color: rgba(246, 239, 227, 0.72);
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+
+.lobby-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 18px;
+  margin-bottom: 8px;
+}
+
+.lobby-card {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  padding: 0;
+  border: 1px solid rgba(255, 120, 60, 0.35);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(40, 18, 10, 0.88), rgba(12, 6, 6, 0.94));
+  color: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  transition:
+    border-color 160ms ease,
+    transform 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.lobby-card:hover {
+  border-color: rgba(255, 160, 90, 0.75);
+  transform: translateY(-3px);
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.55),
+    0 0 32px rgba(255, 90, 40, 0.22);
+}
+
+.lobby-card:focus-visible {
+  outline: 2px solid rgba(255, 200, 120, 0.9);
+  outline-offset: 2px;
+}
+
+.lobby-card-visual {
+  aspect-ratio: 16 / 9;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.lobby-card-visual img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.lobby-card-body {
+  padding: 16px 18px 18px;
+}
+
+.lobby-card-title {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #ffd9a8;
+}
+
+.lobby-card-desc {
+  margin: 0 0 12px;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: rgba(246, 239, 227, 0.74);
+}
+
+.lobby-card-cta {
+  font-size: 0.72rem;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: rgba(255, 140, 70, 0.95);
+}
+
 @keyframes menu-in {
   0% { opacity: 0; transform: translateY(12px); }
   100% { opacity: 1; transform: translateY(0); }
@@ -953,6 +1043,13 @@ body.touch-mode #touch-controls .touch-button {
   letter-spacing: 0.32em;
   text-transform: uppercase;
   color: rgba(255, 200, 140, 0.78);
+}
+
+.settings-hint {
+  margin: -4px 0 10px;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: rgba(246, 239, 227, 0.55);
 }
 
 .settings-row {

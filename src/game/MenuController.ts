@@ -1,4 +1,11 @@
 import type { Settings, SettingsState } from "./Settings";
+import type { MapPresetId } from "./config";
+import {
+  LOBBY_MAP_ENTRIES,
+  LOBBY_PLAYER_ORDER,
+  PLAYER_MODEL_PRESETS,
+  type PlayerModelId
+} from "./runSession";
 
 export type GameOverStats = {
   wave: number;
@@ -10,15 +17,28 @@ export type GameOverStats = {
   survivedSeconds: number;
 };
 
+export type BeginRunSelection = {
+  mapId: MapPresetId;
+  playerId: PlayerModelId;
+};
+
 export type MenuCallbacks = {
-  onStart: () => void;
+  onBeginRun: (selection: BeginRunSelection) => void;
   onResume: () => void;
   onRestart: () => void;
   onReturnToTitle: () => void;
   onPauseToggleRequested: () => void;
 };
 
-type MenuName = "title" | "pause" | "settings" | "controls" | "gameOver" | "none";
+type MenuName =
+  | "title"
+  | "mapSelect"
+  | "playerSelect"
+  | "pause"
+  | "settings"
+  | "controls"
+  | "gameOver"
+  | "none";
 
 export class MenuController {
   private readonly root: HTMLElement;
@@ -29,33 +49,88 @@ export class MenuController {
   private readonly screens: Record<Exclude<MenuName, "none">, HTMLElement>;
   private currentScreen: MenuName = "none";
 
+  /** Map chosen on the lobby flow (player screen needs it for `onBeginRun`). */
+  private pendingMapId: MapPresetId = "castle";
+
   constructor(root: HTMLElement, settings: Settings, callbacks: MenuCallbacks) {
     this.root = root;
     this.settings = settings;
     this.callbacks = callbacks;
 
     const titleScreen = root.querySelector<HTMLElement>("#title-screen");
+    const mapSelectScreen = root.querySelector<HTMLElement>("#map-select-screen");
+    const playerSelectScreen = root.querySelector<HTMLElement>("#player-select-screen");
     const pauseScreen = root.querySelector<HTMLElement>("#pause-screen");
     const settingsScreen = root.querySelector<HTMLElement>("#settings-screen");
     const controlsScreen = root.querySelector<HTMLElement>("#controls-screen");
     const gameOverScreen = root.querySelector<HTMLElement>("#game-over-screen");
 
-    if (!titleScreen || !pauseScreen || !settingsScreen || !controlsScreen || !gameOverScreen) {
+    if (
+      !titleScreen ||
+      !mapSelectScreen ||
+      !playerSelectScreen ||
+      !pauseScreen ||
+      !settingsScreen ||
+      !controlsScreen ||
+      !gameOverScreen
+    ) {
       throw new Error("MenuController: menu screens missing.");
     }
 
     this.screens = {
       title: titleScreen,
+      mapSelect: mapSelectScreen,
+      playerSelect: playerSelectScreen,
       pause: pauseScreen,
       settings: settingsScreen,
       controls: controlsScreen,
       gameOver: gameOverScreen
     };
 
+    this.populateLobbyCards();
     this.bindMenuButtons();
     this.bindSettingsControls();
 
     settings.subscribe((state) => this.syncSettingsUI(state));
+  }
+
+  private populateLobbyCards(): void {
+    const mapHost = this.root.querySelector<HTMLElement>("#lobby-map-cards");
+    const playerHost = this.root.querySelector<HTMLElement>("#lobby-player-cards");
+    if (!mapHost || !playerHost) return;
+
+    mapHost.replaceChildren();
+    for (const m of LOBBY_MAP_ENTRIES) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "lobby-card";
+      btn.dataset.mapId = m.id;
+      btn.innerHTML = `
+        <div class="lobby-card-visual"><img src="${m.previewUrl}" alt="" loading="lazy" /></div>
+        <div class="lobby-card-body">
+          <h3 class="lobby-card-title">${m.title}</h3>
+          <p class="lobby-card-desc">${m.description}</p>
+          <span class="lobby-card-cta">Select</span>
+        </div>`;
+      mapHost.appendChild(btn);
+    }
+
+    playerHost.replaceChildren();
+    for (const id of LOBBY_PLAYER_ORDER) {
+      const p = PLAYER_MODEL_PRESETS[id];
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "lobby-card";
+      btn.dataset.playerId = id;
+      btn.innerHTML = `
+        <div class="lobby-card-visual"><img src="${p.previewUrl}" alt="" loading="lazy" /></div>
+        <div class="lobby-card-body">
+          <h3 class="lobby-card-title">${p.label}</h3>
+          <p class="lobby-card-desc">${p.description}</p>
+          <span class="lobby-card-cta">Deploy</span>
+        </div>`;
+      playerHost.appendChild(btn);
+    }
   }
 
   showTitle(): void {
@@ -98,7 +173,13 @@ export class MenuController {
   }
 
   isBlockingPause(): boolean {
-    return this.currentScreen === "pause" || this.currentScreen === "settings" || this.currentScreen === "controls";
+    return (
+      this.currentScreen === "pause" ||
+      this.currentScreen === "settings" ||
+      this.currentScreen === "controls" ||
+      this.currentScreen === "mapSelect" ||
+      this.currentScreen === "playerSelect"
+    );
   }
 
   private show(name: MenuName): void {
@@ -120,9 +201,35 @@ export class MenuController {
     };
 
     bind("btn-start", () => {
-      this.callbacks.onStart();
-      this.hide();
+      this.show("mapSelect");
     });
+
+    const mapScreen = this.root.querySelector<HTMLElement>("#map-select-screen");
+    if (mapScreen) {
+      mapScreen.addEventListener("click", (e) => {
+        const t = (e.target as HTMLElement).closest("[data-map-id]");
+        if (!t || !(t instanceof HTMLElement)) return;
+        const id = t.dataset.mapId as MapPresetId | undefined;
+        if (!id) return;
+        this.pendingMapId = id;
+        this.show("playerSelect");
+      });
+    }
+
+    const playerScreen = this.root.querySelector<HTMLElement>("#player-select-screen");
+    if (playerScreen) {
+      playerScreen.addEventListener("click", (e) => {
+        const t = (e.target as HTMLElement).closest("[data-player-id]");
+        if (!t || !(t instanceof HTMLElement)) return;
+        const id = t.dataset.playerId as PlayerModelId | undefined;
+        if (!id) return;
+        this.callbacks.onBeginRun({ mapId: this.pendingMapId, playerId: id });
+        this.hide();
+      });
+    }
+
+    bind("btn-lobby-map-back", () => this.show("title"));
+    bind("btn-lobby-player-back", () => this.show("mapSelect"));
     bind("btn-title-settings", () => {
       this.settingsBackTarget.current = "title";
       this.show("settings");
@@ -197,6 +304,7 @@ export class MenuController {
     slider("setting-master", "masterVolume", 100);
     slider("setting-sfx", "sfxVolume", 100);
     slider("setting-music", "musicVolume", 100);
+    slider("setting-sprint-mult", "sprintSpeedMultiplier", 100);
 
     const toggle = (id: string, key: keyof SettingsState) => {
       const input = this.root.querySelector<HTMLInputElement>(`#${id}`);
@@ -211,6 +319,9 @@ export class MenuController {
     toggle("setting-vignette", "damageVignette");
     toggle("setting-blood", "bloodFx");
     toggle("setting-hitmarker", "showHitMarker");
+    toggle("setting-fly-mode", "flyMode");
+    toggle("setting-noclip", "noclip");
+    toggle("setting-import-mesh-collision", "importMeshCollision");
   }
 
   private syncSettingsUI(state: SettingsState): void {
@@ -228,6 +339,7 @@ export class MenuController {
     setSlider("setting-master", state.masterVolume, 100);
     setSlider("setting-sfx", state.sfxVolume, 100);
     setSlider("setting-music", state.musicVolume, 100);
+    setSlider("setting-sprint-mult", state.sprintSpeedMultiplier, 100);
 
     const setToggle = (id: string, value: boolean) => {
       const input = this.root.querySelector<HTMLInputElement>(`#${id}`);
@@ -239,11 +351,19 @@ export class MenuController {
     setToggle("setting-vignette", state.damageVignette);
     setToggle("setting-blood", state.bloodFx);
     setToggle("setting-hitmarker", state.showHitMarker);
+    setToggle("setting-fly-mode", state.flyMode);
+    setToggle("setting-noclip", state.noclip);
+    setToggle("setting-import-mesh-collision", state.importMeshCollision);
   }
 
   private updateSliderLabel(id: string, value: number): void {
     const label = this.root.querySelector<HTMLElement>(`#${id}-value`);
     if (!label) return;
+
+    if (id === "setting-sprint-mult") {
+      label.textContent = `${Math.round(value * 100)}%`;
+      return;
+    }
 
     if (id === "setting-fov") {
       label.textContent = `${Math.round(value)}°`;
