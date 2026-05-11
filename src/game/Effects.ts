@@ -13,6 +13,9 @@ export class Effects {
   private readonly active: ActiveEffect[] = [];
 
   private readonly muzzleMaterial: pc.StandardMaterial;
+  private readonly foxFireMuzzleMaterial: pc.StandardMaterial;
+  private readonly foxFireTracerMaterial: pc.StandardMaterial;
+  private readonly chakraNovaMaterial: pc.StandardMaterial;
   private readonly tracerMaterial: pc.StandardMaterial;
   private readonly bloodMaterial: pc.StandardMaterial;
   private readonly debrisMaterial: pc.StandardMaterial;
@@ -33,6 +36,28 @@ export class Effects {
     this.tracerMaterial.opacity = 0.9;
     this.tracerMaterial.blendType = pc.BLEND_ADDITIVE;
     this.tracerMaterial.update();
+
+    this.foxFireMuzzleMaterial = new pc.StandardMaterial();
+    this.foxFireMuzzleMaterial.diffuse = new pc.Color(0, 0, 0);
+    this.foxFireMuzzleMaterial.emissive = new pc.Color(3.2, 0.55, 0.12);
+    this.foxFireMuzzleMaterial.useLighting = false;
+    this.foxFireMuzzleMaterial.update();
+
+    this.foxFireTracerMaterial = new pc.StandardMaterial();
+    this.foxFireTracerMaterial.diffuse = new pc.Color(0, 0, 0);
+    this.foxFireTracerMaterial.emissive = new pc.Color(3.0, 0.5, 0.08);
+    this.foxFireTracerMaterial.useLighting = false;
+    this.foxFireTracerMaterial.opacity = 0.92;
+    this.foxFireTracerMaterial.blendType = pc.BLEND_ADDITIVE;
+    this.foxFireTracerMaterial.update();
+
+    this.chakraNovaMaterial = new pc.StandardMaterial();
+    this.chakraNovaMaterial.diffuse = new pc.Color(0, 0, 0);
+    this.chakraNovaMaterial.emissive = new pc.Color(2.6, 0.4, 0.06);
+    this.chakraNovaMaterial.useLighting = false;
+    this.chakraNovaMaterial.opacity = 0.82;
+    this.chakraNovaMaterial.blendType = pc.BLEND_ADDITIVE;
+    this.chakraNovaMaterial.update();
 
     this.bloodMaterial = new pc.StandardMaterial();
     this.bloodMaterial.diffuse = new pc.Color(0, 0, 0);
@@ -153,6 +178,152 @@ export class Effects {
             material.update();
           }
         }
+      }
+    });
+  }
+
+  spawnFoxFireFlash(origin: pc.Vec3, direction: pc.Vec3): void {
+    const flash = new pc.Entity("fox-fire-flash");
+    flash.addComponent("render", {
+      type: "sphere",
+      material: this.foxFireMuzzleMaterial
+    });
+    flash.setLocalScale(0.38, 0.38, 0.38);
+    flash.setPosition(
+      origin.x + direction.x * 0.35,
+      origin.y + direction.y * 0.35,
+      origin.z + direction.z * 0.35
+    );
+    this.app.root.addChild(flash);
+
+    const light = new pc.Entity("fox-fire-light");
+    light.addComponent("light", {
+      type: "omni",
+      color: new pc.Color(1, 0.35, 0.08),
+      intensity: 5.2,
+      range: 9
+    });
+    light.setPosition(flash.getPosition());
+    this.app.root.addChild(light);
+
+    const total = GAME_CONFIG.fx.muzzleFlashSeconds * 1.1;
+    this.active.push({
+      entity: flash,
+      remaining: total,
+      total,
+      fade: (entity, t) => {
+        const s = 0.38 * (1 - t * 0.45);
+        entity.setLocalScale(s, s, s);
+      }
+    });
+    this.active.push({
+      entity: light,
+      remaining: total,
+      total,
+      fade: (entity, t) => {
+        const lc = entity.light;
+        if (lc) lc.intensity = 5.2 * (1 - t);
+      }
+    });
+  }
+
+  spawnFoxFireTracer(origin: pc.Vec3, hitPoint: pc.Vec3): void {
+    const distance = origin.distance(hitPoint);
+    if (distance < 0.45) return;
+
+    const tracer = new pc.Entity("fox-fire-tracer");
+    tracer.addComponent("render", {
+      type: "cylinder",
+      material: this.foxFireTracerMaterial
+    });
+
+    const midpoint = new pc.Vec3(
+      (origin.x + hitPoint.x) * 0.5,
+      (origin.y + hitPoint.y) * 0.5,
+      (origin.z + hitPoint.z) * 0.5
+    );
+
+    tracer.setPosition(midpoint);
+    tracer.setLocalScale(0.045, distance, 0.045);
+
+    const direction = hitPoint.clone().sub(origin).normalize();
+    const up = new pc.Vec3(0, 1, 0);
+    const dot = up.dot(direction);
+    if (Math.abs(dot) < 0.999) {
+      const axis = new pc.Vec3();
+      axis.cross(up, direction).normalize();
+      const angle = Math.acos(dot) * pc.math.RAD_TO_DEG;
+      const q = new pc.Quat();
+      q.setFromAxisAngle(axis, angle);
+      tracer.setRotation(q);
+    }
+
+    this.app.root.addChild(tracer);
+
+    const total = GAME_CONFIG.fx.tracerSeconds * 1.2;
+    this.active.push({
+      entity: tracer,
+      remaining: total,
+      total,
+      fade: (entity, t) => {
+        const render = entity.render;
+        if (render) {
+          for (const meshInstance of render.meshInstances) {
+            const material = meshInstance.material as pc.StandardMaterial;
+            material.opacity = 0.92 * (1 - t);
+            material.update();
+          }
+        }
+      }
+    });
+  }
+
+  /** Expanding chakra nova at the pet (Tailed Beast Bomb read). */
+  spawnKuramaChakraNova(center: pc.Vec3, maxRadius: number): void {
+    const shell = new pc.Entity("chakra-nova");
+    shell.addComponent("render", {
+      type: "sphere",
+      material: this.chakraNovaMaterial
+    });
+    shell.setPosition(center.x, center.y + 0.45, center.z);
+    shell.setLocalScale(0.35, 0.35, 0.35);
+    this.app.root.addChild(shell);
+
+    const light = new pc.Entity("chakra-nova-light");
+    light.addComponent("light", {
+      type: "omni",
+      color: new pc.Color(1, 0.28, 0.04),
+      intensity: 16,
+      range: maxRadius * 1.85
+    });
+    light.setPosition(center.x, center.y + 0.9, center.z);
+    this.app.root.addChild(light);
+
+    const total = 0.55;
+    this.active.push({
+      entity: shell,
+      remaining: total,
+      total,
+      fade: (entity, t) => {
+        const r = 0.35 + t * maxRadius * 0.95;
+        entity.setLocalScale(r, r * 0.48, r);
+        const render = entity.render;
+        if (render) {
+          for (const meshInstance of render.meshInstances) {
+            const material = meshInstance.material as pc.StandardMaterial;
+            material.opacity = 0.82 * (1 - t);
+            material.update();
+          }
+        }
+      }
+    });
+    this.active.push({
+      entity: light,
+      remaining: total,
+      total,
+      fade: (entity, t) => {
+        const lc = entity.light;
+        if (lc) lc.intensity = 16 * (1 - t);
       }
     });
   }

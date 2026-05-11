@@ -14,7 +14,7 @@ export const LOBBY_MAP_ENTRIES: ReadonlyArray<{
     id: "castle",
     title: "Castle expanse",
     description:
-      "Moonlit gothic fortress on the ridge—torchlit gates, endless spires, and imported open ground. Kite the horde under cold sky.",
+      "Hytopia-style voxel map (boilerplate map.json) — open ground and blocks; snap-to-ground spawn at the origin stack.",
     previewUrl: "/lobby/map-castle.png"
   },
   {
@@ -47,6 +47,8 @@ export type PlayerVisualRuntime = {
   animSpeedMin: number;
   animSpeedMax: number;
   animIdleThreshold: number;
+  /** See `GAME_CONFIG.playerVisual.animIdleShuffle`. */
+  animIdleShuffle: number;
 };
 
 const baseVisual = (): PlayerVisualRuntime => ({
@@ -60,23 +62,34 @@ const baseVisual = (): PlayerVisualRuntime => ({
   animBaseSpeed: GAME_CONFIG.playerVisual.animBaseSpeed,
   animSpeedMin: GAME_CONFIG.playerVisual.animSpeedMin,
   animSpeedMax: GAME_CONFIG.playerVisual.animSpeedMax,
-  animIdleThreshold: GAME_CONFIG.playerVisual.animIdleThreshold
+  animIdleThreshold: GAME_CONFIG.playerVisual.animIdleThreshold,
+  animIdleShuffle: GAME_CONFIG.playerVisual.animIdleShuffle
 });
 
 let playerVisualRuntime: PlayerVisualRuntime = baseVisual();
 
 /** Per-model overrides (same voxel scale as enemies; animation names match each glTF export). */
-export const PLAYER_MODEL_PRESETS: Record<
-  PlayerModelId,
-  Pick<
-    PlayerVisualRuntime,
-    | "gltfUrl"
-    | "animWalkName"
-    | "animRunName"
-    | "animFallbackName"
-    | "hideBodyInFirstPerson"
-  > & { label: string; description: string; previewUrl: string }
-> = {
+type PlayerModelPreset = Pick<
+  PlayerVisualRuntime,
+  | "gltfUrl"
+  | "animWalkName"
+  | "animRunName"
+  | "animFallbackName"
+  | "hideBodyInFirstPerson"
+> &
+  Partial<
+    Pick<
+      PlayerVisualRuntime,
+      | "animRunMinSpeed"
+      | "animBaseSpeed"
+      | "animSpeedMin"
+      | "animSpeedMax"
+      | "animIdleThreshold"
+      | "animIdleShuffle"
+    >
+  > & { label: string; description: string; previewUrl: string };
+
+export const PLAYER_MODEL_PRESETS: Record<PlayerModelId, PlayerModelPreset> = {
   soldier: {
     label: "Field operator",
     description: "Tactical kit with split walk/run lower-body clips (Zombie Forge soldier).",
@@ -88,12 +101,13 @@ export const PLAYER_MODEL_PRESETS: Record<
     hideBodyInFirstPerson: true
   },
   survivor: {
-    label: "Outbreak survivor",
-    description: "Compact voxel rig — same animation set as the horde (placeholder survivor mesh).",
+    label: "Hytopia wanderer",
+    description:
+      "Big-world Blockbench humanoid (Hytopia sdk-examples): lower-body walk/run clips, back-anchor jetpack mount.",
     previewUrl: "/lobby/player-survivor.svg",
     gltfUrl: "/models/players/player.gltf",
-    animWalkName: "walk",
-    animRunName: "run",
+    animWalkName: "walk-lower",
+    animRunName: "run-lower",
     animFallbackName: "crawling",
     hideBodyInFirstPerson: true
   }
@@ -105,12 +119,19 @@ export function getPlayerVisualRuntime(): PlayerVisualRuntime {
 
 export function applyPlayerModelPreset(id: PlayerModelId): void {
   const p = PLAYER_MODEL_PRESETS[id];
+  const b = baseVisual();
   playerVisualRuntime = {
-    ...baseVisual(),
+    ...b,
     gltfUrl: p.gltfUrl,
     animWalkName: p.animWalkName,
     animRunName: p.animRunName,
     animFallbackName: p.animFallbackName,
-    hideBodyInFirstPerson: p.hideBodyInFirstPerson
+    hideBodyInFirstPerson: p.hideBodyInFirstPerson,
+    animRunMinSpeed: p.animRunMinSpeed ?? b.animRunMinSpeed,
+    animBaseSpeed: p.animBaseSpeed ?? b.animBaseSpeed,
+    animSpeedMin: p.animSpeedMin ?? b.animSpeedMin,
+    animSpeedMax: p.animSpeedMax ?? b.animSpeedMax,
+    animIdleThreshold: p.animIdleThreshold ?? b.animIdleThreshold,
+    animIdleShuffle: p.animIdleShuffle ?? b.animIdleShuffle
   };
 }

@@ -1,57 +1,21 @@
+import {
+  HYTOPIA_GUN_DEFINITIONS,
+  HYTOPIA_MELEE_DEFINITIONS,
+  type HytopiaMeleeWeaponId
+} from "./hytopiaWeaponDefs";
+import type { WeaponDefinition, WeaponShotProfile, WeaponViewModelGltf } from "./weaponTypes";
+
+export type { WeaponDefinition, WeaponShotProfile, WeaponViewModelGltf };
+
 export type WeaponId =
   | "pistol"
   | "shotgun"
   | "autoPistol"
   | "ar15"
   | "ak47"
-  | "autoShotgun";
-
-export type WeaponShotProfile = "single" | "burst" | "pellet";
-
-/** Optional first-person GLB under `/public` (see `public/models/weapons/`). */
-export type WeaponViewModelGltf = {
-  url: string;
-  scale: number;
-  position: [number, number, number];
-  eulerDegrees: [number, number, number];
-};
-
-export type WeaponDefinition = {
-  id: WeaponId;
-  name: string;
-  shortName: string;
-  caliber: string;
-  shotProfile: WeaponShotProfile;
-  damage: number;
-  headshotMultiplier: number;
-  fireIntervalSeconds: number;
-  range: number;
-  hitRadius: number;
-  spreadDegrees: number;
-  pelletsPerShot: number;
-  recoilKick: number;
-  magazineSize: number;
-  reserveAmmo: number;
-  reloadSeconds: number;
-  buyCost: number;
-  refillCost: number;
-  viewModelTint: [number, number, number];
-  viewModelLength: number;
-  viewModelGltf?: WeaponViewModelGltf;
-  audio: {
-    shot: "shot" | "shotgunShot" | "smgShot" | "rifleShot" | "magnumShot";
-  };
-};
-
-/** Stable order for cycling UI / preload (scroll wraps in this order among owned guns). */
-export const WEAPON_IDS: WeaponId[] = [
-  "pistol",
-  "shotgun",
-  "autoPistol",
-  "ar15",
-  "ak47",
-  "autoShotgun"
-];
+  | "autoShotgun"
+  | keyof typeof HYTOPIA_GUN_DEFINITIONS
+  | HytopiaMeleeWeaponId;
 
 const vm = (
   url: string,
@@ -60,11 +24,12 @@ const vm = (
   eulerDegrees: [number, number, number]
 ): WeaponViewModelGltf => ({ url, scale, position, eulerDegrees });
 
+/** Original arena wall-buy weapons + Hytopia first-person packs (`hytopia-guns`, `hytopia-tools`). */
 export const WEAPON_DEFINITIONS: Record<WeaponId, WeaponDefinition> = {
   pistol: {
     id: "pistol",
-    name: "Pistol",
-    shortName: "Pistol",
+    name: "Glock 19",
+    shortName: "Glock",
     caliber: "9mm",
     shotProfile: "single",
     damage: 30,
@@ -82,7 +47,7 @@ export const WEAPON_DEFINITIONS: Record<WeaponId, WeaponDefinition> = {
     refillCost: 250,
     viewModelTint: [0.18, 0.18, 0.2],
     viewModelLength: 0.5,
-    viewModelGltf: vm("/models/weapons/pistol.glb", 0.36, [0.38, -0.22, -0.52], [-4, 8, 0]),
+    viewModelGltf: vm("/models/weapons/hytopia-guns/glock-19.gltf", 0.34, [0.38, -0.22, -0.52], [-4, 8, 0]),
     audio: { shot: "shot" }
   },
   shotgun: {
@@ -178,7 +143,7 @@ export const WEAPON_DEFINITIONS: Record<WeaponId, WeaponDefinition> = {
     refillCost: 1100,
     viewModelTint: [0.26, 0.19, 0.11],
     viewModelLength: 0.8,
-    viewModelGltf: vm("/models/weapons/ak47.glb", 0.29, [0.3, -0.27, -0.44], [-3, 16, 0]),
+    viewModelGltf: vm("/models/weapons/hytopia-guns/ak47.gltf", 0.29, [0.3, -0.27, -0.44], [-3, 16, 0]),
     audio: { shot: "rifleShot" }
   },
   autoShotgun: {
@@ -204,8 +169,25 @@ export const WEAPON_DEFINITIONS: Record<WeaponId, WeaponDefinition> = {
     viewModelLength: 0.68,
     viewModelGltf: vm("/models/weapons/auto-shotgun.glb", 0.31, [0.3, -0.28, -0.46], [-2, 11, 0]),
     audio: { shot: "shotgunShot" }
-  }
+  },
+  ...HYTOPIA_GUN_DEFINITIONS,
+  ...HYTOPIA_MELEE_DEFINITIONS
 };
+
+/** Preload / cycle order: starters first, base wall buys, Hytopia guns, then melee tools. */
+export const WEAPON_IDS: WeaponId[] = [
+  "pistol",
+  "ak47",
+  "shotgun",
+  "autoPistol",
+  "ar15",
+  "autoShotgun",
+  ...Object.keys(HYTOPIA_GUN_DEFINITIONS),
+  ...Object.keys(HYTOPIA_MELEE_DEFINITIONS)
+] as WeaponId[];
+
+/** Spawn loadout: Hytopia Glock + Hytopia AK. */
+export const STARTER_WEAPON_SLOTS: readonly WeaponId[] = ["pistol", "ak47"];
 
 export class Weapon {
   readonly definition: WeaponDefinition;
@@ -232,20 +214,34 @@ export class Weapon {
   }
 }
 
-const MAX_OWNED_WEAPONS = 6;
+const MAX_OWNED_WEAPONS = 64;
+
+function normalizeStarters(input: WeaponId | readonly WeaponId[]): WeaponId[] {
+  if (typeof input === "string") {
+    return [input];
+  }
+  return Array.from(input);
+}
 
 export class WeaponInventory {
   private owned: Weapon[] = [];
   private currentIndex = 0;
 
-  constructor(starter: WeaponId) {
-    this.owned = [new Weapon(WEAPON_DEFINITIONS[starter])];
+  constructor(starter: WeaponId | readonly WeaponId[]) {
+    this.applyStarters(starter);
+  }
+
+  private applyStarters(starter: WeaponId | readonly WeaponId[]): void {
+    const ids = normalizeStarters(starter);
+    if (ids.length === 0) {
+      throw new Error("WeaponInventory: at least one starter weapon required.");
+    }
+    this.owned = ids.map((id) => new Weapon(WEAPON_DEFINITIONS[id]));
     this.currentIndex = 0;
   }
 
-  reset(starter: WeaponId): void {
-    this.owned = [new Weapon(WEAPON_DEFINITIONS[starter])];
-    this.currentIndex = 0;
+  reset(starter: WeaponId | readonly WeaponId[]): void {
+    this.applyStarters(starter);
   }
 
   getCurrent(): Weapon {
@@ -264,10 +260,6 @@ export class WeaponInventory {
     return this.owned.find((w) => w.definition.id === id) ?? null;
   }
 
-  /**
-   * Advance active weapon (scroll / Tab / Q). `delta` +1 = next, -1 = previous.
-   * Returns false if there is only one weapon.
-   */
   cycle(delta: number): boolean {
     if (this.owned.length <= 1) return false;
     const n = this.owned.length;
@@ -275,18 +267,10 @@ export class WeaponInventory {
     return true;
   }
 
-  /**
-   * @deprecated Use {@link cycle} with ±1; kept for call sites expecting a two-slot flip.
-   */
   swap(): void {
     this.cycle(1);
   }
 
-  /**
-   * Buy or refill the given weapon. Returns true if any change happened.
-   * - If owned: refill reserve to max.
-   * - Else: append (up to {@link MAX_OWNED_WEAPONS}) or replace current slot.
-   */
   buyOrRefill(id: WeaponId, refundCurrentInsteadOfReplace = false): "bought" | "refilled" | "noChange" {
     const def = WEAPON_DEFINITIONS[id];
     const existing = this.getWeapon(id);
@@ -322,9 +306,6 @@ export class WeaponInventory {
     return this.currentIndex;
   }
 
-  /**
-   * Jump to an owned slot by index (weapon wheel). Returns true if the active gun changed.
-   */
   setCurrentSlotIndex(index: number): boolean {
     if (this.owned.length === 0) return false;
     const clamped = Math.max(0, Math.min(this.owned.length - 1, index));
@@ -337,5 +318,11 @@ export class WeaponInventory {
 
   getOwnedCount(): number {
     return this.owned.length;
+  }
+
+  refillAll(): void {
+    for (const weapon of this.owned) {
+      weapon.resetAmmo();
+    }
   }
 }

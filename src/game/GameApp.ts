@@ -14,9 +14,24 @@ import { ScreenEffects } from "./ScreenEffects";
 import { Settings } from "./Settings";
 import { WaveDirector } from "./WaveDirector";
 import { formatWaveRound } from "./waveDisplay";
-import { Weapon, WEAPON_DEFINITIONS, WEAPON_IDS, WeaponInventory, type WeaponId } from "./Weapon";
+import { applySceneSkybox, DEFAULT_SCENE_SKYBOX } from "./sceneSkybox";
+import {
+  Weapon,
+  WEAPON_DEFINITIONS,
+  WEAPON_IDS,
+  WeaponInventory,
+  STARTER_WEAPON_SLOTS,
+  type WeaponId
+} from "./Weapon";
 import { WeaponWheel } from "./WeaponWheel";
 import { Zombie, type EnemyModelKit } from "./Zombie";
+import { AiAlly } from "./AiAlly";
+import { NineTailsPet } from "./NineTailsPet";
+import { MaxAmmoDrop } from "./PowerupDrop";
+import { JetpackPickup, type JetpackVariant } from "./JetpackPickup";
+import { MysteryBox, MYSTERY_BOX_POOL, MYSTERY_BOX_POOL_NAMES } from "./MysteryBox";
+import { PlayerStash } from "./PlayerStash";
+import { WorldItemDrop } from "./WorldItemDrop";
 import type { Door } from "./Door";
 import {
   applyPlayerModelPreset,
@@ -57,7 +72,8 @@ function kitFromContainerAsset(asset: pc.Asset): EnemyModelKit {
   }
   return {
     instantiate: () => res.instantiateRenderEntity(),
-    getAnimTrack: (name: string) => byName.get(name)
+    getAnimTrack: (name: string) => byName.get(name),
+    listAnimClipNames: () => Array.from(byName.keys())
   };
 }
 
@@ -82,11 +98,21 @@ export class GameApp {
   private readonly doors: Door[] = [];
 
   private zombies: Zombie[] = [];
+  private ally: AiAlly | null = null;
+  private nineTailsPet: NineTailsPet | null = null;
+  private nineTailsPetKit: EnemyModelKit | null = null;
+  private readonly nineTailsPetAssetPromise: Promise<void>;
+  private maxAmmoDrops: MaxAmmoDrop[] = [];
+  private jetpackDrops: JetpackPickup[] = [];
+  private jetpackVariantCursor: JetpackVariant = "valkyrie";
+  private mysteryBox: MysteryBox | null = null;
+  private readonly stash = new PlayerStash();
+  private worldDrops: WorldItemDrop[] = [];
+  private inventorySelectedSlot = 0;
   private points = 0;
   private phase: GamePhase = "title";
   private stats: RunStats = this.makeStats();
   /** Dev / test: click HUD button to pause all AI movement and attacks. */
-  private zombiesFrozen = false;
   private terrainFollowTimer = 0;
   private zombieTerrainTimer = 0;
   private zombieTerrainCursor = 0;
@@ -102,6 +128,8 @@ export class GameApp {
   private lastPlayerId: PlayerModelId = "soldier";
   private playerVisualLoadSerial = 0;
   private sunEntity: pc.Entity | null = null;
+  private skyFillEntity: pc.Entity | null = null;
+  private skyboxTexture: pc.Texture | null = null;
 
   private readonly weaponWheel: WeaponWheel;
   private weaponWheelWasOpen = false;
@@ -140,19 +168,32 @@ export class GameApp {
       }
     }
 
+    this.nineTailsPetAssetPromise = new Promise<void>((resolve) => {
+      if (!GAME_CONFIG.nineTailsPet.enabled) {
+        resolve();
+        return;
+      }
+      const url = GAME_CONFIG.nineTailsPet.glbUrl;
+      const asset = new pc.Asset("nine-tails-pet", "container", { url });
+      asset.on("error", (err: string) => {
+        console.warn(`[GameApp] Nine-Tails pet glTF failed (${url}):`, err);
+        resolve();
+      });
+      asset.ready(() => {
+        this.nineTailsPetKit = kitFromContainerAsset(asset);
+        resolve();
+      });
+      this.app.assets.add(asset);
+      this.app.assets.load(asset);
+    });
+
     this.weaponViewAssetEntries = this.createWeaponViewAssetEntries();
 
     this.collision = new CollisionWorld();
-    this.inventory = new WeaponInventory("pistol");
+    this.inventory = new WeaponInventory(STARTER_WEAPON_SLOTS);
     this.map = new ZoneMap(this.app, this.collision);
 
-    this.hud = new Hud(hudRoot, {
-      onZombieFreezeToggle: () => {
-        this.zombiesFrozen = !this.zombiesFrozen;
-        this.renderHud();
-      },
-      onDropToGroundClick: () => this.beginPlayerGravityDrop()
-    });
+    this.hud = new Hud(hudRoot);
     this.weaponWheel = new WeaponWheel(hudRoot.querySelector("#weapon-wheel"));
     this.input = new InputManager(canvas, hudRoot);
     this.player = new PlayerController(
@@ -161,7 +202,8 @@ export class GameApp {
       this.inventory,
       this.collision,
       this.map,
-      this.weaponViewAssetEntries
+      this.weaponViewAssetEntries,
+      this.audio
     );
     for (const id of WEAPON_IDS) {
       const row = this.weaponViewAssetEntries.get(id);
@@ -188,7 +230,14 @@ export class GameApp {
       onPauseRequested: () => this.togglePause(),
       onInteractRequested: () => this.attemptInteraction(),
       onWeaponCycleRequested: (dir) => this.attemptWeaponCycle(dir),
-      onWeaponWheelSlotPick: (slot) => this.pickWeaponWheelSlot(slot)
+      onWeaponWheelSlotPick: (slot) => this.pickWeaponWheelSlot(slot),
+      onInventoryToggleRequested: () => this.toggleInventory()
+    });
+
+    this.hud.setInventoryActions({
+      onSlotSelect: (i) => this.onInventorySlotSelect(i),
+      onUseSelected: () => this.useSelectedStashAmmo(),
+      onDropSelected: () => this.dropSelectedStashAmmo()
     });
 
     this.interactions = new InteractionController();
@@ -205,40 +254,17 @@ export class GameApp {
           }
         },
         onWaveStarted: (wave) => {
-          const open = MAP_CONFIG.importVisual.replacesArena;
-          this.hud.setStatus(
-            open ? `Wave ${wave} closing in from all sides.` : `Wave ${wave} pushing through the gates.`
-          );
-          this.hud.setMessage(
-            wave === 1
-              ? open
-                ? MAP_CONFIG.importVisual.useProceduralTestGround
-                  ? "Flat grid test plane — no imported walls; use this mode for perf and tuning."
-                  : "Stay moving. Use distance. Imported walls block you (disable in Settings if stuck)."
-                : "Hold the line. Reload often. Aim for the head."
-              : open
-                ? "More of them. Keep kiting and aim for the head."
-                : "The horde gets meaner. Buy doors. Stack score."
-          );
           this.screenEffects.showWaveBanner(formatWaveRound(wave));
           this.audio.play("waveStart");
           this.audio.setDroneIntensity(Math.min(1, wave * 0.18));
           this.map.triggerFlicker(0.85);
         },
         onWaveCleared: (wave) => {
-          this.hud.setStatus(`Wave ${wave} cleared. Catch your breath.`);
           this.screenEffects.showWaveBanner(`${formatWaveRound(wave)} CLEARED`, 2.5);
           this.audio.play("waveCleared");
           this.map.triggerFlicker(0.5);
         },
-        onIntermission: (wave, seconds) => {
-          const nextWave = wave + 1;
-          this.hud.setStatus(
-            wave === 0
-              ? `First contact in ${seconds}...`
-              : `Wave ${nextWave} pushing in ${seconds}...`
-          );
-        }
+        onIntermission: (_wave, _seconds) => {}
       },
       (playerPos) => this.map.pickRandomActiveSpawnPosition(playerPos, 10)
     );
@@ -317,6 +343,7 @@ export class GameApp {
     const wantWeaponWheel =
       !this.settings.get().flyMode &&
       !this.input.isTouchMode() &&
+      !this.input.isInventoryOpen() &&
       this.inventory.getOwnedCount() > 2 &&
       this.input.isKeyHeld("KeyV");
 
@@ -374,6 +401,18 @@ export class GameApp {
       this.handleShot(shot);
     }
 
+    if (this.ally) {
+      this.ally.update(simDt, this.player.root, this.map, false);
+      const allyShot = this.ally.tryEngage(simDt, this.zombies);
+      this.handleAllyShot(allyShot);
+    }
+
+    if (this.nineTailsPet) {
+      this.nineTailsPet.update(simDt, this.player.root, this.map, false);
+      const petTick = this.nineTailsPet.tickCombat(simDt, this.zombies);
+      this.handlePetCombat(petTick);
+    }
+
     for (const zombie of this.zombies) {
       const wasAlive = zombie.alive;
       zombie.update(
@@ -391,15 +430,60 @@ export class GameApp {
             this.screenEffects.triggerDamageFlash();
           }
         },
-        this.zombiesFrozen
+        false
       );
 
-      if (!this.zombiesFrozen && wasAlive && zombie.shouldMoan()) {
+      if (wasAlive && zombie.shouldMoan()) {
         this.audio.play("uiHover");
       }
     }
 
     this.zombies = this.zombies.filter((zombie) => zombie.alive);
+
+    // Update power-up drops; remove picked-up ones and apply their effect
+    if (this.maxAmmoDrops.length > 0) {
+      const playerPos = this.player.getPosition();
+      this.maxAmmoDrops = this.maxAmmoDrops.filter((drop) => {
+        const pickedUp = drop.update(simDt, playerPos);
+        if (pickedUp) {
+          this.inventory.refillAll();
+          this.audio.play("maxAmmo");
+          this.screenEffects.triggerMaxAmmoNotify();
+        }
+        return !pickedUp;
+      });
+    }
+
+    this.mysteryBox?.update(simDt);
+
+    // Update jetpack pickups — grant ability on proximity pickup
+    if (this.jetpackDrops.length > 0) {
+      const playerPos = this.player.getPosition();
+      this.jetpackDrops = this.jetpackDrops.filter((drop) => {
+        const result = drop.update(simDt, playerPos);
+        if (result === "picked") {
+          this.player.grantJetpack(GAME_CONFIG.jetpack.powerupDurationSeconds);
+          this.audio.play("maxAmmo");
+          this.screenEffects.triggerMaxAmmoNotify();
+        }
+        return result === null;
+      });
+    }
+
+    if (this.worldDrops.length > 0) {
+      const playerPos = this.player.getPosition();
+      this.worldDrops = this.worldDrops.filter((drop) => {
+        if (!drop.getAlive()) {
+          return false;
+        }
+        const r = drop.update(simDt, playerPos);
+        if (r === "picked") {
+          this.stash.addAmmo(drop.payload.caliber, drop.payload.amount);
+          this.audio.play("uiClick");
+        }
+        return drop.getAlive();
+      });
+    }
 
     this.applyOpenWorldTerrainCling(simDt);
 
@@ -575,6 +659,18 @@ export class GameApp {
         this.screenEffects.triggerScreenShake(GAME_CONFIG.fx.screenShakeBase);
         this.handleDoorOpened(result);
         break;
+      case "mystery":
+        // Points already deducted. Show HUD roulette; weapon granted via onWeaponReady callback.
+        if (result.weaponBought) {
+          this.hud.showMysteryBoxSpin(
+            MYSTERY_BOX_POOL_NAMES,
+            WEAPON_DEFINITIONS[result.weaponBought].name,
+            3500
+          );
+        }
+        this.audio.play("weaponBuy");
+        this.map.triggerFlicker(0.5);
+        break;
     }
 
     this.renderHud();
@@ -615,6 +711,111 @@ export class GameApp {
     const n = this.inventory.getOwnedCount();
     if (slot < 0 || slot >= n) return;
     this.weaponWheelHighlight = slot;
+  }
+
+  private applyCompanionKillRewards(impactPoint: pc.Vec3, headshot: boolean): void {
+    this.stats.kills += 1;
+    const points = headshot ? GAME_CONFIG.pointsPerHeadshot : GAME_CONFIG.pointsPerKill;
+    this.points += points;
+    if (headshot) {
+      this.stats.headshots += 1;
+      this.audio.play("headshot");
+    } else {
+      this.audio.play("kill");
+    }
+    this.screenEffects.triggerKillPopup(points, headshot);
+    this.effects.spawnDebris(impactPoint, this.settings.get().bloodFx);
+    this.screenEffects.triggerScreenShake(GAME_CONFIG.fx.screenShakeKill * 0.55);
+    const dropPos = impactPoint.clone();
+    if (Math.random() < 0.1) {
+      this.maxAmmoDrops.push(new MaxAmmoDrop(this.app.root, dropPos));
+    }
+    if (
+      Math.random() < GAME_CONFIG.jetpack.dropChanceOnKill &&
+      this.jetpackDrops.length < GAME_CONFIG.jetpack.maxActiveDrops
+    ) {
+      this.spawnJetpackDrop(dropPos);
+    }
+  }
+
+  private handleAllyShot(out: ReturnType<AiAlly["tryEngage"]>): void {
+    if (!out.fired || !out.hit || !out.zombie) {
+      return;
+    }
+
+    this.stats.shotsFired += 1;
+    this.stats.shotsHit += 1;
+    this.audio.play("smgShot");
+    this.effects.spawnMuzzleFlash(out.muzzlePos, out.aimDir);
+    this.effects.spawnTracer(out.muzzlePos, out.impactPoint);
+    this.screenEffects.triggerScreenShake(GAME_CONFIG.fx.screenShakeBase * 0.35);
+    this.screenEffects.triggerHitMarker();
+    this.effects.spawnImpactSpark(out.impactPoint);
+    this.effects.spawnBlood(out.impactPoint, this.settings.get().bloodFx);
+    this.audio.play("impact");
+
+    if (out.killed) {
+      this.applyCompanionKillRewards(out.impactPoint, out.headshot);
+    } else {
+      this.points += GAME_CONFIG.pointsPerHit;
+    }
+  }
+
+  private handlePetCombat(tick: ReturnType<NineTailsPet["tickCombat"]>): void {
+    if (tick.bomb.fired && tick.bomb.hits.length > 0) {
+      this.effects.spawnKuramaChakraNova(
+        tick.bomb.impactPoint,
+        GAME_CONFIG.nineTailsPet.tailedBeastRadius
+      );
+      this.audio.play("rifleShot");
+      this.screenEffects.triggerScreenShake(GAME_CONFIG.fx.screenShakeBase * 0.95);
+      this.screenEffects.triggerHitMarker();
+      for (const h of tick.bomb.hits) {
+        this.stats.shotsHit += 1;
+        this.effects.spawnImpactSpark(h.impactPoint);
+        this.effects.spawnBlood(h.impactPoint, this.settings.get().bloodFx);
+        if (h.killed) {
+          this.applyCompanionKillRewards(h.impactPoint, false);
+        } else {
+          this.points += GAME_CONFIG.pointsPerHit;
+        }
+      }
+    }
+
+    const ff = tick.foxFire;
+    if (!ff.fired || !ff.hit) {
+      return;
+    }
+
+    this.stats.shotsFired += 1;
+    this.stats.shotsHit += 1;
+    this.audio.play("smgShot");
+    this.effects.spawnFoxFireFlash(ff.muzzlePos, ff.aimDir);
+    this.effects.spawnFoxFireTracer(ff.muzzlePos, ff.impactPoint);
+    this.screenEffects.triggerScreenShake(GAME_CONFIG.fx.screenShakeBase * 0.32);
+    this.screenEffects.triggerHitMarker();
+    this.effects.spawnImpactSpark(ff.impactPoint);
+    this.effects.spawnBlood(ff.impactPoint, this.settings.get().bloodFx);
+    this.audio.play("impact");
+
+    if (ff.killed) {
+      this.applyCompanionKillRewards(ff.impactPoint, false);
+    } else {
+      this.points += GAME_CONFIG.pointsPerHit;
+    }
+  }
+
+  /** Spawn a jetpack pickup at `pos`, alternating Valkyrie / Marauder variants. */
+  private spawnJetpackDrop(pos: pc.Vec3): void {
+    const variant = this.jetpackVariantCursor;
+    this.jetpackVariantCursor = variant === "valkyrie" ? "marauder" : "valkyrie";
+    const drop = new JetpackPickup(
+      this.app.root,
+      pos,
+      variant,
+      GAME_CONFIG.jetpack.lifetimeSeconds
+    );
+    this.jetpackDrops.push(drop);
   }
 
   // --- Hitscan feedback: tracers, impact FX, score, kill banner ---
@@ -660,6 +861,18 @@ export class GameApp {
         this.screenEffects.triggerKillPopup(points, shot.headshot);
         this.effects.spawnDebris(shot.impactPoint, this.settings.get().bloodFx);
         this.screenEffects.triggerScreenShake(GAME_CONFIG.fx.screenShakeKill);
+
+        // 10% chance: drop a Max Ammo power-up at the zombie's death position
+        if (Math.random() < 0.10) {
+          this.maxAmmoDrops.push(new MaxAmmoDrop(this.app.root, shot.zombie.getPosition()));
+        }
+        // Independent 7% chance: drop a jetpack pickup (capped to prevent clutter)
+        if (
+          Math.random() < GAME_CONFIG.jetpack.dropChanceOnKill &&
+          this.jetpackDrops.length < GAME_CONFIG.jetpack.maxActiveDrops
+        ) {
+          this.spawnJetpackDrop(shot.zombie.getPosition());
+        }
       } else {
         this.points += GAME_CONFIG.pointsPerHit;
       }
@@ -700,6 +913,26 @@ export class GameApp {
           return;
         }
         this.player.attachCharacterModel(kitFromContainerAsset(asset));
+        void this.loadPlayerJetpackCosmetic().then(() => resolve());
+      });
+      this.app.assets.add(asset);
+      this.app.assets.load(asset);
+    });
+  }
+
+  private loadPlayerJetpackCosmetic(): Promise<void> {
+    const jp = GAME_CONFIG.playerVisual.jetpackCosmetic;
+    if (!jp.enabled || !jp.gltfUrl) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const asset = new pc.Asset("player-jetpack-cosmetic", "container", { url: jp.gltfUrl });
+      asset.on("error", (err: string) => {
+        console.warn(`[GameApp] Jetpack glTF failed (${jp.gltfUrl}):`, err);
+        resolve();
+      });
+      asset.ready(() => {
+        this.player.attachJetpackCosmetic(kitFromContainerAsset(asset));
         resolve();
       });
       this.app.assets.add(asset);
@@ -707,14 +940,44 @@ export class GameApp {
     });
   }
 
+  private teardownAlly(): void {
+    if (this.ally) {
+      this.ally.destroy();
+      this.ally = null;
+    }
+  }
+
+  private teardownNineTailsPet(): void {
+    if (this.nineTailsPet) {
+      this.nineTailsPet.destroy();
+      this.nineTailsPet = null;
+    }
+  }
+
   private async beginRunWithSetup(): Promise<void> {
     for (const zombie of this.zombies) {
       zombie.root.destroy();
     }
     this.zombies = [];
+    this.teardownAlly();
+    this.teardownNineTailsPet();
+    if (this.mysteryBox) {
+      this.mysteryBox.destroy();
+      this.mysteryBox = null;
+    }
+    for (const drop of this.maxAmmoDrops) {
+      drop.destroy();
+    }
+    this.maxAmmoDrops = [];
+    for (const d of this.worldDrops) {
+      d.destroy();
+    }
+    this.worldDrops = [];
+    this.stash.clear();
+    this.inventorySelectedSlot = 0;
+    this.input.setInventoryOpen(false);
     this.points = 0;
     this.stats = this.makeStats();
-    this.zombiesFrozen = false;
     this.terrainFollowTimer = 0;
     this.zombieTerrainTimer = 0;
     this.zombieTerrainCursor = 0;
@@ -732,7 +995,7 @@ export class GameApp {
       this.player.setCameraFarClip(MAP_CONFIG.importVisual.cameraFarClip);
     }
 
-    this.inventory.reset("pistol");
+    this.inventory.reset(STARTER_WEAPON_SLOTS);
     this.player.reset();
     this.weaponWheelWasOpen = false;
     this.weaponWheelHighlight = 0;
@@ -747,6 +1010,19 @@ export class GameApp {
     this.wireArenaFromBuilt(built);
     this.rebuildInteractions();
 
+    // Spawn mystery box
+    const mbPos = new pc.Vec3(0, 0, 6);
+    this.mysteryBox = new MysteryBox(this.app.root, mbPos, (weaponId, _name) => {
+      this.inventory.buyOrRefill(weaponId);
+      this.audio.play("weaponBuy");
+      this.player.notifyWeaponInventoryChanged();
+      this.renderHud();
+    });
+    if (MAP_CONFIG.importVisual.replacesArena && MAP_CONFIG.importVisual.snapFeetToGround) {
+      this.map.snapEntityFeetToImportedGround(this.mysteryBox.getRoot(), 0, 6, 0);
+    }
+    this.interactions.register(this.mysteryBox);
+
     this.phase = "playing";
     this.input.setGameOver(false);
     this.input.setPaused(false);
@@ -756,20 +1032,6 @@ export class GameApp {
     this.audio.setDroneIntensity(0.18);
     this.audio.setHeartbeatRate(0);
 
-    this.hud.setStatus(
-      MAP_CONFIG.importVisual.replacesArena
-        ? "You're in the export now — watch every horizon."
-        : "Floodlights humming. Stay sharp."
-    );
-    this.hud.setMessage(
-      MAP_CONFIG.importVisual.replacesArena
-        ? this.input.isTouchMode()
-          ? "Hold Fire. Tap Reload. Explore the map — voxel collision comes later."
-          : "Click to lock the mouse. WASD to move. R to reload. Mouse wheel or Q cycles weapons. Hold V for the weapon wheel when you carry three or more guns."
-        : this.input.isTouchMode()
-          ? "Hold Fire. Tap Reload. Walk up to wall buys and tap Use."
-          : "Click to lock the mouse. R to reload. E to buy. Mouse wheel or Q cycles weapons. Hold V for the weapon wheel with three or more guns."
-    );
     this.hud.setInteractPrompt(null);
 
     this.menus.hide();
@@ -784,6 +1046,27 @@ export class GameApp {
         this.renderHud();
       }
     }
+
+    await this.nineTailsPetAssetPromise;
+    if (GAME_CONFIG.nineTailsPet.enabled && this.nineTailsPetKit) {
+      const p = this.player.getPosition().clone();
+      this.nineTailsPet = new NineTailsPet(p, this.collision, this.nineTailsPetKit);
+      this.app.root.addChild(this.nineTailsPet.root);
+      if (MAP_CONFIG.importVisual.replacesArena && MAP_CONFIG.importVisual.snapFeetToGround) {
+        this.map.snapEntityFeetToImportedGround(
+          this.nineTailsPet.root,
+          p.x,
+          p.z,
+          p.y
+        );
+      }
+    }
+
+    if (this.settings.get().aiAllyEnabled) {
+      const p = this.player.getPosition().clone();
+      this.ally = new AiAlly(p, this.collision, this.pickEnemyModelKit());
+      this.app.root.addChild(this.ally.root);
+    }
   }
 
   private rebuildInteractions(): void {
@@ -795,6 +1078,9 @@ export class GameApp {
   }
 
   private endRun(): void {
+    this.teardownAlly();
+    this.teardownNineTailsPet();
+    this.input.setInventoryOpen(false);
     this.phase = "gameOver";
     this.input.setGameOver(true);
     this.input.setInputBlocked(true);
@@ -822,6 +1108,13 @@ export class GameApp {
 
   private togglePause(): void {
     if (this.phase === "playing") {
+      if (this.input.isInventoryOpen()) {
+        this.input.setInventoryOpen(false);
+        this.renderHud();
+        this.input.requestPointerLockIfNeeded();
+        return;
+      }
+      this.input.setInventoryOpen(false);
       this.phase = "paused";
       this.input.setPaused(true);
       this.input.setInputBlocked(true);
@@ -851,6 +1144,28 @@ export class GameApp {
       zombie.root.destroy();
     }
     this.zombies = [];
+    this.teardownAlly();
+    this.teardownNineTailsPet();
+    if (this.mysteryBox) {
+      this.mysteryBox.destroy();
+      this.mysteryBox = null;
+    }
+    for (const drop of this.maxAmmoDrops) {
+      drop.destroy();
+    }
+    this.maxAmmoDrops = [];
+    for (const drop of this.jetpackDrops) {
+      drop.destroy();
+    }
+    this.jetpackDrops = [];
+    this.jetpackVariantCursor = "valkyrie";
+    for (const d of this.worldDrops) {
+      d.destroy();
+    }
+    this.worldDrops = [];
+    this.stash.clear();
+    this.inventorySelectedSlot = 0;
+    this.input.setInventoryOpen(false);
     this.phase = "title";
     this.input.setGameOver(false);
     this.input.setPaused(false);
@@ -860,7 +1175,7 @@ export class GameApp {
     if (document.pointerLockElement === this.canvas) {
       document.exitPointerLock();
     }
-    this.inventory.reset("pistol");
+    this.inventory.reset(STARTER_WEAPON_SLOTS);
     this.player.reset();
     this.player.notifyWeaponInventoryChanged();
     this.waveDirector.reset();
@@ -869,7 +1184,6 @@ export class GameApp {
     this.rebuildInteractions();
     this.points = 0;
     this.stats = this.makeStats();
-    this.zombiesFrozen = false;
     this.playerGravityDropActive = false;
     this.playerGravityDropVelocity = 0;
     this.playerGravityDropTargetY = null;
@@ -877,16 +1191,6 @@ export class GameApp {
     this.weaponWheelHighlight = 0;
     this.input.setWeaponWheelOpen(false);
     void this.weaponWheel.sync(false, [], 0, 0, 0);
-    this.hud.setStatus(
-      MAP_CONFIG.importVisual.replacesArena
-        ? "Reloading world slice..."
-        : "Booting yard floodlights..."
-    );
-    this.hud.setMessage(
-      MAP_CONFIG.importVisual.replacesArena
-        ? "Click PLAY to load into your Mineways world."
-        : "Click PLAY to drop into the yard."
-    );
     this.hud.setInteractPrompt(null);
     this.renderHud();
   }
@@ -903,15 +1207,89 @@ export class GameApp {
       queuedZombies: this.waveDirector.getQueuedSpawns(),
       weapon,
       isReloading: this.player.isCurrentlyReloading(),
-      reloadProgress: this.player.getReloadProgress(),
-      zombiesFrozen: this.zombiesFrozen,
-      showDropToGround:
-        MAP_CONFIG.importVisual.replacesArena && MAP_CONFIG.importVisual.snapFeetToGround,
-      playerGravityDropping: this.playerGravityDropActive
+      reloadProgress: this.player.getReloadProgress()
     });
+    const invOpen = this.phase === "playing" && this.input.isInventoryOpen();
+    this.hud.syncInventoryPanel(invOpen, weapon, this.stash.getStacks(), this.inventorySelectedSlot);
+    this.hud.setJetpackStatus(
+      this.player.hasJetpack,
+      this.player.getJetpackRemaining(),
+      GAME_CONFIG.jetpack.powerupDurationSeconds
+    );
   }
 
-  // --- Per-run counters (fed into game-over modal) ---
+  private toggleInventory(): void {
+    if (this.phase !== "playing" || this.menus.isOpen()) {
+      return;
+    }
+    const next = !this.input.isInventoryOpen();
+    this.input.setInventoryOpen(next);
+    if (next) {
+      this.input.setWeaponWheelOpen(false);
+      this.weaponWheelWasOpen = false;
+      void this.weaponWheel.sync(false, [], 0, 0, 0);
+      this.clampInventorySelection();
+    } else {
+      this.input.requestPointerLockIfNeeded();
+    }
+    this.renderHud();
+  }
+
+  private clampInventorySelection(): void {
+    const n = this.stash.getStacks().length;
+    if (n <= 0) {
+      this.inventorySelectedSlot = 0;
+      return;
+    }
+    this.inventorySelectedSlot = Math.max(0, Math.min(this.inventorySelectedSlot, n - 1));
+  }
+
+  private onInventorySlotSelect(index: number): void {
+    if (this.phase !== "playing") return;
+    const n = this.stash.getStacks().length;
+    if (index >= 0 && index < n) {
+      this.inventorySelectedSlot = index;
+      this.renderHud();
+    }
+  }
+
+  private useSelectedStashAmmo(): void {
+    if (this.phase !== "playing" || !this.input.isInventoryOpen()) return;
+    this.clampInventorySelection();
+    const applied = this.stash.applyStackToWeapons(this.inventorySelectedSlot, this.inventory);
+    if (applied > 0) {
+      this.audio.play("reloadDone");
+      this.clampInventorySelection();
+      this.player.notifyWeaponInventoryChanged();
+      this.renderHud();
+    }
+  }
+
+  private dropSelectedStashAmmo(): void {
+    if (this.phase !== "playing" || !this.input.isInventoryOpen()) return;
+    this.clampInventorySelection();
+    const taken = this.stash.takeStackAt(this.inventorySelectedSlot);
+    if (!taken) return;
+    const pos = this.getDropSpawnPosition();
+    this.worldDrops.push(
+      new WorldItemDrop(this.app.root, pos, { caliber: taken.caliber, amount: taken.amount })
+    );
+    this.clampInventorySelection();
+    this.audio.play("weaponSwap");
+    this.renderHud();
+  }
+
+  private getDropSpawnPosition(): pc.Vec3 {
+    const p = this.player.getPosition();
+    const fwd = this.player.root.forward.clone();
+    fwd.y = 0;
+    if (fwd.lengthSq() > 1e-6) {
+      fwd.normalize();
+    } else {
+      fwd.set(0, 0, 1);
+    }
+    return new pc.Vec3(p.x + fwd.x * 0.85, p.y, p.z + fwd.z * 0.85);
+  }
 
   private makeStats(): RunStats {
     return {
@@ -925,57 +1303,88 @@ export class GameApp {
 
   // --- Scene look: ambient, fog ranges, sun key light (open-world vs arena) ---
 
+  /**
+   * Ambient / fog / directional sun plus Hytopia cubemap sky ({@link applySceneSkybox}).
+   * Called on boot and when switching import vs arena after a run restart.
+   */
   private configureScene(): void {
     if (this.sunEntity) {
       this.sunEntity.destroy();
       this.sunEntity = null;
+    }
+    if (this.skyFillEntity) {
+      this.skyFillEntity.destroy();
+      this.skyFillEntity = null;
     }
 
     const openImport =
       MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena;
 
     if (MAP_CONFIG.importVisual.enabled) {
-      // Daytime readability for Mineways / large imports (was night-orange + dark fog).
-      this.app.scene.ambientLight = new pc.Color(0.42, 0.48, 0.55);
-      this.app.scene.exposure = 1.25;
+      // Open world: bright midday sky — enough to read voxel terrain clearly.
+      this.app.scene.ambientLight = new pc.Color(0.62, 0.70, 0.80);
+      this.app.scene.exposure = 1.55;
       this.app.scene.fog.type = pc.FOG_LINEAR;
       if (openImport) {
-        this.app.scene.fog.start = 120;
-        this.app.scene.fog.end = 900;
+        this.app.scene.fog.start = 140;
+        this.app.scene.fog.end = 950;
       } else {
-        this.app.scene.fog.start = 50;
-        this.app.scene.fog.end = 240;
+        this.app.scene.fog.start = 55;
+        this.app.scene.fog.end = 260;
       }
-      this.app.scene.fog.color = new pc.Color(0.62, 0.72, 0.85);
+      // Fog matches the partly-cloudy sky: bright horizon haze
+      this.app.scene.fog.color = new pc.Color(0.68, 0.78, 0.90);
     } else {
-      this.app.scene.ambientLight = new pc.Color(0.13, 0.1, 0.08);
-      this.app.scene.exposure = 1.05;
+      // Procedural arena: daytime outdoor light (readable, bright horizon)
+      this.app.scene.ambientLight = new pc.Color(0.58, 0.66, 0.78);
+      this.app.scene.exposure = 1.52;
       this.app.scene.fog.type = pc.FOG_LINEAR;
-      this.app.scene.fog.start = 22;
-      this.app.scene.fog.end = 70;
-      this.app.scene.fog.color = new pc.Color(0.04, 0.03, 0.04);
+      this.app.scene.fog.start = 50;
+      this.app.scene.fog.end = 220;
+      this.app.scene.fog.color = new pc.Color(0.62, 0.74, 0.88);
     }
 
+    // Key sun
     const sun = new pc.Entity("sun");
     if (MAP_CONFIG.importVisual.enabled) {
       sun.addComponent("light", {
         type: "directional",
         castShadows: false,
-        color: new pc.Color(1, 0.96, 0.88),
-        intensity: 1.15
+        color: new pc.Color(1.0, 0.96, 0.86),
+        intensity: 2.4
       });
-      sun.setEulerAngles(52, -35, 0);
+      sun.setEulerAngles(44, -30, 0);
     } else {
       sun.addComponent("light", {
         type: "directional",
         castShadows: false,
-        color: new pc.Color(0.7, 0.4, 0.22),
-        intensity: 0.45
+        color: new pc.Color(0.98, 0.94, 0.82),
+        intensity: 2.25
       });
-      sun.setEulerAngles(58, 32, 0);
+      sun.setEulerAngles(48, -35, 0);
     }
     this.app.root.addChild(sun);
     this.sunEntity = sun;
+
+    // Sky-fill: soft blue-white bounce from above, lifts shadowed faces off zero
+    const fill = new pc.Entity("sky-fill");
+    fill.addComponent("light", {
+      type: "directional",
+      castShadows: false,
+      color: MAP_CONFIG.importVisual.enabled
+        ? new pc.Color(0.55, 0.68, 0.90)
+        : new pc.Color(0.50, 0.64, 0.88),
+      intensity: MAP_CONFIG.importVisual.enabled ? 0.85 : 0.78
+    });
+    fill.setEulerAngles(-80, 0, 0); // pointing down from sky
+    this.app.root.addChild(fill);
+    this.skyFillEntity = fill;
+
+    void applySceneSkybox(this.app, DEFAULT_SCENE_SKYBOX, this.skyboxTexture).then((tex) => {
+      this.skyboxTexture = tex;
+    });
+
+    this.player.syncCameraClearForMap();
   }
 
   private targetPixelRatio(): number {

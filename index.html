@@ -22,19 +22,16 @@
         <div class="hud-top">
           <div class="hud-left">
             <div class="stat-card health-card">
-              <span class="stat-label">Vitals</span>
+              <span class="stat-label">RIG</span>
               <div class="health-bar">
                 <div class="health-bar-fill" id="health-bar"></div>
               </div>
               <span class="stat-value" id="health-value">100</span>
             </div>
           </div>
-          <div class="hud-center">
-            <div id="status-text" class="status-text">Booting yard floodlights...</div>
-          </div>
           <div class="hud-right">
             <div class="stat-card threat-card">
-              <span class="stat-label">Threat</span>
+              <span class="stat-label">Hostiles</span>
               <span class="stat-value" id="zombies-value">0</span>
             </div>
             <div class="stat-card score-card">
@@ -44,34 +41,16 @@
           </div>
         </div>
 
-        <div id="message-text" class="message-text">
-          Click PLAY to drop into the yard.
-        </div>
-
-        <div class="hud-freeze-wrap">
-          <button
-            type="button"
-            id="btn-freeze-zombies"
-            class="hud-freeze-btn"
-            aria-pressed="false"
-          >
-            Freeze zombies
-          </button>
-          <button
-            type="button"
-            id="btn-drop-to-ground"
-            class="hud-freeze-btn hud-dev-btn"
-            title="Sample terrain under you and fall until feet hit the mesh"
-          >
-            Drop to ground
-          </button>
-        </div>
-
         <div id="hit-marker" aria-hidden="true">
           <span></span><span></span><span></span><span></span>
         </div>
 
         <div id="kill-popups" aria-hidden="true"></div>
+
+        <div id="powerup-notify" aria-hidden="true" aria-live="polite">
+          <span class="powerup-notify-label">POWER UP</span>
+          <span class="powerup-notify-text">MAX AMMO</span>
+        </div>
 
         <div id="wave-tracker-persistent" aria-hidden="true">0</div>
 
@@ -87,6 +66,31 @@
           <span class="crosshair-line crosshair-left"></span>
           <span class="crosshair-line crosshair-right"></span>
           <span class="crosshair-dot"></span>
+        </div>
+
+        <div id="jetpack-hud" aria-hidden="true">
+          <span class="jetpack-icon">⚡</span>
+          <div class="jetpack-info">
+            <span class="jetpack-label">JETPACK</span>
+            <div class="jetpack-bar-track">
+              <div class="jetpack-bar-fill" id="jetpack-bar"></div>
+            </div>
+          </div>
+          <span class="jetpack-timer" id="jetpack-timer">60s</span>
+        </div>
+
+        <div id="mystery-spin-overlay" aria-hidden="true">
+          <div class="mystery-spin-inner">
+            <div class="mystery-spin-header">
+              <span class="mystery-spin-title">⭐ MYSTERY BOX ⭐</span>
+              <span class="mystery-spin-cost">950 PTS</span>
+            </div>
+            <div class="mystery-spin-reel">
+              <div class="mystery-spin-arrows">▶&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;◀</div>
+              <div id="mystery-spin-name" class="mystery-spin-name">???</div>
+            </div>
+            <div id="mystery-spin-status" class="mystery-spin-status">??? MYSTERY BOX ???</div>
+          </div>
         </div>
 
         <div id="ammo-panel">
@@ -147,6 +151,32 @@
             </p>
             <div class="weapon-wheel-items" id="weapon-wheel-items"></div>
             <div class="weapon-wheel-center-ring" aria-hidden="true"></div>
+          </div>
+        </div>
+
+        <div id="inventory-panel" class="inventory-panel" aria-hidden="true" data-open="0">
+          <div class="inventory-backdrop"></div>
+          <div class="inventory-window mc-inventory">
+            <div class="inventory-header">
+              <h2 class="inventory-title">Inventory</h2>
+              <p class="inventory-sub">Press <kbd>I</kbd> or <kbd>Esc</kbd> to close</p>
+            </div>
+            <div class="inventory-held-card">
+              <span class="inventory-held-label">Holding</span>
+              <div class="inventory-held-name" id="inv-held-name">—</div>
+              <div class="inventory-held-detail" id="inv-held-detail">—</div>
+            </div>
+            <div class="inventory-grid-wrap">
+              <span class="inventory-section-label">Backpack</span>
+              <div class="inventory-grid" id="inventory-grid"></div>
+            </div>
+            <div class="inventory-toolbar">
+              <button type="button" class="inv-toolbar-btn" id="inv-btn-use">Load into guns (use)</button>
+              <button type="button" class="inv-toolbar-btn inv-toolbar-btn-drop" id="inv-btn-drop">
+                Drop stack
+              </button>
+            </div>
+            <p class="inventory-footnote">Dropped ammo floats and spins for 60s — walk over to pick up.</p>
           </div>
         </div>
       </div>
@@ -289,6 +319,17 @@
                   <span>Solid imported map (block walls)</span>
                   <input id="setting-import-mesh-collision" type="checkbox" />
                 </label>
+                <label class="settings-row settings-toggle">
+                  <span>Press C — switch 1st / 3rd person (desktop)</span>
+                  <input id="setting-third-person-toggle" type="checkbox" />
+                </label>
+                <label class="settings-row settings-toggle">
+                  <span>AI squadmate (follow + shoot)</span>
+                  <input id="setting-ai-ally" type="checkbox" />
+                </label>
+                <p class="settings-hint">
+                  Spawns a friendly bot beside you in the next run. Rule-based only — not the Hytopia GPT NPC demo.
+                </p>
                 <p class="settings-hint">
                   With solid map on, movement uses the Mineways mesh. Turn off or use No clip if you get stuck.
                 </p>
@@ -344,12 +385,16 @@
                   <li><kbd>V</kbd> / <kbd>Ctrl</kbd> — Fly up / down when Fly mode is on in Settings</li>
                   <li><kbd>R</kbd> — Reload</li>
                   <li><kbd>E</kbd> / <kbd>F</kbd> — Use / Buy</li>
+                  <li>
+                    <kbd>I</kbd> — Inventory (backpack ammo, drop / load; closes with <kbd>I</kbd> or
+                    <kbd>Esc</kbd>)
+                  </li>
                   <li><kbd>Q</kbd> / <kbd>Tab</kbd> / mouse wheel — Cycle weapons (owned)</li>
+                  <li><kbd>C</kbd> — Toggle first / third person (when enabled in Settings; desktop)</li>
                   <li><kbd>Mouse</kbd> — Aim</li>
                   <li><kbd>Left Click</kbd> — Fire</li>
-                  <li><kbd>Esc</kbd> — Pause</li>
+                  <li><kbd>Esc</kbd> — Close inventory if open, else pause</li>
                   <li><kbd>Enter</kbd> — Restart on death</li>
-                  <li>HUD — <strong>Freeze zombies</strong> (click to pause AI for testing)</li>
                 </ul>
               </div>
               <div class="controls-block">

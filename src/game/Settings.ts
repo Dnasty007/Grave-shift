@@ -20,6 +20,12 @@ export type SettingsState = {
   noclip: boolean;
   /** When imported map replaces arena, block player with horizontal mesh raycasts. */
   importMeshCollision: boolean;
+  /**
+   * Desktop: press C to toggle first / third person (ignored in touch UI mode).
+   */
+  allowThirdPersonToggle: boolean;
+  /** Rule-based friendly shooter (not an LLM). See Settings → AI squadmate. */
+  aiAllyEnabled: boolean;
 };
 
 const STORAGE_KEY = "grave-shift.settings.v1";
@@ -78,7 +84,9 @@ export class Settings {
       sprintSpeedMultiplier: 1,
       flyMode: false,
       noclip: false,
-      importMeshCollision: true
+      importMeshCollision: true,
+      allowThirdPersonToggle: true,
+      aiAllyEnabled: false
     };
   }
 

@@ -12,6 +12,8 @@ export type ZombieStats = {
 export type EnemyModelKit = {
   instantiate: () => pc.Entity;
   getAnimTrack: (name: string) => AnimTrack | undefined;
+  /** glTF animation clip names (for rigs that don't use zombie clip names). */
+  listAnimClipNames?: () => readonly string[];
 };
 
 let zombieId = 0;

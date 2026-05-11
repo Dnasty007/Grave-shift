@@ -103,7 +103,7 @@ export class WeaponViewmodel {
     this.applyProceduralMaterials(weapon);
 
     const vm = weapon.definition.viewModelGltf;
-    const entry = vm ? this.weaponAssets.get(weapon.definition.id) : undefined;
+    const entry = vm ? this.weaponAssets.get(weapon.definition.id as WeaponId) : undefined;
     const resource = entry?.asset.resource as pc.ContainerResource | null | undefined;
 
     const ent =
@@ -120,7 +120,7 @@ export class WeaponViewmodel {
       ent.setLocalEulerAngles(vm.eulerDegrees[0], vm.eulerDegrees[1], vm.eulerDegrees[2]);
       this.root.addChild(ent);
       this.gltfEntity = ent;
-      this.currentWeaponIdForGltf = weapon.definition.id;
+      this.currentWeaponIdForGltf = weapon.definition.id as WeaponId;
       this.useProceduralModel = false;
       this.setProceduralPartsVisible(false);
     } else {
@@ -131,7 +131,7 @@ export class WeaponViewmodel {
           `[WeaponViewmodel] GLB for "${weapon.definition.id}" had no render/model geometry (check file / export).`
         );
       }
-      this.useProceduralFallback(weapon.definition.id);
+      this.useProceduralFallback(weapon.definition.id as WeaponId);
     }
 
     this.positionMuzzleForCurrentMode(weapon);
@@ -291,5 +291,10 @@ export class WeaponViewmodel {
       0.18 + flashOpacity * 0.2,
       0.18 + flashOpacity * 0.2
     );
+  }
+
+  /** Hide FPS gun + muzzle (third-person mode). */
+  setDrawEnabled(visible: boolean): void {
+    this.root.enabled = visible;
   }
 }

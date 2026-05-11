@@ -1,6 +1,6 @@
 import * as pc from "playcanvas";
 import type { AnimTrack } from "playcanvas";
-import { GAME_CONFIG, MAP_CONFIG } from "./config";
+import { GAME_CONFIG, MAP_CONFIG, type JetpackCosmeticRigProfile } from "./config";
 import { clamp, raySphereIntersection } from "./math";
 import type { CollisionWorld } from "./CollisionWorld";
 import type { InputManager } from "./InputManager";
@@ -11,6 +11,7 @@ import { WeaponViewmodel } from "./WeaponViewmodel";
 import type { EnemyModelKit, Zombie } from "./Zombie";
 import type { Map as GameMap } from "./Map";
 import { getPlayerVisualRuntime } from "./runSession";
+import type { AudioEngine } from "./AudioEngine";
 
 /**
  * First-person rig + combat for one `player` entity.
@@ -68,6 +69,16 @@ export class PlayerController {
   private characterAnim: pc.AnimComponent | null = null;
   private resolveCharacterAnim: ((name: string) => AnimTrack | undefined) | null = null;
   private characterLocoMode: "walk" | "run" | null = null;
+  private thirdPersonActive = false;
+  /** Sprint / walk foot cadence using Hytopia stone step sample. */
+  private footstepPhase = 0;
+  private readonly audio: AudioEngine | null;
+
+  // --- Jetpack powerup state ---
+  private jetpackActive = false;
+  private jetpackTimer = 0;
+  private readonly JETPACK_JUMP_MULT = 1.85;
+  private readonly JETPACK_GLIDE_FALL_SPEED = 2.2;
 
   // --- Construction: camera + subscribe FOV; imported mode uses 1.7 m eye height ---
 
@@ -77,21 +88,21 @@ export class PlayerController {
     inventory: WeaponInventory,
     collision: CollisionWorld,
     gameMap: GameMap,
-    weaponViewAssets: ReadonlyMap<WeaponId, { asset: pc.Asset }>
+    weaponViewAssets: ReadonlyMap<WeaponId, { asset: pc.Asset }>,
+    audio: AudioEngine | null = null
   ) {
     this.input = input;
     this.settings = settings;
     this.inventory = inventory;
     this.collision = collision;
     this.gameMap = gameMap;
+    this.audio = audio;
 
     const importOn = MAP_CONFIG.importVisual.enabled;
     const openWorld =
       MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena;
     this.camera.addComponent("camera", {
-      clearColor: importOn
-        ? new pc.Color(0.55, 0.68, 0.82)
-        : new pc.Color(0.02, 0.03, 0.05),
+      clearColor: PlayerController.clearColorForMapImport(importOn),
       nearClip: 0.04,
       farClip: openWorld ? MAP_CONFIG.importVisual.cameraFarClip : 200,
       fov: settings.get().fov
@@ -114,6 +125,19 @@ export class PlayerController {
     this.viewmodel.setWeapon(this.inventory.getCurrent());
 
     this.reset();
+  }
+
+  private static clearColorForMapImport(importVisualEnabled: boolean): pc.Color {
+    return importVisualEnabled
+      ? new pc.Color(0.55, 0.68, 0.82)
+      : new pc.Color(0.52, 0.66, 0.84);
+  }
+
+  /** Call after map preset changes so letterbox / failed-sky pixels match the active scene fog. */
+  syncCameraClearForMap(): void {
+    const cam = this.camera.camera;
+    if (!cam) return;
+    cam.clearColor = PlayerController.clearColorForMapImport(MAP_CONFIG.importVisual.enabled);
   }
 
   // --- Camera tuning: pivot Y = 1.7 when GLB import is on (arena: 1.65) ---
@@ -161,15 +185,128 @@ export class PlayerController {
     ent.setLocalPosition(0, av.yOffset, 0);
     ent.setLocalEulerAngles(0, av.yawOffsetDeg, 0);
     this.root.insertChild(ent, 0);
-    if (getPlayerVisualRuntime().hideBodyInFirstPerson) {
-      const renders = ent.findComponents("render") as pc.RenderComponent[];
-      for (let i = 0; i < renders.length; i++) {
-        renders[i].enabled = false;
-      }
-    }
     this.attachPlayerLocomotion(ent, kit);
     this.characterVisual = ent;
     this.applyCameraPivotHeight();
+    this.applyJetpackBuiltInHiding();
+    this.applyPersonVisualState(this.settings.get());
+  }
+
+  /** First vs third person: camera offset, body meshes, FPS viewmodel (C when enabled in Settings). */
+  private applyPersonVisualState(settingsState: SettingsState): void {
+    const allowThird = settingsState.allowThirdPersonToggle && !this.input.isTouchMode();
+    const third = allowThird && this.thirdPersonActive;
+    if (third) {
+      const o = GAME_CONFIG.player.thirdPersonCamera.localOffset;
+      this.camera.setLocalPosition(o[0], o[1], o[2]);
+    } else {
+      this.camera.setLocalPosition(0, 0, 0);
+    }
+    this.viewmodel.setDrawEnabled(!third);
+    const hideFp = getPlayerVisualRuntime().hideBodyInFirstPerson;
+    const wantBodyMeshes = third || !hideFp;
+    this.setNonJetpackCharacterRendersEnabled(wantBodyMeshes);
+  }
+
+  private static isUnderJetpackCosmetic(node: pc.GraphNode): boolean {
+    let p: pc.GraphNode | null = node;
+    while (p) {
+      if (p.name === "player-jetpack-cosmetic") return true;
+      p = p.parent;
+    }
+    return false;
+  }
+
+  private setNonJetpackCharacterRendersEnabled(enabled: boolean): void {
+    if (!this.characterVisual) return;
+    const renders = this.characterVisual.findComponents("render") as pc.RenderComponent[];
+    for (let i = 0; i < renders.length; i++) {
+      const r = renders[i];
+      const entity = r.entity;
+      if (!PlayerController.isUnderJetpackCosmetic(entity)) {
+        r.enabled = enabled;
+      }
+    }
+  }
+
+  /**
+   * After `attachCharacterModel`, parents an extra glTF (jetpack) under a named bone.
+   * Renders stay on even when the hero body is hidden in first person.
+   */
+  attachJetpackCosmetic(kit: EnemyModelKit): void {
+    const cfg = GAME_CONFIG.playerVisual.jetpackCosmetic;
+    if (!cfg.enabled || !cfg.gltfUrl) return;
+    const visual = this.characterVisual;
+    if (!visual) return;
+
+    const prev = visual.findByName("player-jetpack-cosmetic");
+    if (prev) prev.destroy();
+
+    const eff = this.getEffectiveJetpackCosmetic();
+    let mount: pc.GraphNode | null = null;
+    for (const bone of eff.attachBoneNames) {
+      const found = visual.findByName(bone);
+      if (found) {
+        mount = found;
+        break;
+      }
+    }
+    if (!mount) {
+      console.warn("[PlayerController] Jetpack: no attach bone found; using character root.");
+      mount = visual;
+    }
+
+    let jet: pc.Entity;
+    try {
+      jet = kit.instantiate();
+    } catch (e) {
+      console.warn("[PlayerController] Jetpack instantiate failed.", e);
+      return;
+    }
+    jet.name = "player-jetpack-cosmetic";
+    const [sx, sy, sz] = eff.localScale;
+    const [px, py, pz] = eff.localPosition;
+    const [rx, ry, rz] = eff.localEuler;
+    jet.setLocalScale(sx, sy, sz);
+    jet.setLocalPosition(px, py, pz);
+    jet.setLocalEulerAngles(rx, ry, rz);
+    mount.addChild(jet);
+    this.applyPersonVisualState(this.settings.get());
+  }
+
+  /** Merge base jetpack cosmetic config with optional per-hero `rigProfiles` entry. */
+  private getEffectiveJetpackCosmetic(): {
+    attachBoneNames: readonly string[];
+    localScale: [number, number, number];
+    localPosition: [number, number, number];
+    localEuler: [number, number, number];
+    hideBuiltInMeshNames: readonly string[];
+  } {
+    const cfg = GAME_CONFIG.playerVisual.jetpackCosmetic;
+    const file = getPlayerVisualRuntime().gltfUrl.split("/").pop() ?? "";
+    const prof: JetpackCosmeticRigProfile | undefined = cfg.rigProfiles?.[file];
+    return {
+      attachBoneNames: prof?.attachBoneNames ?? cfg.attachBoneNames,
+      localScale: prof?.localScale ?? cfg.localScale,
+      localPosition: prof?.localPosition ?? cfg.localPosition,
+      localEuler: prof?.localEuler ?? cfg.localEuler,
+      hideBuiltInMeshNames: prof?.hideBuiltInMeshNames ?? cfg.hideBuiltInMeshNames
+    };
+  }
+
+  /** Hide Blockbench placeholder meshes (e.g. `backpack`) so the cosmetic replaces them. */
+  private applyJetpackBuiltInHiding(): void {
+    const cfg = GAME_CONFIG.playerVisual.jetpackCosmetic;
+    if (!cfg.enabled || !this.characterVisual) return;
+    const eff = this.getEffectiveJetpackCosmetic();
+    for (const name of eff.hideBuiltInMeshNames) {
+      const node = this.characterVisual.findByName(name);
+      if (!(node instanceof pc.Entity)) continue;
+      const renders = node.findComponents("render") as pc.RenderComponent[];
+      for (const r of renders) {
+        r.enabled = false;
+      }
+    }
   }
 
   private attachPlayerLocomotion(visual: pc.Entity, kit: EnemyModelKit): void {
@@ -210,6 +347,19 @@ export class PlayerController {
       (Math.abs(moveInput.x) > 0.001 || Math.abs(moveInput.y) > 0.001);
 
     if (!hasMove || this.currentSpeed < pv.animIdleThreshold) {
+      if (pv.animIdleShuffle > 0) {
+        const walkTrack = this.resolveCharacterAnim(pv.animWalkName);
+        if (walkTrack && this.characterLocoMode !== "walk") {
+          this.characterAnim.assignAnimation("Locomotion", walkTrack, undefined, 1, true);
+          this.characterLocoMode = "walk";
+        }
+        if (walkTrack) {
+          this.characterAnim.speed = pv.animIdleShuffle * pv.animBaseSpeed;
+        } else {
+          this.characterAnim.speed = 0;
+        }
+        return;
+      }
       this.characterAnim.speed = 0;
       return;
     }
@@ -275,6 +425,9 @@ export class PlayerController {
     this.recoilPitchKick = 0;
     this.verticalVelocity = 0;
     this.lastDamageDirection = null;
+    this.footstepPhase = 0;
+    this.jetpackActive = false;
+    this.jetpackTimer = 0;
 
     if (MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena) {
       const s = MAP_CONFIG.importVisual.playerSpawn;
@@ -288,6 +441,8 @@ export class PlayerController {
     this.root.setEulerAngles(0, this.yaw, 0);
     this.pivot.setLocalEulerAngles(this.pitch, 0, 0);
     this.applyCameraPivotHeight();
+    this.thirdPersonActive = false;
+    this.applyPersonVisualState(this.settings.get());
 
     for (const slot of this.inventory.getSlots()) {
       if (!slot) continue;
@@ -311,7 +466,7 @@ export class PlayerController {
 
   /** When a view glTF finishes loading, rebuild the model if it is the active weapon. */
   refreshWeaponViewmodel(): void {
-    this.viewmodel.refreshIfCurrent(this.inventory.getCurrent().definition.id);
+    this.viewmodel.refreshIfCurrent(this.inventory.getCurrent().definition.id as WeaponId);
   }
 
   notifyWeaponInventoryChanged(): void {
@@ -343,6 +498,15 @@ export class PlayerController {
       return;
     }
 
+    // Tick jetpack timer
+    if (this.jetpackActive) {
+      this.jetpackTimer -= dt;
+      if (this.jetpackTimer <= 0) {
+        this.jetpackTimer = 0;
+        this.jetpackActive = false;
+      }
+    }
+
     const pos = this.root.getPosition();
     const clearance = MAP_CONFIG.importVisual.groundSnapClearance;
     let groundY: number | null;
@@ -362,10 +526,24 @@ export class PlayerController {
 
     const wantJump = this.input.consumeJumpRequest();
     if (wantJump && onGround) {
-      this.verticalVelocity = GAME_CONFIG.player.jumpImpulse;
+      // Jetpack grants a significantly higher jump
+      const impulse = this.jetpackActive
+        ? GAME_CONFIG.player.jumpImpulse * this.JETPACK_JUMP_MULT
+        : GAME_CONFIG.player.jumpImpulse;
+      this.verticalVelocity = impulse;
     }
 
     this.verticalVelocity -= GAME_CONFIG.player.jumpGravity * dt;
+
+    // Jetpack glide: holding Space while airborne and falling slows descent dramatically
+    if (
+      this.jetpackActive &&
+      !onGround &&
+      this.verticalVelocity < 0 &&
+      this.input.isJumpHeld()
+    ) {
+      this.verticalVelocity = Math.max(this.verticalVelocity, -this.JETPACK_GLIDE_FALL_SPEED);
+    }
 
     let y = pos.y + this.verticalVelocity * dt;
     if (y < feetTarget) {
@@ -375,6 +553,72 @@ export class PlayerController {
       }
     }
     this.root.setPosition(pos.x, y, pos.z);
+  }
+
+  /** Same grounding rule as {@link applyJumpAndGravity} — used for footstep SFX. */
+  private isFeetOnGround(settingsState: SettingsState): boolean {
+    if (settingsState.flyMode || settingsState.noclip) {
+      return false;
+    }
+    const pos = this.root.getPosition();
+    const clearance = MAP_CONFIG.importVisual.groundSnapClearance;
+    let groundY: number | null;
+    if (MAP_CONFIG.importVisual.enabled) {
+      groundY = this.gameMap.sampleImportedTerrainYNearFeet(pos.x, pos.z, pos.y);
+    } else {
+      groundY = 0;
+    }
+    if (groundY == null || !Number.isFinite(groundY)) {
+      return false;
+    }
+    const feetTarget = groundY + clearance;
+    return pos.y <= feetTarget + 0.085 && this.verticalVelocity <= 0.45;
+  }
+
+  private tickFootsteps(
+    dt: number,
+    settingsState: SettingsState,
+    moveInput: { x: number; y: number },
+    sprinting: boolean
+  ): void {
+    const audio = this.audio;
+    if (!audio) {
+      return;
+    }
+
+    if (settingsState.flyMode || settingsState.noclip) {
+      this.footstepPhase = 0;
+      return;
+    }
+
+    const hasMove =
+      Math.abs(moveInput.x) > 0.001 || Math.abs(moveInput.y) > 0.001;
+    if (!hasMove || this.currentSpeed < 0.4) {
+      this.footstepPhase = 0;
+      return;
+    }
+
+    if (!this.isFeetOnGround(settingsState)) {
+      this.footstepPhase = 0;
+      return;
+    }
+
+    let refSpeed = GAME_CONFIG.player.moveSpeed;
+    if (MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena) {
+      refSpeed *= MAP_CONFIG.importVisual.openWorldMoveMultiplier;
+    }
+    const speedNorm = pc.math.clamp(
+      this.currentSpeed / Math.max(0.01, refSpeed),
+      0.35,
+      1.55
+    );
+    const sprintMul = sprinting ? 1.32 : 1;
+    const stepsPerSec = (1.75 + speedNorm * 2.05) * sprintMul;
+    this.footstepPhase += dt * stepsPerSec;
+    while (this.footstepPhase >= 1) {
+      this.footstepPhase -= 1;
+      audio.playFootstep(sprinting);
+    }
   }
 
   /**
@@ -470,8 +714,17 @@ export class PlayerController {
     this.didFireThisFrame = false;
     this.recoilPitchKick = Math.max(0, this.recoilPitchKick - dt * 5);
 
-    const lookDelta = this.input.consumeLookDelta();
     const settingsState = this.settings.get();
+    const allowThird = settingsState.allowThirdPersonToggle && !this.input.isTouchMode();
+    if (!allowThird && this.thirdPersonActive) {
+      this.thirdPersonActive = false;
+    }
+    if (allowThird && this.input.consumeCameraViewToggle()) {
+      this.thirdPersonActive = !this.thirdPersonActive;
+    }
+    this.applyPersonVisualState(settingsState);
+
+    const lookDelta = this.input.consumeLookDelta();
     const sensitivityScale = this.input.isTouchMode()
       ? settingsState.touchSensitivity
       : settingsState.mouseSensitivity;
@@ -572,6 +825,7 @@ export class PlayerController {
     this.currentSpeed = currentPosition.distance(this.root.getPosition()) / Math.max(0.0001, dt);
 
     this.updatePlayerCharacterLocomotion(settingsState, moveInput);
+    this.tickFootsteps(dt, settingsState, moveInput, isSprinting);
 
     const weapon = this.inventory.getCurrent();
     const internal = weapon as Weapon & { _isReloading?: boolean; _reloadTimer?: number };
@@ -651,6 +905,21 @@ export class PlayerController {
 
   getHealthRatio(): number {
     return this.health / GAME_CONFIG.player.maxHealth;
+  }
+
+  /** Grant jetpack powerup for `duration` seconds. Refreshes timer if already active. */
+  grantJetpack(duration: number): void {
+    this.jetpackActive = true;
+    this.jetpackTimer = duration;
+  }
+
+  get hasJetpack(): boolean {
+    return this.jetpackActive;
+  }
+
+  /** Remaining jetpack seconds (0 when inactive). */
+  getJetpackRemaining(): number {
+    return Math.max(0, this.jetpackTimer);
   }
 
   tryStartReload(): boolean {

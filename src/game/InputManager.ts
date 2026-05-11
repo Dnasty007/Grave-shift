@@ -17,6 +17,8 @@ export type InputCallbacks = {
   onWeaponCycleRequested?: (direction: number) => void;
   /** Weapon wheel: pick slot by keyboard (Digit1 = 0, …). */
   onWeaponWheelSlotPick?: (slotIndex: number) => void;
+  /** PC: I — toggle backpack inventory (playing only; handled in GameApp). */
+  onInventoryToggleRequested?: () => void;
 };
 
 /**
@@ -41,6 +43,9 @@ export class InputManager {
   private accumulatedLookY = 0;
   /** Desktop weapon wheel: blocks look / fire / weapon cycle while open. */
   private weaponWheelOpen = false;
+  /** Minecraft-style backpack: blocks movement, look, fire; frees pointer. */
+  private inventoryOpen = false;
+  private cameraViewToggleRequested = false;
   private lastPointerClientX = 0;
   private lastPointerClientY = 0;
   private callbacks: InputCallbacks = {};
@@ -119,10 +124,29 @@ export class InputManager {
       this.accumulatedLookX = 0;
       this.accumulatedLookY = 0;
       this.weaponWheelOpen = false;
+      this.inventoryOpen = false;
       if (document.pointerLockElement === this.canvas) {
         document.exitPointerLock();
       }
     }
+  }
+
+  setInventoryOpen(open: boolean): void {
+    this.inventoryOpen = open;
+    if (open) {
+      this.fireHeld = false;
+      this.jumpRequested = false;
+      this.accumulatedLookX = 0;
+      this.accumulatedLookY = 0;
+      this.weaponWheelOpen = false;
+      if (document.pointerLockElement === this.canvas) {
+        document.exitPointerLock();
+      }
+    }
+  }
+
+  isInventoryOpen(): boolean {
+    return this.inventoryOpen;
   }
 
   setInputBlocked(blocked: boolean): void {
@@ -139,6 +163,7 @@ export class InputManager {
   setWeaponWheelOpen(open: boolean): void {
     this.weaponWheelOpen = open;
     if (open) {
+      this.inventoryOpen = false;
       this.fireHeld = false;
       this.accumulatedLookX = 0;
       this.accumulatedLookY = 0;
@@ -171,7 +196,7 @@ export class InputManager {
   }
 
   getMoveVector(): { x: number; y: number } {
-    if (this.paused || this.inputBlocked) {
+    if (this.paused || this.inputBlocked || this.inventoryOpen) {
       return { x: 0, y: 0 };
     }
 
@@ -191,7 +216,7 @@ export class InputManager {
   }
 
   consumeLookDelta(): { x: number; y: number } {
-    if (this.paused || this.inputBlocked || this.weaponWheelOpen) {
+    if (this.paused || this.inputBlocked || this.weaponWheelOpen || this.inventoryOpen) {
       this.accumulatedLookX = 0;
       this.accumulatedLookY = 0;
       return { x: 0, y: 0 };
@@ -209,12 +234,14 @@ export class InputManager {
   }
 
   isFiring(): boolean {
-    if (this.paused || this.inputBlocked || this.weaponWheelOpen) return false;
+    if (this.paused || this.inputBlocked || this.weaponWheelOpen || this.inventoryOpen) {
+      return false;
+    }
     return this.fireHeld;
   }
 
   isSprinting(): boolean {
-    if (this.paused || this.inputBlocked) return false;
+    if (this.paused || this.inputBlocked || this.inventoryOpen) return false;
     return this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
   }
 
@@ -222,7 +249,9 @@ export class InputManager {
    * Fly mode: move up (V — blocked while weapon wheel is open).
    */
   isFlyAscend(): boolean {
-    if (this.paused || this.inputBlocked || this.weaponWheelOpen) return false;
+    if (this.paused || this.inputBlocked || this.weaponWheelOpen || this.inventoryOpen) {
+      return false;
+    }
     return this.keys.has("KeyV");
   }
 
@@ -233,9 +262,15 @@ export class InputManager {
     return r;
   }
 
+  /** True while Space is physically held down — used for jetpack glide. */
+  isJumpHeld(): boolean {
+    if (this.paused || this.inputBlocked || this.inventoryOpen) return false;
+    return this.keys.has("Space");
+  }
+
   /** Fly mode: move down (Ctrl). */
   isFlyDescend(): boolean {
-    if (this.paused || this.inputBlocked) return false;
+    if (this.paused || this.inputBlocked || this.inventoryOpen) return false;
     return this.keys.has("ControlLeft") || this.keys.has("ControlRight");
   }
 
@@ -246,9 +281,20 @@ export class InputManager {
   }
 
   consumeReloadRequest(): boolean {
+    if (this.paused || this.inputBlocked || this.weaponWheelOpen || this.inventoryOpen) {
+      this.reloadRequested = false;
+      return false;
+    }
     const requested = this.reloadRequested;
     this.reloadRequested = false;
     return requested;
+  }
+
+  /** Desktop: C key, once per press (settings may disable use in PlayerController). */
+  consumeCameraViewToggle(): boolean {
+    const r = this.cameraViewToggleRequested;
+    this.cameraViewToggleRequested = false;
+    return r;
   }
 
   setGameOver(gameOver: boolean): void {
@@ -262,6 +308,7 @@ export class InputManager {
   requestPointerLockIfNeeded(): void {
     if (this.useTouchControls) return;
     if (this.paused) return;
+    if (this.inventoryOpen) return;
     if (document.pointerLockElement === this.canvas) return;
     void this.canvas.requestPointerLock();
   }
@@ -277,7 +324,7 @@ export class InputManager {
       }
 
       if (event.code === "Space") {
-        if (!this.paused && !this.inputBlocked && !event.repeat) {
+        if (!this.paused && !this.inputBlocked && !this.inventoryOpen && !event.repeat) {
           this.jumpRequested = true;
         }
         if (document.pointerLockElement === this.canvas) {
@@ -286,14 +333,43 @@ export class InputManager {
       }
 
       if (event.code === "KeyR") {
-        this.reloadRequested = true;
+        if (!this.inventoryOpen) {
+          this.reloadRequested = true;
+        }
+      }
+
+      if (event.code === "KeyI") {
+        if (!this.useTouchControls && !this.paused && !this.inputBlocked && !event.repeat) {
+          this.callbacks.onInventoryToggleRequested?.();
+        }
+        event.preventDefault();
+        return;
+      }
+
+      if (event.code === "KeyC") {
+        if (
+          !this.useTouchControls &&
+          !this.paused &&
+          !this.inputBlocked &&
+          !this.weaponWheelOpen &&
+          !this.inventoryOpen &&
+          !event.repeat
+        ) {
+          this.cameraViewToggleRequested = true;
+        }
       }
 
       if (event.code === "KeyE" || event.code === "KeyF") {
-        this.callbacks.onInteractRequested?.();
+        if (!this.inventoryOpen) {
+          this.callbacks.onInteractRequested?.();
+        }
       }
 
       if (event.code === "KeyQ" || event.code === "Tab") {
+        if (this.inventoryOpen) {
+          if (event.code === "Tab") event.preventDefault();
+          return;
+        }
         if (this.weaponWheelOpen) {
           if (event.code === "Tab") event.preventDefault();
           return;
@@ -332,7 +408,7 @@ export class InputManager {
     window.addEventListener(
       "wheel",
       (event) => {
-        if (this.paused || this.inputBlocked || this.weaponWheelOpen) return;
+        if (this.paused || this.inputBlocked || this.weaponWheelOpen || this.inventoryOpen) return;
         if (Math.abs(event.deltaY) < 4) return;
         const dir = event.deltaY > 0 ? 1 : -1;
         this.callbacks.onWeaponCycleRequested?.(dir);
@@ -353,7 +429,7 @@ export class InputManager {
         return;
       }
 
-      if (this.weaponWheelOpen) {
+      if (this.weaponWheelOpen || this.inventoryOpen) {
         return;
       }
 
@@ -374,7 +450,7 @@ export class InputManager {
       this.lastPointerClientX = event.clientX;
       this.lastPointerClientY = event.clientY;
 
-      if (this.paused || this.inputBlocked || this.weaponWheelOpen) {
+      if (this.paused || this.inputBlocked || this.weaponWheelOpen || this.inventoryOpen) {
         return;
       }
 

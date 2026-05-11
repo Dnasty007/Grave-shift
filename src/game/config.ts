@@ -13,7 +13,25 @@
  * so you explore the imported mesh. Collision against buildings is not implemented yet
  * (everyone moves in XZ; tweak `playerSpawn.y` to stand above terrain).
  */
+
+import { HYTOPIA } from "./hytopiaContent";
+
 export type MapPresetId = "castle" | "yard" | "testPlane";
+
+/** Optional world-space AABB in voxel block coordinates for huge `map.json` imports. */
+export type MapJsonVoxelCrop = {
+  center: [number, number, number];
+  halfExtents: [number, number, number];
+};
+
+/** Per-hero glTF jetpack placement (`rigProfiles` key is the file name, e.g. `player.gltf`). */
+export type JetpackCosmeticRigProfile = {
+  attachBoneNames?: readonly string[];
+  localScale?: [number, number, number];
+  localPosition?: [number, number, number];
+  localEuler?: [number, number, number];
+  hideBuiltInMeshNames?: readonly string[];
+};
 
 export type MapImportVisualConfig = {
   enabled: boolean;
@@ -23,6 +41,21 @@ export type MapImportVisualConfig = {
    * Terrain sampling returns y = 0; use with `playerSpawn.y > 0` for a safe drop.
    */
   useProceduralTestGround: boolean;
+  /**
+   * When non-empty, builds the world from Hytopia boilerplate `map.json` (under `public/`)
+   * instead of loading {@link glbUrl}. Face-culled voxel meshes + solid palette materials.
+   */
+  jsonVoxelMapUrl?: string;
+  /**
+   * When set, only blocks inside this AABB (inclusive, block coordinates) are meshed.
+   * Use for multi-megabyte Hytopia worlds so GPU/CPU stay bounded.
+   */
+  jsonVoxelCrop?: MapJsonVoxelCrop;
+  /**
+   * Diffuse texture root for `textureUri` paths like `blocks/stone.png` (e.g. `/hytopia/blocks`).
+   * Defaults in `Map.loadImportedVisual` to {@link HYTOPIA.blockTextures} when omitted.
+   */
+  jsonVoxelTextureBaseUrl?: string;
   glbUrl: string;
   scale: [number, number, number];
   position: [number, number, number];
@@ -58,13 +91,21 @@ const CASTLE_IMPORT: MapImportVisualConfig = {
   enabled: true,
   replacesArena: true,
   useProceduralTestGround: false,
-  /** `public/maps/world.glb` from Mineways export. */
+  jsonVoxelMapUrl: HYTOPIA.mapJson,
+  jsonVoxelTextureBaseUrl: HYTOPIA.blockTextures,
+  /** Chunk around origin; full big-world JSON is ~1.2M blocks — do not mesh without a crop. */
+  jsonVoxelCrop: {
+    center: [0, 0, 0],
+    halfExtents: [52, 48, 52]
+  },
+  /** Legacy Mineways path (unused when {@link jsonVoxelMapUrl} is set). */
   glbUrl: "/maps/world.glb",
   scale: [1, 1, 1],
   position: [0, 0, 0],
   eulerDegrees: [0, 0, 0],
   cameraFarClip: 8000,
-  playerSpawn: { x: 17.4801, y: 1, z: -95.2988 },
+  /** Matches `sdk-examples/big-world` (`playerEntity.spawn(world, { x: 0, y: 10, z: 0 })`); snap finds ground. */
+  playerSpawn: { x: 0, y: 10, z: 0 },
   playerSpawnYawDegrees: 0,
   openWorldMoveMultiplier: 1.0,
   spawnRing: { min: 8, max: 28 },
@@ -88,6 +129,9 @@ const YARD_IMPORT: MapImportVisualConfig = {
   enabled: false,
   replacesArena: false,
   useProceduralTestGround: false,
+  jsonVoxelMapUrl: undefined,
+  jsonVoxelCrop: undefined,
+  jsonVoxelTextureBaseUrl: undefined,
   glbUrl: "/maps/world.glb",
   playerSpawn: { x: 0, y: 0, z: 8 },
   playerSpawnYawDegrees: 180,
@@ -101,6 +145,9 @@ const TEST_PLANE_IMPORT: MapImportVisualConfig = {
   useProceduralTestGround: true,
   enabled: true,
   replacesArena: true,
+  jsonVoxelMapUrl: undefined,
+  jsonVoxelCrop: undefined,
+  jsonVoxelTextureBaseUrl: undefined,
   glbUrl: "/maps/world.glb",
   cameraFarClip: 600,
   playerSpawn: { x: 0, y: 2, z: 0 },
@@ -164,7 +211,14 @@ export const GAME_CONFIG = {
      */
     importAutoStepLeadForward: 0.78,
     /** Bias (m) added to feet Y when ray-picking ground for stuck-state probes (see next tread). */
-    importAutoStepGroundRefBias: 0.55
+    importAutoStepGroundRefBias: 0.55,
+    /**
+     * Camera on pivot in **third person** (local space): +Z pulls back behind the head; +Y raises slightly.
+     * Tune if the orbit feels too close or too high.
+     */
+    thirdPersonCamera: {
+      localOffset: [0, 0.28, 2.75] as [number, number, number]
+    }
   },
   weapon: {
     damage: 34,
@@ -202,7 +256,7 @@ export const GAME_CONFIG = {
   },
   /**
    * First-person hero glTF (`public/models/players/`). Uses `voxelAvatar` for scale.
-   * `soldier-player.gltf` (Zombie Forge) uses Blockbench split clips: `walk_lower` / `run_lower`.
+   * `soldier-player.gltf` uses `walk_lower` / `run_lower`; Hytopia `player.gltf` uses hyphens (`walk-lower` / `run-lower`).
    */
   playerVisual: {
     useGltf: true,
@@ -222,15 +276,46 @@ export const GAME_CONFIG = {
     animSpeedMin: 0.14,
     animSpeedMax: 1.3,
     /** Treat as idle below this horizontal speed (m/s). */
-    animIdleThreshold: 0.15
+    animIdleThreshold: 0.15,
+    /**
+     * When > 0 and movement is below {@link animIdleThreshold}, keep the walk clip playing at this
+     * rate (matches zombie `enemyVisual.animIdleShuffle` — avoids freezing on frame 0 of full-body walk).
+     */
+    animIdleShuffle: 0,
+    /**
+     * Optional world-space jetpack / backpack glTF (`.glb` / `.gltf` under `public/`).
+     * Parented under the first matching bone on the hero rig (`back_anchor` on soldier-player).
+     * File must exist at this path under `public/` (e.g. `public/models/players/JetPack_V2.glb`).
+     */
+    jetpackCosmetic: {
+      enabled: true,
+      gltfUrl: "/models/players/JetPack_V2.glb",
+      attachBoneNames: ["back_anchor", "back-anchor", "body_piv", "torso"] as const,
+      /** Scale in parent bone space (JetPack_V2.glb reads well around ~0.6; lower if it clips the arms). */
+      localScale: [0.62, 0.62, 0.62] as [number, number, number],
+      localPosition: [0, 0, 0] as [number, number, number],
+      /** Degrees — adjust if the mesh faces the wrong way on the back. */
+      localEuler: [0, 0, 0] as [number, number, number],
+      /** Names of hero glTF nodes whose renders are turned off so they do not Z-fight with the jetpack. */
+      hideBuiltInMeshNames: ["backpack"] as const,
+      /** Optional per-file overrides; Hytopia `player.gltf` uses `back-anchor` (also in default list). */
+      rigProfiles: {} as Record<string, JetpackCosmeticRigProfile>
+    }
   },
   /**
    * Hytopia / Blockbench glTF (`public/models/enemies/`). Scale is `voxelAvatar` (shared with player).
    */
   enemyVisual: {
     useGltf: true,
-    gltfUrls: ["/models/enemies/zombie.gltf"] as const,
-    randomizeVariant: false,
+    /** Wave spawns: undead / humanoid variants only (Hytopia animals excluded). */
+    gltfUrls: [
+      "/models/enemies/zombie.gltf",
+      "/models/enemies/octoman-model.gltf",
+      "/models/enemies/tree-stalker-model.gltf",
+      "/models/enemies/skeleton-hammer-model.gltf"
+    ] as const,
+    /** When true, each spawn picks a random glTF from {@link gltfUrls}. */
+    randomizeVariant: true,
     aimBodyY: 0.92,
     headTargetY: 2.45,
     headRadius: 0.4,
@@ -246,6 +331,68 @@ export const GAME_CONFIG = {
     animSpeedMax: 1.5,
     /** Playback scale while in melee range / mostly still. */
     animIdleShuffle: 0.22
+  },
+  /**
+   * Optional rule-based squadmate (Settings: “AI squadmate”). Not related to Hytopia server LLM agents.
+   */
+  aiAlly: {
+    followRight: 2.0,
+    followBack: 0.55,
+    moveSpeed: 5.85,
+    engageRange: 50,
+    fireIntervalSeconds: 0.3,
+    damageMultiplier: 0.52,
+    /** Per-shot chance to aim at head when body is also in LOS (simplified). */
+    headshotProbability: 0.11,
+    eyeHeight: 1.55,
+    radius: 0.48
+  },
+  /**
+   * Nine-Tails (Kurama) combat pet: roams near the player (leash), fox-fire + chakra nova.
+   * Always active in a run when enabled.
+   */
+  nineTailsPet: {
+    enabled: true,
+    glbUrl: "/models/pets/Kurama_NineTails_V3.glb",
+    /** Model-specific scale — tune if the import is huge or tiny vs the hero. */
+    modelScale: 0.14,
+    yOffset: 0,
+    yawOffsetDeg: 0,
+    /**
+     * Wander band on XZ around the player: picks random spots between these horizontal radii.
+     * Hard cap: after each move the pet is clamped to {@link roamMaxDistance}.
+     */
+    roamMinDistance: 2.2,
+    roamMaxDistance: 6.2,
+    /** Slower retarget = less jittery pathing. */
+    roamRetargetSeconds: 6.5,
+    roamReachDistance: 1.05,
+    moveSpeed: 4.9,
+    radius: 0.52,
+    /** Fox-fire line attack — paced so it feels like an ability, not a machine gun. */
+    foxFireIntervalSeconds: 1.1,
+    foxFireDamage: 32,
+    foxFireRange: 48,
+    /** Chakra nova. */
+    tailedBeastIntervalSeconds: 12,
+    tailedBeastRadius: 9,
+    tailedBeastDamage: 52,
+    /**
+     * After any fox-fire or bomb, neither ability fires until this elapses (seconds).
+     * Stops bomb→fox (or double specials) on the same beat.
+     */
+    petAttackGlobalCooldownSeconds: 0.65,
+    /** Ability hold at spawn so the pet doesn’t instantly nuke wave 1. */
+    spawnFoxDelaySeconds: 1.5,
+    spawnBombDelaySeconds: 4,
+    /**
+     * Locomotion clip speed: horizontal speed (m/s) that should read as a natural walk cycle
+     * on this model (tune if feet slide or look sluggish).
+     */
+    animRefHorizSpeed: 3.4,
+    animIdlePlayback: 0.9,
+    animWalkPlaybackMul: 1.08,
+    eyeHeight: 1.35
   },
   waves: {
     startingCount: 16,
@@ -270,5 +417,20 @@ export const GAME_CONFIG = {
     defaultMaster: 0.75,
     defaultSfx: 0.85,
     defaultMusic: 0.4
+  },
+  /**
+   * Jetpack powerup drop and ability tuning.
+   * Drops spawn on zombie kills (dropChanceOnKill) and hover for lifetimeSeconds
+   * before despawning. Two variants alternate per drop.
+   */
+  jetpack: {
+    /** Chance a jetpack drop spawns on any zombie kill (independent of max-ammo roll). */
+    dropChanceOnKill: 0.07,
+    /** Max simultaneous jetpack pickups in the world at once. */
+    maxActiveDrops: 2,
+    /** How long the pickup hovers before disappearing (seconds). */
+    lifetimeSeconds: 60,
+    /** How long the player keeps the jetpack ability after picking it up (seconds). */
+    powerupDurationSeconds: 60
   }
 } as const;

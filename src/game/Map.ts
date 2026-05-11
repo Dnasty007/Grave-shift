@@ -5,6 +5,8 @@ import { CollisionWorld } from "./CollisionWorld";
 import { Door } from "./Door";
 import { SpawnGate } from "./SpawnGate";
 import { WallBuy } from "./WallBuy";
+import { buildHytopiaMapEntityAsync, type HytopiaMapJson } from "./hytopiaMapMesh";
+import { HYTOPIA } from "./hytopiaContent";
 
 /**
  * World root under PlayCanvas `app.root`: procedural arena **or** empty shell + imported GLB.
@@ -271,11 +273,11 @@ export class Map {
     return built;
   }
 
-  // --- Imported Mineways mesh (`MAP_CONFIG.importVisual.glbUrl`) ---
+  // --- Imported mesh: Hytopia `map.json` or Mineways GLB (`MAP_CONFIG.importVisual`) ---
 
   /**
-   * Loads the converted GLB (see `MAP_CONFIG.importVisual`). Safe to call on every boot;
-   * failures are logged. When `replacesArena` is on, there is no procedural fallback shell.
+   * Loads voxel JSON, procedural test plane, or converted GLB. Safe on every boot; failures log.
+   * When `replacesArena` is on, there is no procedural arena fallback shell.
    */
   loadImportedVisual(app: pc.Application): Promise<void> {
     if (!MAP_CONFIG.importVisual.enabled) {
@@ -287,6 +289,53 @@ export class Map {
     if (MAP_CONFIG.importVisual.useProceduralTestGround) {
       this.buildProceduralTestGroundPlane(app);
       return Promise.resolve();
+    }
+
+    const jsonUrl = MAP_CONFIG.importVisual.jsonVoxelMapUrl?.trim();
+    if (jsonUrl) {
+      return new Promise((resolve) => {
+        fetch(jsonUrl)
+          .then((r) => {
+            if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+            return r.json() as Promise<HytopiaMapJson>;
+          })
+          .then(async (data) => {
+            try {
+              const vis = MAP_CONFIG.importVisual;
+              const base =
+                vis.jsonVoxelTextureBaseUrl?.trim() || HYTOPIA.blockTextures;
+              const entity = await buildHytopiaMapEntityAsync(app, data, {
+                textureBaseUrl: base,
+                crop: vis.jsonVoxelCrop
+                  ? {
+                      center: vis.jsonVoxelCrop.center,
+                      halfExtents: vis.jsonVoxelCrop.halfExtents
+                    }
+                  : undefined
+              });
+              entity.name = "imported-map";
+
+              const [sx, sy, sz] = MAP_CONFIG.importVisual.scale;
+              entity.setLocalScale(sx, sy, sz);
+
+              const [px, py, pz] = MAP_CONFIG.importVisual.position;
+              entity.setLocalPosition(px, py, pz);
+
+              const [rx, ry, rz] = MAP_CONFIG.importVisual.eulerDegrees;
+              entity.setLocalEulerAngles(rx, ry, rz);
+
+              this.root.addChild(entity);
+              this.importedMapRoot = entity;
+            } catch (e) {
+              console.warn("[Map] Hytopia JSON map build failed:", e);
+            }
+            resolve();
+          })
+          .catch((e) => {
+            console.warn("[Map] Could not load Hytopia JSON map:", jsonUrl, e);
+            resolve();
+          });
+      });
     }
 
     return new Promise((resolve) => {

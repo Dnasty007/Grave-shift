@@ -11,6 +11,7 @@ export class ScreenEffects {
   private readonly waveBanner: HTMLElement;
   private readonly waveBannerLabel: HTMLElement;
   private readonly bloodOverlay: HTMLElement;
+  private readonly powerupNotify: HTMLElement | null;
   private readonly settings: Settings;
 
   private shakeTime = 0;
@@ -70,6 +71,7 @@ export class ScreenEffects {
     this.waveBanner = waveBanner;
     this.waveBannerLabel = waveBannerLabel;
     this.bloodOverlay = bloodOverlay;
+    this.powerupNotify = overlayRoot.querySelector<HTMLElement>("#powerup-notify");
   }
 
   update(dt: number): void {
@@ -96,6 +98,13 @@ export class ScreenEffects {
     this.hitMarker.classList.remove("is-shown");
     void this.hitMarker.offsetWidth;
     this.hitMarker.classList.add("is-shown");
+  }
+
+  triggerMaxAmmoNotify(): void {
+    if (!this.powerupNotify) return;
+    this.powerupNotify.classList.remove("is-active");
+    void this.powerupNotify.offsetWidth; // force reflow to restart animation
+    this.powerupNotify.classList.add("is-active");
   }
 
   triggerKillPopup(points: number, headshot: boolean): void {
@@ -178,11 +187,11 @@ export class ScreenEffects {
       this.lowHealthVignette.style.opacity = "0";
       return;
     }
-    if (this.healthRatio >= 0.45) {
+    if (this.healthRatio >= 0.4) {
       this.lowHealthVignette.style.opacity = "0";
       return;
     }
-    const intensity = 1 - this.healthRatio / 0.45;
+    const intensity = 1 - this.healthRatio / 0.4;
     const pulse = 0.5 + 0.5 * Math.sin(performance.now() / (160 - intensity * 80));
     this.lowHealthVignette.style.opacity = `${(0.35 + pulse * 0.55) * intensity}`;
   }

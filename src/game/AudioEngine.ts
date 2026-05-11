@@ -1,4 +1,5 @@
 import type { Settings, SettingsState } from "./Settings";
+import { HYTOPIA } from "./hytopiaContent";
 
 type SfxName =
   | "shot"
@@ -22,7 +23,8 @@ type SfxName =
   | "weaponRefill"
   | "weaponSwap"
   | "doorOpen"
-  | "rejected";
+  | "rejected"
+  | "maxAmmo";
 
 export class AudioEngine {
   private ctx: AudioContext | null = null;
@@ -32,6 +34,10 @@ export class AudioEngine {
   private droneNode: { osc: OscillatorNode; gain: GainNode } | null = null;
   private heartbeatTimer: number | null = null;
   private current: SettingsState;
+
+  /** Decoded from {@link HYTOPIA.footstepManifest} (or legacy fallback). */
+  private footstepBuffers: AudioBuffer[] = [];
+  private footstepLoadStarted = false;
 
   constructor(settings: Settings) {
     this.current = settings.get();
@@ -69,6 +75,82 @@ export class AudioEngine {
 
     this.applyVolumes();
     this.startDrone();
+    this.beginFootstepSampleLoad();
+  }
+
+  /**
+   * One-shot footstep from Hytopia stone sample. No-op until {@link unlock} has run and the buffer decoded.
+   */
+  playFootstep(sprinting: boolean): void {
+    const ctx = this.ctx;
+    const sfx = this.sfxGain;
+    const buffers = this.footstepBuffers;
+    if (!ctx || !sfx || buffers.length === 0) {
+      return;
+    }
+
+    const buf = buffers[(Math.random() * buffers.length) >>> 0];
+    const now = ctx.currentTime;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const pace = sprinting ? 1.07 : 0.99;
+    src.playbackRate.value = pace * (0.93 + Math.random() * 0.14);
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(sprinting ? 0.42 : 0.34, now);
+
+    src.connect(g).connect(sfx);
+    src.start(now);
+  }
+
+  private beginFootstepSampleLoad(): void {
+    if (!this.ctx || this.footstepLoadStarted) {
+      return;
+    }
+    this.footstepLoadStarted = true;
+    void this.loadFootstepBuffers();
+  }
+
+  private async loadFootstepBuffers(): Promise<void> {
+    const ctx = this.ctx;
+    if (!ctx) return;
+
+    const urls: string[] = [];
+    try {
+      const r = await fetch(HYTOPIA.footstepManifest);
+      if (r.ok) {
+        const data: unknown = await r.json();
+        if (Array.isArray(data)) {
+          for (const u of data) {
+            if (typeof u === "string" && u.trim()) urls.push(u.trim());
+          }
+        }
+      }
+    } catch {
+      /* optional manifest */
+    }
+    if (urls.length === 0) {
+      urls.push("/audio/footsteps/stone-step-04.mp3");
+    }
+
+    const buffers: AudioBuffer[] = [];
+    await Promise.all(
+      urls.map(async (url) => {
+        try {
+          const res = await fetch(url);
+          if (!res.ok) return;
+          const ab = await res.arrayBuffer();
+          const buf = await ctx.decodeAudioData(ab.slice(0));
+          buffers.push(buf);
+        } catch {
+          /* skip bad URL */
+        }
+      })
+    );
+    this.footstepBuffers = buffers;
+    if (buffers.length === 0) {
+      console.warn("[AudioEngine] No footstep audio decoded from manifest:", urls);
+    }
   }
 
   play(name: SfxName): void {
@@ -142,6 +224,9 @@ export class AudioEngine {
         break;
       case "rejected":
         this.playRejected();
+        break;
+      case "maxAmmo":
+        this.playMaxAmmo();
         break;
     }
   }
@@ -355,6 +440,13 @@ export class AudioEngine {
 
   private playWaveCleared(): void {
     this.tone(440, 660, 0.45, "triangle", 0.18);
+  }
+
+  // 3-note rising arpeggio — CoD Zombies Max Ammo jingle feel
+  private playMaxAmmo(): void {
+    this.tone(440, 520, 0.14, "triangle", 0.22);
+    window.setTimeout(() => this.tone(550, 640, 0.12, "triangle", 0.22), 90);
+    window.setTimeout(() => this.tone(660, 880, 0.22, "triangle", 0.26), 180);
   }
 
   private playGameOver(): void {

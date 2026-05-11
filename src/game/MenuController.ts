@@ -322,6 +322,8 @@ export class MenuController {
     toggle("setting-fly-mode", "flyMode");
     toggle("setting-noclip", "noclip");
     toggle("setting-import-mesh-collision", "importMeshCollision");
+    toggle("setting-third-person-toggle", "allowThirdPersonToggle");
+    toggle("setting-ai-ally", "aiAllyEnabled");
   }
 
   private syncSettingsUI(state: SettingsState): void {
@@ -354,6 +356,8 @@ export class MenuController {
     setToggle("setting-fly-mode", state.flyMode);
     setToggle("setting-noclip", state.noclip);
     setToggle("setting-import-mesh-collision", state.importMeshCollision);
+    setToggle("setting-third-person-toggle", state.allowThirdPersonToggle);
+    setToggle("setting-ai-ally", state.aiAllyEnabled);
   }
 
   private updateSliderLabel(id: string, value: number): void {
