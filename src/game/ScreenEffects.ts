@@ -10,7 +10,6 @@ export class ScreenEffects {
   private readonly killPopupRoot: HTMLElement;
   private readonly waveBanner: HTMLElement;
   private readonly waveBannerLabel: HTMLElement;
-  private readonly waveBannerSub: HTMLElement;
   private readonly bloodOverlay: HTMLElement;
   private readonly settings: Settings;
 
@@ -50,7 +49,6 @@ export class ScreenEffects {
     const killPopupRoot = overlayRoot.querySelector<HTMLElement>("#kill-popups");
     const waveBanner = overlayRoot.querySelector<HTMLElement>("#wave-banner");
     const waveBannerLabel = overlayRoot.querySelector<HTMLElement>("#wave-banner-label");
-    const waveBannerSub = overlayRoot.querySelector<HTMLElement>("#wave-banner-sub");
     const bloodOverlay = overlayRoot.querySelector<HTMLElement>("#blood-overlay");
 
     if (
@@ -60,7 +58,6 @@ export class ScreenEffects {
       !killPopupRoot ||
       !waveBanner ||
       !waveBannerLabel ||
-      !waveBannerSub ||
       !bloodOverlay
     ) {
       throw new Error("ScreenEffects: overlay elements missing.");
@@ -72,7 +69,6 @@ export class ScreenEffects {
     this.killPopupRoot = killPopupRoot;
     this.waveBanner = waveBanner;
     this.waveBannerLabel = waveBannerLabel;
-    this.waveBannerSub = waveBannerSub;
     this.bloodOverlay = bloodOverlay;
   }
 
@@ -139,10 +135,10 @@ export class ScreenEffects {
     this.shakeMagnitude = strength * 8;
   }
 
-  showWaveBanner(label: string, subtitle: string, seconds = 1.6): void {
+  showWaveBanner(label: string, durationSeconds = 3): void {
     this.waveBannerLabel.textContent = label;
-    this.waveBannerSub.textContent = subtitle;
-    this.bannerTimer = seconds;
+    this.waveBanner.style.setProperty("--wave-splash-duration", `${durationSeconds}s`);
+    this.bannerTimer = durationSeconds;
     this.waveBanner.classList.remove("is-visible");
     void this.waveBanner.offsetWidth;
     this.waveBanner.classList.add("is-visible");

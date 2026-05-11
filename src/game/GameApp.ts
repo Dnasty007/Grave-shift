@@ -13,6 +13,7 @@ import { PlayerController } from "./PlayerController";
 import { ScreenEffects } from "./ScreenEffects";
 import { Settings } from "./Settings";
 import { WaveDirector } from "./WaveDirector";
+import { formatWaveRound } from "./waveDisplay";
 import { Weapon, WEAPON_DEFINITIONS, WEAPON_IDS, WeaponInventory, type WeaponId } from "./Weapon";
 import { WeaponWheel } from "./WeaponWheel";
 import { Zombie, type EnemyModelKit } from "./Zombie";
@@ -211,23 +212,22 @@ export class GameApp {
           this.hud.setMessage(
             wave === 1
               ? open
-                ? "Stay moving. Use distance. Imported walls block you (disable in Settings if stuck)."
+                ? MAP_CONFIG.importVisual.useProceduralTestGround
+                  ? "Flat grid test plane — no imported walls; use this mode for perf and tuning."
+                  : "Stay moving. Use distance. Imported walls block you (disable in Settings if stuck)."
                 : "Hold the line. Reload often. Aim for the head."
               : open
                 ? "More of them. Keep kiting and aim for the head."
                 : "The horde gets meaner. Buy doors. Stack score."
           );
-          this.screenEffects.showWaveBanner(`WAVE ${wave}`, "Hold the line");
+          this.screenEffects.showWaveBanner(formatWaveRound(wave));
           this.audio.play("waveStart");
           this.audio.setDroneIntensity(Math.min(1, wave * 0.18));
           this.map.triggerFlicker(0.85);
         },
         onWaveCleared: (wave) => {
           this.hud.setStatus(`Wave ${wave} cleared. Catch your breath.`);
-          this.screenEffects.showWaveBanner(
-            `WAVE ${wave} CLEARED`,
-            "Reload before the next push"
-          );
+          this.screenEffects.showWaveBanner(`${formatWaveRound(wave)} CLEARED`, 2.5);
           this.audio.play("waveCleared");
           this.map.triggerFlicker(0.5);
         },

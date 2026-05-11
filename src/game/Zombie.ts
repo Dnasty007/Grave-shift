@@ -20,12 +20,6 @@ let zombieId = 0;
 const ZOMBIE_RADIUS = 0.5;
 const PROC_HEAD_RADIUS = 0.32;
 
-function shortestAngleDeltaDeg(fromDeg: number, toDeg: number): number {
-  let d = toDeg - fromDeg;
-  d = ((((d + 180) % 360) + 360) % 360) - 180;
-  return d;
-}
-
 /**
  * Enemy: either Blockbench / Hytopia glTF (`GAME_CONFIG.enemyVisual`) or legacy primitives.
  * glTF path: `AnimComponent` plays walk/run clips from the container asset.
@@ -65,10 +59,10 @@ export class Zombie {
   private armSwingPhase = Math.random() * Math.PI * 2;
   private moaned = false;
   private spawnAlpha = 0;
-  /** Smoothed world yaw (degrees); avoids instant snap toward the player. */
-  private smoothYawDeg: number | null = null;
-  /** Low-pass filtered chase direction on XZ (updated while moving toward player). */
-  private readonly smoothedChaseDir = new pc.Vec3(0, 0, 0);
+  /** World-space direction to player on XZ (normalized). */
+  private readonly towardPlayerFlat = new pc.Vec3();
+  /** Scratch: rotation that maps local FORWARD to {@link towardPlayerFlat}. */
+  private readonly facePlayerQuat = new pc.Quat();
 
   constructor(
     position: pc.Vec3,
@@ -314,12 +308,17 @@ export class Zombie {
     this.armSwingPhase += dt * 6;
 
     const position = this.root.getPosition().clone();
-    const toPlayer = playerPosition.clone().sub(position);
-    const flatToPlayer = new pc.Vec3(toPlayer.x, 0, toPlayer.z);
-    const distance = flatToPlayer.length();
+    const dx = playerPosition.x - position.x;
+    const dz = playerPosition.z - position.z;
+    const lenSq = dx * dx + dz * dz;
+    const distance = Math.sqrt(lenSq);
 
-    if (distance > 0.001) {
-      flatToPlayer.normalize();
+    if (lenSq > 1e-12) {
+      const inv = 1 / Math.sqrt(lenSq);
+      this.towardPlayerFlat.set(dx * inv, 0, dz * inv);
+      this.facePlayerQuat.setFromDirections(pc.Vec3.FORWARD, this.towardPlayerFlat);
+      // Apply full quaternion; setEulerAngles(0, e.y, 0) drops X/Z and breaks oblique bearings.
+      this.root.setLocalRotation(this.facePlayerQuat);
     }
 
     if (distance <= GAME_CONFIG.zombie.attackRange) {
@@ -340,38 +339,37 @@ export class Zombie {
         }
       }
 
-      const blended = flatToPlayer.clone().add(separation.clone().mulScalar(0.55));
-      if (blended.length() > 0.0001) {
-        blended.normalize();
-        const hz = GAME_CONFIG.zombie.trackDirectionSmoothHz;
-        const alpha = 1 - Math.exp(-hz * dt);
-        if (this.smoothedChaseDir.lengthSq() < 1e-12) {
-          this.smoothedChaseDir.copy(blended);
-        } else {
-          this.smoothedChaseDir.lerp(this.smoothedChaseDir, blended, alpha);
-          if (this.smoothedChaseDir.lengthSq() > 1e-12) {
-            this.smoothedChaseDir.normalize();
+      if (lenSq > 1e-12) {
+        const mx = this.towardPlayerFlat.x;
+        const mz = this.towardPlayerFlat.z;
+        let nx = position.x + mx * this.speed * dt;
+        let nz = position.z + mz * this.speed * dt;
+
+        if (separation.lengthSq() > 1e-12) {
+          separation.y = 0;
+          const along = separation.x * mx + separation.z * mz;
+          separation.x -= mx * along;
+          separation.z -= mz * along;
+          separation.mulScalar(0.38);
+          if (separation.lengthSq() > 1e-12) {
+            nx += separation.x;
+            nz += separation.z;
           }
         }
-        position.add(this.smoothedChaseDir.clone().mulScalar(this.speed * dt));
-        if (this.collision) {
-          this.collision.resolveZombiePosition(position, ZOMBIE_RADIUS);
-        }
-        this.root.setPosition(position);
+        position.x = nx;
+        position.z = nz;
+      } else if (separation.lengthSq() > 1e-12) {
+        separation.y = 0;
+        separation.mulScalar(0.38);
+        position.x += separation.x;
+        position.z += separation.z;
       }
-    }
 
-    const heading = Math.atan2(playerPosition.x - position.x, playerPosition.z - position.z);
-    const targetYawDeg = 180 - heading * pc.math.RAD_TO_DEG;
-    const turnRate = GAME_CONFIG.zombie.trackYawDegPerSecond;
-    if (this.smoothYawDeg == null) {
-      this.smoothYawDeg = targetYawDeg;
-    } else {
-      const delta = shortestAngleDeltaDeg(this.smoothYawDeg, targetYawDeg);
-      const maxStep = turnRate * dt;
-      this.smoothYawDeg += pc.math.clamp(delta, -maxStep, maxStep);
+      if (this.collision) {
+        this.collision.resolveZombiePosition(position, ZOMBIE_RADIUS);
+      }
+      this.root.setPosition(position);
     }
-    this.root.setEulerAngles(0, this.smoothYawDeg, 0);
 
     const bobY = Math.sin(this.bobOffset) * 0.06;
     const lurch = Math.sin(this.bobOffset * 0.5) * 0.05;

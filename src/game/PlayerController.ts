@@ -59,6 +59,7 @@ export class PlayerController {
   private fireCooldown = 0;
   private currentSpeed = 0;
   private didFireThisFrame = false;
+  private velocity = new pc.Vec3(); // weighted inertia
   private lastDamageDirection: { x: number; y: number } | null = null;
   private recoilPitchKick = 0;
   /** Jump / fall vertical speed on feet (ignored in fly or noclip). */
@@ -117,11 +118,12 @@ export class PlayerController {
 
   // --- Camera tuning: pivot Y = 1.7 when GLB import is on (arena: 1.65) ---
 
-  /** Eye height: import mode uses `GAME_CONFIG.player.importEyeHeightAboveFeet` (tune with voxel rig scale). */
+  /** Eye height: import mode, multiplied by `playerVisual.playerModelScaleMultiplier` to follow scaled rig. */
   private applyCameraPivotHeight(): void {
+    const mul = GAME_CONFIG.playerVisual.playerModelScaleMultiplier;
     const y = MAP_CONFIG.importVisual.enabled
-      ? GAME_CONFIG.player.importEyeHeightAboveFeet
-      : 1.65;
+      ? GAME_CONFIG.player.importEyeHeightAboveFeet * mul
+      : 1.65 * mul;
     this.pivot.setLocalPosition(0, y, 0);
   }
 
@@ -153,7 +155,8 @@ export class PlayerController {
     }
     ent.name = "player-gltf";
     const av = GAME_CONFIG.voxelAvatar;
-    const s = av.modelScale;
+    const mul = GAME_CONFIG.playerVisual.playerModelScaleMultiplier;
+    const s = av.modelScale * mul;
     ent.setLocalScale(s, s, s);
     ent.setLocalPosition(0, av.yOffset, 0);
     ent.setLocalEulerAngles(0, av.yawOffsetDeg, 0);
@@ -166,6 +169,7 @@ export class PlayerController {
     }
     this.attachPlayerLocomotion(ent, kit);
     this.characterVisual = ent;
+    this.applyCameraPivotHeight();
   }
 
   private attachPlayerLocomotion(visual: pc.Entity, kit: EnemyModelKit): void {
@@ -489,28 +493,35 @@ export class PlayerController {
     this.pivot.setLocalEulerAngles(this.pitch - this.recoilPitchKick * 60, 0, 0);
 
     const moveInput = this.input.getMoveVector();
-    const desiredMovement = new pc.Vec3();
+    const desiredDir = new pc.Vec3();
 
     if (Math.abs(moveInput.x) > 0.001 || Math.abs(moveInput.y) > 0.001) {
-      desiredMovement.add(this.root.right.clone().mulScalar(moveInput.x));
-      desiredMovement.add(this.root.forward.clone().mulScalar(moveInput.y));
-      desiredMovement.y = 0;
-      desiredMovement.normalize();
+      desiredDir.add(this.root.right.clone().mulScalar(moveInput.x));
+      desiredDir.add(this.root.forward.clone().mulScalar(moveInput.y));
+      desiredDir.y = 0;
+      desiredDir.normalize();
     }
 
-    let speed = this.input.isSprinting()
+    const isSprinting = this.input.isSprinting();
+    let targetSpeed = isSprinting
       ? GAME_CONFIG.player.sprintSpeed *
         clamp(settingsState.sprintSpeedMultiplier, 0.5, 2.5)
       : GAME_CONFIG.player.moveSpeed;
 
     if (MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena) {
-      speed *= MAP_CONFIG.importVisual.openWorldMoveMultiplier;
+      targetSpeed *= MAP_CONFIG.importVisual.openWorldMoveMultiplier;
     }
 
+    // Weighted inertia (Dead Space heavy + COD snappy aim)
+    const accel = isSprinting ? 18 : 14;
+    const decel = 22;
+    const accelRate = desiredDir.length() > 0.1 ? accel : decel;
+    const lerp = (a: number, b: number, t: number) => a + (b - a) * Math.min(t, 1);
+    this.velocity.x = lerp(this.velocity.x, desiredDir.x * targetSpeed, accelRate * dt);
+    this.velocity.z = lerp(this.velocity.z, desiredDir.z * targetSpeed, accelRate * dt);
+
     const currentPosition = this.root.getPosition().clone();
-    let targetPosition = currentPosition
-      .clone()
-      .add(desiredMovement.mulScalar(speed * dt));
+    const targetPosition = currentPosition.clone().add(this.velocity.clone().mulScalar(dt));
 
     const fly = settingsState.flyMode;
     const noclip = settingsState.noclip;
@@ -597,7 +608,8 @@ export class PlayerController {
       } else {
         result = this.fire(weapon, zombies);
         this.didFireThisFrame = true;
-        this.recoilPitchKick = Math.min(0.18, this.recoilPitchKick + weapon.definition.recoilKick);
+        // High-power recoil feel
+        this.recoilPitchKick = Math.min(0.32, this.recoilPitchKick + weapon.definition.recoilKick * 1.35);
       }
     }
 

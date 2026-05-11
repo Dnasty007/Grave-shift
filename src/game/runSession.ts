@@ -23,6 +23,13 @@ export const LOBBY_MAP_ENTRIES: ReadonlyArray<{
     description:
       "Arena tour of the castle layout—courtyards, keep, halls, and forest approach. Tight COD Zombies–style loop with gates and wall buys.",
     previewUrl: "/lobby/map-yard.png"
+  },
+  {
+    id: "testPlane",
+    title: "Test plane",
+    description:
+      "100×100 flat grid with no GLB — maximum performance for movement, weapons, and FX tuning.",
+    previewUrl: "/lobby/map-test-plane.svg"
   }
 ];
 

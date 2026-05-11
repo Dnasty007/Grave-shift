@@ -1,16 +1,23 @@
+@font-face {
+  font-family: "Daemonesque";
+  src: url("/fonts/DAEMONES.TTF") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
-  --hud-accent: #ff7a2c;
-  --hud-accent-soft: rgba(255, 122, 44, 0.55);
-  --hud-danger: #ff3b3b;
+  --hud-accent: #c8102e;        /* Crimson Red */
+  --hud-accent-soft: rgba(200, 16, 46, 0.6);
+  --hud-danger: #ff1a1a;
   --hud-success: #6effa9;
-  --hud-bone: #f6efe3;
-  --hud-bone-dim: rgba(246, 239, 227, 0.62);
-  --hud-glass: rgba(8, 10, 14, 0.72);
-  --hud-glass-strong: rgba(4, 6, 9, 0.88);
-  --hud-border: rgba(255, 224, 178, 0.18);
-  --hud-border-bright: rgba(255, 184, 76, 0.4);
-  font-family: "Bahnschrift", "Aptos", "Segoe UI", system-ui, sans-serif;
+  --hud-white: #f4f4f4;
+  --hud-white-dim: rgba(244, 244, 244, 0.75);
+  --hud-glass: transparent;
+  --hud-border: rgba(200, 16, 46, 0.25);
+  --game-font: "Daemonesque", "Bahnschrift", "Aptos", "Segoe UI", system-ui, sans-serif;
+  font-family: var(--game-font);
   background: #02030a;
   color: var(--hud-bone);
 }
@@ -68,6 +75,11 @@ body.menu-open canvas {
   background-size: 3px 3px;
   mix-blend-mode: overlay;
   animation: grain 1.6s steps(8) infinite;
+}
+
+@keyframes hud-low-health {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.03); }
 }
 
 @keyframes grain {
@@ -249,33 +261,6 @@ body.menu-open #hud {
   color: #ffe6a8;
 }
 
-.wave-pill {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 8px 22px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgba(255, 122, 44, 0.18), rgba(120, 30, 0, 0.55));
-  border: 1px solid var(--hud-border-bright);
-  box-shadow:
-    0 8px 24px rgba(255, 60, 0, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
-}
-
-.wave-pill-label {
-  font-size: 0.7rem;
-  letter-spacing: 0.32em;
-  text-transform: uppercase;
-  color: rgba(246, 239, 227, 0.78);
-}
-
-.wave-pill-value {
-  font-size: 1.2rem;
-  font-weight: 900;
-  color: #fff5d6;
-  text-shadow: 0 0 14px rgba(255, 184, 76, 0.6);
-}
-
 .status-text,
 .message-text {
   text-align: center;
@@ -433,65 +418,89 @@ body.menu-open #hud {
   100% { opacity: 0; transform: translate(-50%, -160%); }
 }
 
-/* ==== Wave banner ==== */
+/* ==== Wave splash announcer + persistent round ==== */
+
+#wave-tracker-persistent {
+  position: absolute;
+  left: calc(22px + env(safe-area-inset-left));
+  bottom: calc(176px + env(safe-area-inset-bottom));
+  z-index: 4;
+  margin: 0;
+  padding: 0.06em 0;
+  font-family: var(--game-font);
+  font-size: clamp(1.35rem, 3.2vw, 1.95rem);
+  font-weight: 400;
+  line-height: 1.12;
+  letter-spacing: 0.06em;
+  color: #c8102e;
+  text-shadow:
+    0 0 1px rgba(0, 0, 0, 0.95),
+    0 3px 12px rgba(0, 0, 0, 0.88),
+    0 0 28px rgba(200, 16, 46, 0.45),
+    0 0 52px rgba(120, 0, 0, 0.35);
+  pointer-events: none;
+}
 
 #wave-banner {
-  position: absolute;
-  top: 22%;
-  left: 50%;
-  transform: translate(-50%, 0);
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   pointer-events: none;
   opacity: 0;
 }
 
 #wave-banner.is-visible {
-  animation: wave-banner-in 1.6s ease-out forwards;
+  opacity: 1;
 }
 
-.wave-banner-inner {
+#wave-banner.is-visible .wave-splash-inner {
+  animation: wave-splash-announce var(--wave-splash-duration, 3s) ease-in-out forwards;
+}
+
+.wave-splash-inner {
+  display: block;
+  margin: 0;
+  padding: 0;
   text-align: center;
-  padding: 20px 38px;
-  border: 1px solid rgba(255, 80, 30, 0.45);
-  border-radius: 18px;
-  background:
-    linear-gradient(180deg, rgba(40, 8, 0, 0.85), rgba(8, 4, 4, 0.85));
-  box-shadow:
-    0 24px 60px rgba(0, 0, 0, 0.6),
-    0 0 32px rgba(255, 80, 30, 0.35);
-  backdrop-filter: blur(12px);
 }
 
-.wave-banner-tag {
-  font-size: 0.72rem;
-  letter-spacing: 0.4em;
-  text-transform: uppercase;
-  color: rgba(255, 200, 140, 0.85);
-}
-
-.wave-banner-label {
-  font-size: clamp(2.4rem, 6vw, 3.6rem);
-  font-weight: 900;
-  letter-spacing: 0.14em;
-  color: #ffe6a8;
+.wave-splash-text {
+  display: inline-block;
+  margin: 0;
+  padding: 0.12em 0.2em 0.18em;
+  font-family: var(--game-font);
+  font-size: clamp(3.2rem, 12vw, 6.5rem);
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: #c8102e;
   text-shadow:
-    0 0 22px rgba(255, 120, 40, 0.6),
-    0 0 44px rgba(255, 30, 0, 0.4);
-  margin: 4px 0;
+    0 0 2px rgba(0, 0, 0, 0.95),
+    0 4px 18px rgba(0, 0, 0, 0.9),
+    0 0 40px rgba(200, 16, 46, 0.55),
+    0 0 72px rgba(90, 0, 0, 0.4);
 }
 
-.wave-banner-sub {
-  font-size: 0.86rem;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: rgba(246, 239, 227, 0.75);
-}
-
-@keyframes wave-banner-in {
-  0% { opacity: 0; transform: translate(-50%, -10px) scale(0.96); }
-  18% { opacity: 1; transform: translate(-50%, 0) scale(1.02); }
-  35% { transform: translate(-50%, 0) scale(1); }
-  85% { opacity: 1; }
-  100% { opacity: 0; }
+@keyframes wave-splash-announce {
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  14% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+  72% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.12);
+  }
 }
 
 /* ==== Ammo panel ==== */

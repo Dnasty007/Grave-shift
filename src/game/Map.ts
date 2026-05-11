@@ -77,9 +77,12 @@ export class Map {
     return MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena;
   }
 
-  /** Old “dollhouse” mode: import visible but keep procedural yard + collision. */
-  private get hideProceduralDecor(): boolean {
-    return MAP_CONFIG.importVisual.enabled && !MAP_CONFIG.importVisual.replacesArena;
+  /** True when terrain height should be sampled (GLB root or flat procedural test plane). */
+  private terrainSamplingActive(): boolean {
+    const vis = MAP_CONFIG.importVisual;
+    if (!vis.enabled) return false;
+    if (vis.useProceduralTestGround) return true;
+    return this.importedMapRoot != null;
   }
 
   constructor(app: pc.Application, collision: CollisionWorld) {
@@ -281,6 +284,11 @@ export class Map {
 
     this.unloadImportedMapAsset(app);
 
+    if (MAP_CONFIG.importVisual.useProceduralTestGround) {
+      this.buildProceduralTestGroundPlane(app);
+      return Promise.resolve();
+    }
+
     return new Promise((resolve) => {
       const { glbUrl } = MAP_CONFIG.importVisual;
       const asset = new pc.Asset(`imported-map-${++this.mapAssetSerial}`, "container", {
@@ -367,8 +375,11 @@ export class Map {
    * `sampleImportedTerrainYNearFeet` for characters so ceilings are not treated as floor.
    */
   sampleImportedTerrainY(wx: number, wz: number): number | null {
-    if (!this.importedMapRoot || !MAP_CONFIG.importVisual.enabled) {
+    if (!this.terrainSamplingActive()) {
       return null;
+    }
+    if (MAP_CONFIG.importVisual.useProceduralTestGround) {
+      return 0;
     }
     const topY = MAP_CONFIG.importVisual.terrainRayTopY;
     const botY = MAP_CONFIG.importVisual.terrainRayBottomY;
@@ -380,8 +391,11 @@ export class Map {
    * local floor/stairs, not the building roof or sky shell when indoors.
    */
   sampleImportedTerrainYNearFeet(wx: number, wz: number, referenceFeetY: number): number | null {
-    if (!this.importedMapRoot || !MAP_CONFIG.importVisual.enabled) {
+    if (!this.terrainSamplingActive()) {
       return null;
+    }
+    if (MAP_CONFIG.importVisual.useProceduralTestGround) {
+      return 0;
     }
     const cfg = MAP_CONFIG.importVisual;
     const startY = Math.min(cfg.terrainRayTopY, referenceFeetY + cfg.terrainRayStartAboveFeet);
@@ -747,10 +761,11 @@ export class Map {
    * Places `playerRoot` feet on the imported mesh under playerSpawn.x/z.
    */
   snapPlayerFeetToImportedGround(playerRoot: pc.Entity): boolean {
+    const vis = MAP_CONFIG.importVisual;
     if (
-      !this.importedMapRoot ||
-      !MAP_CONFIG.importVisual.replacesArena ||
-      !MAP_CONFIG.importVisual.snapFeetToGround
+      (!this.importedMapRoot && !vis.useProceduralTestGround) ||
+      !vis.replacesArena ||
+      !vis.snapFeetToGround
     ) {
       return false;
     }
@@ -766,10 +781,84 @@ export class Map {
     return true;
   }
 
+  /**
+   * Perf-test ground: 100×100 plane centered at the origin, dark grid material.
+   * Adds a static box collider + rigidbody when PlayCanvas physics systems are present
+   * (player still uses CPU terrain at y = 0; physics is for future / tooling consistency).
+   */
+  private buildProceduralTestGroundPlane(app: pc.Application): void {
+    const plane = new pc.Entity("procedural-test-ground");
+    const mat = new pc.StandardMaterial();
+    mat.diffuse = new pc.Color(0.1, 0.1, 0.12);
+    mat.emissive = new pc.Color(0.02, 0.02, 0.025);
+    mat.diffuseMap = this.createTestGroundGridTexture(app.graphicsDevice);
+    mat.diffuseMapTiling.set(32, 32);
+    mat.update();
+
+    plane.addComponent("render", { type: "plane", material: mat });
+    plane.setLocalPosition(0, 0, 0);
+    plane.setLocalScale(100, 1, 100);
+    this.root.addChild(plane);
+
+    const rbSys = app.systems.rigidbody;
+    const colSys = app.systems.collision;
+    if (rbSys && colSys) {
+      plane.addComponent("collision", {
+        type: "box",
+        halfExtents: new pc.Vec3(50, 0.05, 50)
+      });
+      plane.addComponent("rigidbody", { type: "static" });
+    }
+  }
+
+  private createTestGroundGridTexture(device: pc.GraphicsDevice): pc.Texture {
+    const size = 256;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return new pc.Texture(device, {
+        width: 4,
+        height: 4,
+        format: pc.PIXELFORMAT_RGBA8,
+        mipmaps: false
+      });
+    }
+    ctx.fillStyle = "#18181c";
+    ctx.fillRect(0, 0, size, size);
+    ctx.strokeStyle = "#3c3f48";
+    ctx.lineWidth = 1;
+    const cells = 16;
+    const step = size / cells;
+    for (let i = 0; i <= cells; i++) {
+      const p = Math.round(i * step) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(p, 0);
+      ctx.lineTo(p, size);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, p);
+      ctx.lineTo(size, p);
+      ctx.stroke();
+    }
+    const tex = new pc.Texture(device, {
+      width: size,
+      height: size,
+      format: pc.PIXELFORMAT_RGBA8,
+      mipmaps: false,
+      minFilter: pc.FILTER_LINEAR,
+      magFilter: pc.FILTER_LINEAR,
+      addressU: pc.ADDRESS_REPEAT,
+      addressV: pc.ADDRESS_REPEAT
+    });
+    tex.setSource(canvas);
+    return tex;
+  }
+
   // --- Procedural pieces (arena yard only) ---
 
   private buildGround(): void {
-    if (!this.hideProceduralDecor) {
+    if (!this.replacesArena) {
       const ground = new pc.Entity("ground");
       ground.addComponent("render", { type: "plane", material: this.groundMaterial });
       ground.setLocalScale(ARENA_HALF * 2, 1, ARENA_HALF * 2);
@@ -831,7 +920,7 @@ export class Map {
 
   private addStaticWall(x: number, z: number, sx: number, sz: number): void {
     this.collision.addFromCenter(x, z, sx, sz, true);
-    if (!this.hideProceduralDecor) {
+    if (!this.replacesArena) {
       const wall = new pc.Entity("wall");
       wall.addComponent("render", { type: "box", material: this.wallMaterial });
       wall.setLocalScale(sx, WALL_HEIGHT, sz);
@@ -983,7 +1072,7 @@ export class Map {
   }
 
   private buildProps(): void {
-    if (this.hideProceduralDecor) {
+    if (this.replacesArena) {
       return;
     }
 

@@ -1,6 +1,7 @@
 import { GAME_CONFIG } from "./config";
 import type { InteractPrompt } from "./Interactable";
 import type { Weapon } from "./Weapon";
+import { formatWaveRound } from "./waveDisplay";
 
 /**
  * DOM HUD bound from `GameApp.renderHud`: health, wave, ammo, status copy, interact card, dev buttons.
@@ -31,7 +32,7 @@ export class Hud {
   private readonly healthValue: HTMLElement;
   private readonly healthBar: HTMLElement;
   private readonly pointsValue: HTMLElement;
-  private readonly waveValue: HTMLElement;
+  private readonly waveTrackerPersistent: HTMLElement;
   private readonly zombiesValue: HTMLElement;
   private readonly statusText: HTMLElement;
   private readonly messageText: HTMLElement;
@@ -64,7 +65,7 @@ export class Hud {
     this.healthValue = required("health-value");
     this.healthBar = required("health-bar");
     this.pointsValue = required("points-value");
-    this.waveValue = required("wave-value");
+    this.waveTrackerPersistent = required("wave-tracker-persistent");
     this.zombiesValue = required("zombies-value");
     this.statusText = required("status-text");
     this.messageText = required("message-text");
@@ -112,7 +113,7 @@ export class Hud {
     this.healthBar.classList.toggle("is-low", ratio < 0.35);
 
     this.pointsValue.textContent = `${snapshot.points}`;
-    this.waveValue.textContent = `${snapshot.wave}`;
+    this.waveTrackerPersistent.textContent = formatWaveRound(snapshot.wave);
     this.zombiesValue.textContent = `${snapshot.activeZombies + snapshot.queuedZombies}`;
 
     const def = snapshot.weapon.definition;
