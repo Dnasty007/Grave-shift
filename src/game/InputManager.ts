@@ -32,8 +32,10 @@ export class InputManager {
   private readonly leftStick: StickState;
   private readonly rightStick: StickState;
   private fireHeld = false;
+  private adsHeld = false;
   private restartRequested = false;
   private reloadRequested = false;
+  private lethalRequested = false;
   /** Space: one-shot jump (consumed by PlayerController). */
   private jumpRequested = false;
   private gameOver = false;
@@ -120,6 +122,7 @@ export class InputManager {
     this.paused = paused;
     if (paused) {
       this.fireHeld = false;
+      this.adsHeld = false;
       this.jumpRequested = false;
       this.accumulatedLookX = 0;
       this.accumulatedLookY = 0;
@@ -135,6 +138,7 @@ export class InputManager {
     this.inventoryOpen = open;
     if (open) {
       this.fireHeld = false;
+      this.adsHeld = false;
       this.jumpRequested = false;
       this.accumulatedLookX = 0;
       this.accumulatedLookY = 0;
@@ -153,6 +157,7 @@ export class InputManager {
     this.inputBlocked = blocked;
     if (blocked) {
       this.fireHeld = false;
+      this.adsHeld = false;
       this.jumpRequested = false;
     }
   }
@@ -165,9 +170,17 @@ export class InputManager {
     if (open) {
       this.inventoryOpen = false;
       this.fireHeld = false;
+      this.adsHeld = false;
       this.accumulatedLookX = 0;
       this.accumulatedLookY = 0;
     }
+  }
+
+  /** True while right mouse button is held in pointer-lock (desktop only). */
+  isADS(): boolean {
+    if (this.paused || this.inputBlocked || this.weaponWheelOpen || this.inventoryOpen) return false;
+    if (this.useTouchControls) return false;
+    return this.adsHeld;
   }
 
   isWeaponWheelOpen(): boolean {
@@ -280,6 +293,18 @@ export class InputManager {
     return requested;
   }
 
+  consumeLethalRequest(): boolean {
+    const requested = this.lethalRequested;
+    this.lethalRequested = false;
+    return requested && !this.paused && !this.inputBlocked;
+  }
+
+  /** G key held (desktop) — C4 hold-to-detonate. Same guards as movement lethal use. */
+  isLethalHeld(): boolean {
+    if (this.paused || this.inputBlocked || this.inventoryOpen) return false;
+    return this.keys.has("KeyG");
+  }
+
   consumeReloadRequest(): boolean {
     if (this.paused || this.inputBlocked || this.weaponWheelOpen || this.inventoryOpen) {
       this.reloadRequested = false;
@@ -365,6 +390,12 @@ export class InputManager {
         }
       }
 
+      if (event.code === "KeyG") {
+        if (!this.paused && !this.inputBlocked && !this.inventoryOpen && !event.repeat) {
+          this.lethalRequested = true;
+        }
+      }
+
       if (event.code === "KeyQ" || event.code === "Tab") {
         if (this.inventoryOpen) {
           if (event.code === "Tab") event.preventDefault();
@@ -420,29 +451,37 @@ export class InputManager {
       this.keys.delete(event.code);
     });
 
+    // Prevent native right-click context menu while in-game
+    this.canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+
     window.addEventListener("mousedown", (event) => {
-      if (event.button !== 0 || this.useTouchControls || this.inputBlocked) {
+      if (this.useTouchControls || this.inputBlocked) return;
+      if (this.paused) return;
+      if (this.weaponWheelOpen || this.inventoryOpen) return;
+
+      if (event.button === 0) {
+        if (document.pointerLockElement !== this.canvas) {
+          void this.canvas.requestPointerLock();
+        } else {
+          this.fireHeld = true;
+        }
         return;
       }
 
-      if (this.paused) {
+      if (event.button === 2) {
+        if (document.pointerLockElement === this.canvas) {
+          this.adsHeld = true;
+        }
         return;
-      }
-
-      if (this.weaponWheelOpen || this.inventoryOpen) {
-        return;
-      }
-
-      if (document.pointerLockElement !== this.canvas) {
-        void this.canvas.requestPointerLock();
-      } else {
-        this.fireHeld = true;
       }
     });
 
     window.addEventListener("mouseup", (event) => {
       if (event.button === 0) {
         this.fireHeld = false;
+      }
+      if (event.button === 2) {
+        this.adsHeld = false;
       }
     });
 

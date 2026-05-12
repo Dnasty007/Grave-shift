@@ -6,6 +6,23 @@ import {
   PLAYER_MODEL_PRESETS,
   type PlayerModelId
 } from "./runSession";
+import {
+  LoadoutStore,
+  MAX_LOADOUTS,
+  SPECIAL_ABILITY_META,
+  MOD_META,
+  MOD_SHOP_PRICES,
+  PRIMARY_META,
+  LETHAL_META,
+  type LoadoutData,
+  type SpecialAbilityId,
+  type ModId,
+  type StarterPistolId,
+  type LethalId
+} from "./LoadoutStore";
+import { PlayerAccount, type RunReward, getXpForCurrentLevel, getLevelForXp } from "./PlayerAccount";
+
+export type { LoadoutData };
 
 export type GameOverStats = {
   wave: number;
@@ -15,11 +32,13 @@ export type GameOverStats = {
   shotsFired: number;
   shotsHit: number;
   survivedSeconds: number;
+  reward?: RunReward;
 };
 
 export type BeginRunSelection = {
   mapId: MapPresetId;
   playerId: PlayerModelId;
+  loadout: LoadoutData;
 };
 
 export type MenuCallbacks = {
@@ -34,6 +53,7 @@ type MenuName =
   | "title"
   | "mapSelect"
   | "playerSelect"
+  | "modShop"
   | "pause"
   | "settings"
   | "controls"
@@ -43,23 +63,35 @@ type MenuName =
 export class MenuController {
   private readonly root: HTMLElement;
   private readonly settings: Settings;
+  private readonly account: PlayerAccount;
   private readonly callbacks: MenuCallbacks;
   private readonly settingsBackTarget: { current: "pause" | "title" } = { current: "title" };
 
   private readonly screens: Record<Exclude<MenuName, "none">, HTMLElement>;
   private currentScreen: MenuName = "none";
 
-  /** Map chosen on the lobby flow (player screen needs it for `onBeginRun`). */
+  /** Map chosen on the lobby flow. */
   private pendingMapId: MapPresetId = "castle";
 
-  constructor(root: HTMLElement, settings: Settings, callbacks: MenuCallbacks) {
+  /** Operative chosen on the player select screen. */
+  private pendingPlayerId: PlayerModelId | null = null;
+
+  /** Loadout slot currently being edited. */
+  private activeLoadoutId = 0;
+
+  /** Persistent loadout store (localStorage-backed). */
+  private readonly loadoutStore = new LoadoutStore();
+
+  constructor(root: HTMLElement, settings: Settings, account: PlayerAccount, callbacks: MenuCallbacks) {
     this.root = root;
     this.settings = settings;
+    this.account = account;
     this.callbacks = callbacks;
 
     const titleScreen = root.querySelector<HTMLElement>("#title-screen");
     const mapSelectScreen = root.querySelector<HTMLElement>("#map-select-screen");
     const playerSelectScreen = root.querySelector<HTMLElement>("#player-select-screen");
+    const modShopScreen = root.querySelector<HTMLElement>("#mod-shop-screen");
     const pauseScreen = root.querySelector<HTMLElement>("#pause-screen");
     const settingsScreen = root.querySelector<HTMLElement>("#settings-screen");
     const controlsScreen = root.querySelector<HTMLElement>("#controls-screen");
@@ -69,6 +101,7 @@ export class MenuController {
       !titleScreen ||
       !mapSelectScreen ||
       !playerSelectScreen ||
+      !modShopScreen ||
       !pauseScreen ||
       !settingsScreen ||
       !controlsScreen ||
@@ -81,6 +114,7 @@ export class MenuController {
       title: titleScreen,
       mapSelect: mapSelectScreen,
       playerSelect: playerSelectScreen,
+      modShop: modShopScreen,
       pause: pauseScreen,
       settings: settingsScreen,
       controls: controlsScreen,
@@ -89,10 +123,14 @@ export class MenuController {
 
     this.populateLobbyCards();
     this.bindMenuButtons();
+    this.bindLoadoutPanel();
     this.bindSettingsControls();
+    this.bindModShop();
 
     settings.subscribe((state) => this.syncSettingsUI(state));
   }
+
+  // ── Lobby card population ──────────────────────────────────────────────────
 
   private populateLobbyCards(): void {
     const mapHost = this.root.querySelector<HTMLElement>("#lobby-map-cards");
@@ -116,22 +154,59 @@ export class MenuController {
     }
 
     playerHost.replaceChildren();
+
+    // Active operatives
     for (const id of LOBBY_PLAYER_ORDER) {
       const p = PLAYER_MODEL_PRESETS[id];
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "lobby-card";
+      btn.className = "operative-card";
       btn.dataset.playerId = id;
+      btn.setAttribute("aria-pressed", "false");
       btn.innerHTML = `
-        <div class="lobby-card-visual"><img src="${p.previewUrl}" alt="" loading="lazy" /></div>
-        <div class="lobby-card-body">
-          <h3 class="lobby-card-title">${p.label}</h3>
-          <p class="lobby-card-desc">${p.description}</p>
-          <span class="lobby-card-cta">Deploy</span>
+        <div class="operative-card-portrait">
+          <img src="${p.previewUrl}" alt="" loading="lazy" />
+          <div class="operative-card-portrait-overlay"></div>
+          <span class="operative-card-status-badge operative-card-status-badge--live">ACTIVE</span>
+        </div>
+        <div class="operative-card-info">
+          <p class="operative-card-role">FIELD OPERATIVE</p>
+          <h3 class="operative-card-name">${p.label}</h3>
+          <p class="operative-card-desc">${p.description}</p>
+          <span class="operative-card-cta">Select</span>
         </div>`;
       playerHost.appendChild(btn);
     }
+
+    // Classified (coming-soon) operatives
+    const classifiedSlots = [
+      { codename: "GHOST-7",    role: "RECON SPECIALIST",  clearance: "LEVEL 4" },
+      { codename: "WRAITH",     role: "HEAVY ASSAULT",     clearance: "LEVEL 5" },
+      { codename: "BANSHEE",    role: "SUPPORT MEDIC",     clearance: "LEVEL 5" },
+      { codename: "PHANTOM-X",  role: "STEALTH OPERATIVE", clearance: "LEVEL 6" },
+    ];
+
+    for (const slot of classifiedSlots) {
+      const div = document.createElement("div");
+      div.className = "operative-card operative-card--classified";
+      div.setAttribute("aria-hidden", "true");
+      div.innerHTML = `
+        <div class="operative-card-portrait operative-card-portrait--classified">
+          <div class="operative-card-classified-fill"></div>
+          <span class="operative-card-classified-stamp">CLASSIFIED</span>
+          <span class="operative-card-status-badge operative-card-status-badge--classified">LOCKED</span>
+        </div>
+        <div class="operative-card-info">
+          <p class="operative-card-role">${slot.role}</p>
+          <h3 class="operative-card-name operative-card-name--redacted">${slot.codename}</h3>
+          <p class="operative-card-clearance">CLEARANCE: ${slot.clearance}</p>
+          <span class="operative-card-cta operative-card-cta--classified">COMING SOON</span>
+        </div>`;
+      playerHost.appendChild(div);
+    }
   }
+
+  // ── Menu navigation ────────────────────────────────────────────────────────
 
   showTitle(): void {
     this.show("title");
@@ -162,6 +237,54 @@ export class MenuController {
     }
 
     this.show("gameOver");
+
+    // Reward panel — XP + souls + level
+    if (stats.reward) {
+      this.animateRunReward(stats.reward);
+    }
+  }
+
+  private animateRunReward(reward: RunReward): void {
+    const r = reward;
+
+    // Populate static text
+    const setText = (id: string, val: string) => {
+      const el = this.root.querySelector<HTMLElement>(`#${id}`);
+      if (el) el.textContent = val;
+    };
+
+    setText("go-xp-gained", `+${r.xpGained.toLocaleString()} XP`);
+    setText("go-souls-gained", `+${r.soulsGained.toLocaleString()} Souls`);
+    setText("go-souls-total", `${r.newTotalSouls.toLocaleString()} Souls`);
+    setText("go-level-before", `LVL ${r.levelBefore}`);
+    setText("go-level-after", `LVL ${r.levelAfter}`);
+
+    // Level-up badge
+    const badge = this.root.querySelector<HTMLElement>("#go-levelup-badge");
+    if (badge) badge.classList.toggle("is-visible", r.didLevelUp);
+
+    // XP progress bar — start from level-before percentage
+    const barFill = this.root.querySelector<HTMLElement>("#go-xp-bar-fill");
+    if (!barFill) return;
+
+    // Where were we in the level before the run?
+    const xpBefore = r.newTotalXp - r.xpGained;
+    const { current: curBefore, needed: neededBefore } = getXpForCurrentLevel(xpBefore);
+    const { current: curAfter, needed: neededAfter } = getXpForCurrentLevel(r.newTotalXp);
+
+    const startPct = r.didLevelUp ? 0 : curBefore / neededBefore;
+    const endPct = curAfter / neededAfter;
+
+    // Reset bar then animate after a short delay
+    barFill.style.transition = "none";
+    barFill.style.width = `${startPct * 100}%`;
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        barFill.style.transition = "width 1.4s cubic-bezier(0.22, 1, 0.36, 1)";
+        barFill.style.width = `${endPct * 100}%`;
+      });
+    });
   }
 
   hide(): void {
@@ -178,7 +301,8 @@ export class MenuController {
       this.currentScreen === "settings" ||
       this.currentScreen === "controls" ||
       this.currentScreen === "mapSelect" ||
-      this.currentScreen === "playerSelect"
+      this.currentScreen === "playerSelect" ||
+      this.currentScreen === "modShop"
     );
   }
 
@@ -191,7 +315,14 @@ export class MenuController {
       screen.classList.toggle("is-visible", key === name);
       screen.setAttribute("aria-hidden", key === name ? "false" : "true");
     }
+
+    // Reset operative selection when leaving player select
+    if (name !== "playerSelect") {
+      this.resetOperativeSelection();
+    }
   }
+
+  // ── Menu button bindings ───────────────────────────────────────────────────
 
   private bindMenuButtons(): void {
     const bind = (id: string, handler: () => void) => {
@@ -204,6 +335,7 @@ export class MenuController {
       this.show("mapSelect");
     });
 
+    // Map select: click a map card → go to player select
     const mapScreen = this.root.querySelector<HTMLElement>("#map-select-screen");
     if (mapScreen) {
       mapScreen.addEventListener("click", (e) => {
@@ -216,6 +348,7 @@ export class MenuController {
       });
     }
 
+    // Player select: click a player card → set active operative + open loadout panel
     const playerScreen = this.root.querySelector<HTMLElement>("#player-select-screen");
     if (playerScreen) {
       playerScreen.addEventListener("click", (e) => {
@@ -223,10 +356,21 @@ export class MenuController {
         if (!t || !(t instanceof HTMLElement)) return;
         const id = t.dataset.playerId as PlayerModelId | undefined;
         if (!id) return;
-        this.callbacks.onBeginRun({ mapId: this.pendingMapId, playerId: id });
-        this.hide();
+        this.setActiveOperative(id);
       });
     }
+
+    // Deploy button
+    bind("btn-deploy", () => {
+      if (!this.pendingPlayerId) return;
+      const loadout = this.loadoutStore.get(this.activeLoadoutId);
+      this.callbacks.onBeginRun({
+        mapId: this.pendingMapId,
+        playerId: this.pendingPlayerId,
+        loadout
+      });
+      this.hide();
+    });
 
     bind("btn-lobby-map-back", () => this.show("title"));
     bind("btn-lobby-player-back", () => this.show("mapSelect"));
@@ -236,6 +380,15 @@ export class MenuController {
     });
     bind("btn-title-controls", () => {
       this.show("controls");
+    });
+    bind("btn-title-mod-shop", () => {
+      this.renderModShop();
+      this.show("modShop");
+    });
+    bind("btn-mod-shop-back", () => this.show("title"));
+    bind("btn-go-mod-shop", () => {
+      this.renderModShop();
+      this.show("modShop");
     });
 
     bind("btn-resume", () => {
@@ -286,6 +439,347 @@ export class MenuController {
       this.show("title");
     });
   }
+
+  // ── Operative selection ────────────────────────────────────────────────────
+
+  private setActiveOperative(id: PlayerModelId): void {
+    this.pendingPlayerId = id;
+
+    // Update card selected states
+    const cards = this.root.querySelectorAll<HTMLElement>("#lobby-player-cards .operative-card");
+    for (const card of cards) {
+      const isThis = card.dataset.playerId === id;
+      card.classList.toggle("is-selected", isThis);
+      card.setAttribute("aria-pressed", isThis ? "true" : "false");
+      const cta = card.querySelector<HTMLElement>(".operative-card-cta");
+      if (cta) cta.textContent = isThis ? "✓ Selected" : "Select";
+    }
+
+    // Show the loadout panel
+    const layout = this.root.querySelector<HTMLElement>("#operative-select-layout");
+    if (layout) layout.classList.add("loadout-open");
+    const panel = this.root.querySelector<HTMLElement>("#loadout-panel");
+    if (panel) panel.setAttribute("aria-hidden", "false");
+
+    // Show selected info in sidebar
+    this.syncDeploySidebar();
+
+    // Enable deploy button
+    const deployBtn = this.root.querySelector<HTMLButtonElement>("#btn-deploy");
+    if (deployBtn) deployBtn.disabled = false;
+
+    // Render the loadout panel tabs + editor for the current slot
+    this.renderLoadoutTabs();
+    this.renderLoadoutEditor();
+  }
+
+  private resetOperativeSelection(): void {
+    this.pendingPlayerId = null;
+
+    const cards = this.root.querySelectorAll<HTMLElement>("#lobby-player-cards .operative-card");
+    for (const card of cards) {
+      card.classList.remove("is-selected");
+      card.setAttribute("aria-pressed", "false");
+      const cta = card.querySelector<HTMLElement>(".operative-card-cta");
+      if (cta) cta.textContent = "Select";
+    }
+
+    const layout = this.root.querySelector<HTMLElement>("#operative-select-layout");
+    if (layout) layout.classList.remove("loadout-open");
+    const panel = this.root.querySelector<HTMLElement>("#loadout-panel");
+    if (panel) panel.setAttribute("aria-hidden", "true");
+
+    const deployBtn = this.root.querySelector<HTMLButtonElement>("#btn-deploy");
+    if (deployBtn) deployBtn.disabled = true;
+
+    const info = this.root.querySelector<HTMLElement>("#operative-selected-info");
+    if (info) info.classList.remove("is-visible");
+  }
+
+  private syncDeploySidebar(): void {
+    const info = this.root.querySelector<HTMLElement>("#operative-selected-info");
+    const nameEl = this.root.querySelector<HTMLElement>("#operative-selected-name");
+    const loadoutEl = this.root.querySelector<HTMLElement>("#operative-selected-loadout");
+
+    if (!this.pendingPlayerId) return;
+
+    const preset = PLAYER_MODEL_PRESETS[this.pendingPlayerId];
+    const loadout = this.loadoutStore.get(this.activeLoadoutId);
+
+    if (info) info.classList.add("is-visible");
+    if (nameEl) nameEl.textContent = preset.label.toUpperCase();
+    if (loadoutEl) {
+      const abilityLabel = loadout.specialAbility
+        ? SPECIAL_ABILITY_META[loadout.specialAbility].label
+        : null;
+      const modLabel = loadout.mod ? MOD_META[loadout.mod].label : null;
+      const parts = [loadout.name, abilityLabel, modLabel].filter(Boolean);
+      loadoutEl.textContent = parts.join(" · ");
+    }
+  }
+
+  // ── Loadout panel ─────────────────────────────────────────────────────────
+
+  private bindLoadoutPanel(): void {
+    // Name input + confirm button
+    const nameInput = this.root.querySelector<HTMLInputElement>("#loadout-name-input");
+    const nameConfirm = this.root.querySelector<HTMLButtonElement>("#loadout-name-confirm");
+
+    if (nameInput && nameConfirm) {
+      const saveName = () => {
+        const val = nameInput.value.trim();
+        if (!val) return;
+        this.loadoutStore.update(this.activeLoadoutId, { name: val });
+        this.renderLoadoutTabs();
+        this.syncDeploySidebar();
+      };
+
+      nameConfirm.addEventListener("click", saveName);
+      nameInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          saveName();
+          nameInput.blur();
+        }
+      });
+    }
+  }
+
+  // ── Mod Shop ──────────────────────────────────────────────────────────────
+
+  private bindModShop(): void {
+    // Delegated buy button clicks
+    const screen = this.root.querySelector<HTMLElement>("#mod-shop-screen");
+    if (!screen) return;
+    screen.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLElement>("[data-buy-mod]");
+      if (!btn) return;
+      const id = btn.dataset.buyMod as ModId | undefined;
+      if (!id) return;
+      const bought = this.account.buyMod(id);
+      if (bought) this.renderModShop();
+    });
+  }
+
+  private renderModShop(): void {
+    const grid = this.root.querySelector<HTMLElement>("#mod-shop-grid");
+    const soulsEl = this.root.querySelector<HTMLElement>("#mod-shop-souls");
+    if (!grid) return;
+
+    const owned = this.account.ownedMods();
+    if (soulsEl) soulsEl.textContent = `${this.account.souls.toLocaleString()} Souls`;
+
+    // Count how many loadout slots use each mod (for x2 display)
+    const equippedCounts: Partial<Record<ModId, number>> = {};
+    for (const slot of this.loadoutStore.getAll()) {
+      if (slot.mod) equippedCounts[slot.mod] = (equippedCounts[slot.mod] ?? 0) + 1;
+    }
+
+    grid.replaceChildren();
+    for (const [rawId, meta] of Object.entries(MOD_META) as [ModId, typeof MOD_META[ModId]][]) {
+      const id = rawId as ModId;
+      const isOwned = owned.has(id);
+      const price = MOD_SHOP_PRICES[id];
+      const canAfford = this.account.souls >= price;
+      const count = equippedCounts[id] ?? 0;
+
+      const card = document.createElement("div");
+      card.className = "mod-shop-card" + (isOwned ? " is-owned" : "");
+
+      card.innerHTML = `
+        <div class="mod-shop-card-icon">${meta.icon}</div>
+        <div class="mod-shop-card-body">
+          <div class="mod-shop-card-header">
+            <span class="mod-shop-card-name">${meta.label}</span>
+            ${isOwned && count > 0 ? `<span class="mod-shop-card-count">(x${count})</span>` : ""}
+            ${isOwned ? `<span class="mod-shop-card-owned-badge">OWNED</span>` : ""}
+          </div>
+          <p class="mod-shop-card-desc">${meta.desc}</p>
+          ${
+            isOwned
+              ? `<span class="mod-shop-card-status">Unlocked for all loadouts</span>`
+              : `<button type="button" class="mod-shop-buy-btn${canAfford ? "" : " is-locked"}" data-buy-mod="${id}" ${canAfford ? "" : "disabled"}>
+                  <span class="mod-shop-buy-price">${price.toLocaleString()}</span>
+                  <span class="mod-shop-buy-label">${canAfford ? "Buy" : "Need Souls"}</span>
+                </button>`
+          }
+        </div>`;
+
+      grid.appendChild(card);
+    }
+  }
+
+  // Render the 5 slot tab buttons
+  private renderLoadoutTabs(): void {
+    const host = this.root.querySelector<HTMLElement>("#loadout-tabs");
+    if (!host) return;
+
+    host.replaceChildren();
+    const all = this.loadoutStore.getAll();
+    for (const slot of all) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "loadout-tab" + (slot.id === this.activeLoadoutId ? " is-active" : "");
+      btn.setAttribute("role", "tab");
+      btn.setAttribute("aria-selected", slot.id === this.activeLoadoutId ? "true" : "false");
+      btn.textContent = slot.name;
+      btn.dataset.slotId = `${slot.id}`;
+      btn.addEventListener("click", () => {
+        this.activeLoadoutId = slot.id;
+        this.renderLoadoutTabs();
+        this.renderLoadoutEditor();
+        this.syncDeploySidebar();
+      });
+      host.appendChild(btn);
+    }
+  }
+
+  // Render the full editor for the active slot
+  private renderLoadoutEditor(): void {
+    const slot = this.loadoutStore.get(this.activeLoadoutId);
+
+    // Name input
+    const nameInput = this.root.querySelector<HTMLInputElement>("#loadout-name-input");
+    if (nameInput) nameInput.value = slot.name;
+
+    // Special ability grid
+    this.renderPickGrid<SpecialAbilityId | null>(
+      "#loadout-ability-grid",
+      [
+        { id: null, label: "None", desc: "No special ability.", icon: "—", stats: undefined },
+        ...Object.entries(SPECIAL_ABILITY_META).map(([id, m]) => ({
+          id: id as SpecialAbilityId,
+          label: m.label,
+          desc: m.desc,
+          icon: m.icon,
+          stats: undefined
+        }))
+      ],
+      slot.specialAbility,
+      (val) => {
+        this.loadoutStore.update(this.activeLoadoutId, { specialAbility: val });
+        this.syncDeploySidebar();
+      }
+    );
+
+    // Mod grid — only show mods the player owns
+    const ownedMods = this.account.ownedMods();
+    const modOptions: Array<{ id: ModId | null; label: string; desc: string; icon: string; stats?: string }> = [
+      { id: null, label: "None", desc: "No weapon mod.", icon: "—" }
+    ];
+    for (const [id, m] of Object.entries(MOD_META) as [ModId, typeof MOD_META[ModId]][]) {
+      if (ownedMods.has(id)) {
+        modOptions.push({ id, label: m.label, desc: m.desc, icon: m.icon });
+      }
+    }
+
+    if (modOptions.length === 1) {
+      // No owned mods — show an empty-state prompt
+      const host = this.root.querySelector<HTMLElement>("#loadout-mod-grid");
+      if (host) {
+        host.innerHTML = `<div class="loadout-mod-empty">
+          <p>No mods owned yet.</p>
+          <button type="button" class="loadout-mod-shop-link" id="loadout-mod-shop-link">Visit Mod Shop →</button>
+        </div>`;
+        host.querySelector("#loadout-mod-shop-link")?.addEventListener("click", () => {
+          this.renderModShop();
+          this.show("modShop");
+        });
+      }
+    } else {
+      this.renderPickGrid<ModId | null>(
+        "#loadout-mod-grid",
+        modOptions,
+        slot.mod,
+        (val) => {
+          this.loadoutStore.update(this.activeLoadoutId, { mod: val });
+          this.syncDeploySidebar();
+        }
+      );
+    }
+
+    // Primary grid (no "none" — always a weapon)
+    this.renderPickGrid<StarterPistolId>(
+      "#loadout-primary-grid",
+      Object.entries(PRIMARY_META).map(([id, m]) => ({
+        id: id as StarterPistolId,
+        label: m.label,
+        desc: m.desc,
+        icon: m.icon,
+        stats: m.stats
+      })),
+      slot.primary,
+      (val) => {
+        this.loadoutStore.update(this.activeLoadoutId, { primary: val });
+      }
+    );
+
+    // Lethal grid
+    this.renderPickGrid<LethalId | null>(
+      "#loadout-lethal-grid",
+      [
+        { id: null, label: "None", desc: "No lethal equipped.", icon: "—", stats: undefined },
+        ...Object.entries(LETHAL_META).map(([id, m]) => ({
+          id: id as LethalId,
+          label: m.label,
+          desc: m.desc,
+          icon: m.icon,
+          stats: m.stats
+        }))
+      ],
+      slot.lethal,
+      (val) => {
+        this.loadoutStore.update(this.activeLoadoutId, { lethal: val });
+      }
+    );
+  }
+
+  /**
+   * Generic pick-grid renderer.
+   * `options` array: first item may be the "none" option (id === null).
+   */
+  private renderPickGrid<T>(
+    selector: string,
+    options: Array<{ id: T; label: string; desc: string; icon: string; stats?: string }>,
+    current: T,
+    onChange: (value: T) => void
+  ): void {
+    const host = this.root.querySelector<HTMLElement>(selector);
+    if (!host) return;
+
+    host.replaceChildren();
+
+    for (const opt of options) {
+      const isNone = opt.id === null;
+      const isActive = opt.id === current;
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className =
+        "loadout-pick-card" +
+        (isNone ? " loadout-pick-card--none" : "") +
+        (isActive ? " is-active" : "");
+      btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+
+      btn.innerHTML = `
+        <span class="loadout-pick-icon">${opt.icon}</span>
+        <span class="loadout-pick-body">
+          <span class="loadout-pick-label">${opt.label}</span>
+          <span class="loadout-pick-desc">${opt.desc}</span>
+          ${opt.stats ? `<span class="loadout-pick-stats">${opt.stats}</span>` : ""}
+        </span>`;
+
+      btn.addEventListener("click", () => {
+        onChange(opt.id);
+        // Re-render just this grid to update active states
+        this.renderLoadoutEditor();
+      });
+
+      host.appendChild(btn);
+    }
+  }
+
+  // ── Settings controls ──────────────────────────────────────────────────────
 
   private bindSettingsControls(): void {
     const slider = (id: string, key: keyof SettingsState, scale = 1) => {

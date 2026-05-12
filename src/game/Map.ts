@@ -93,8 +93,8 @@ export class Map {
     this.app.root.addChild(this.root);
 
     this.groundMaterial = new pc.StandardMaterial();
-    this.groundMaterial.diffuse = new pc.Color(0.07, 0.07, 0.08);
-    this.groundMaterial.emissive = new pc.Color(0.012, 0.012, 0.014);
+    this.groundMaterial.diffuse = new pc.Color(0.22, 0.24, 0.28);
+    this.groundMaterial.emissive = new pc.Color(0.04, 0.045, 0.05);
     this.groundMaterial.update();
 
     this.wallMaterial = new pc.StandardMaterial();

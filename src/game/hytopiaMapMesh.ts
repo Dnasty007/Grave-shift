@@ -189,7 +189,8 @@ function createTexturedMaterialFromImage(
     name: `hytopia-${fallbackName}`,
     width: img.width,
     height: img.height,
-    format: pc.PIXELFORMAT_SRGB8,
+    // WebGPU: PIXELFORMAT_SRGB8 has no `gpuTextureFormats` entry (unsupported) → black textures.
+    format: pc.PIXELFORMAT_SRGBA8,
     mipmaps: true,
     minFilter: pc.FILTER_LINEAR_MIPMAP_LINEAR,
     magFilter: pc.FILTER_LINEAR,
@@ -199,8 +200,17 @@ function createTexturedMaterialFromImage(
   tex.setSource(img);
   tex.upload();
   const mat = new pc.StandardMaterial();
+  // Albedo tint must be white or diffuseMap reads as black in the lit shader.
+  mat.diffuse = new pc.Color(1, 1, 1);
   mat.diffuseMap = tex;
   mat.useMetalness = false;
+  mat.metalness = 0;
+  mat.specular = new pc.Color(0.06, 0.06, 0.07);
+  mat.gloss = 0.42;
+  // Soft unlit boost so shadowed voxel faces stay readable (outdoor map lighting).
+  mat.emissiveMap = tex;
+  mat.emissive = new pc.Color(1, 1, 1);
+  mat.emissiveIntensity = 0.28;
   mat.update();
   return mat;
 }
@@ -228,7 +238,12 @@ function createSolidMaterial(name: string): pc.StandardMaterial {
   }
   const mat = new pc.StandardMaterial();
   mat.diffuse = new pc.Color(rgb[0], rgb[1], rgb[2]);
-  mat.emissive = new pc.Color(rgb[0] * 0.04, rgb[1] * 0.04, rgb[2] * 0.04);
+  mat.emissive = new pc.Color(
+    rgb[0] * 0.12 + 0.04,
+    rgb[1] * 0.12 + 0.04,
+    rgb[2] * 0.12 + 0.04
+  );
+  mat.emissiveIntensity = 0.85;
   mat.update();
   return mat;
 }

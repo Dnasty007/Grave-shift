@@ -17,6 +17,7 @@
       <div id="low-health-vignette" aria-hidden="true"></div>
       <div id="damage-vignette" aria-hidden="true"></div>
       <div id="blood-overlay" aria-hidden="true"></div>
+      <div id="levelup-flash" aria-hidden="true"></div>
 
       <div id="hud">
         <div class="hud-top">
@@ -60,6 +61,16 @@
           </div>
         </div>
 
+        <!-- Level-up cinematic banner -->
+        <div id="levelup-banner" aria-hidden="true" aria-live="assertive">
+          <div class="levelup-banner-inner">
+            <div class="levelup-banner-rays" aria-hidden="true"></div>
+            <p class="levelup-banner-eyebrow">LEVEL UP</p>
+            <p class="levelup-banner-num" id="levelup-banner-num">LVL 2</p>
+            <p class="levelup-banner-sub">SHOCKWAVE RELEASED</p>
+          </div>
+        </div>
+
         <div id="crosshair" aria-hidden="true">
           <span class="crosshair-line crosshair-top"></span>
           <span class="crosshair-line crosshair-bottom"></span>
@@ -68,10 +79,25 @@
           <span class="crosshair-dot"></span>
         </div>
 
+        <!-- Sniper scope overlay (shown when AWP-class weapon is fully ADS'd) -->
+        <div id="scope-overlay" aria-hidden="true">
+          <div class="scope-vignette"></div>
+          <div class="scope-ring"></div>
+          <div class="scope-line scope-line-top"></div>
+          <div class="scope-line scope-line-bottom"></div>
+          <div class="scope-line scope-line-left"></div>
+          <div class="scope-line scope-line-right"></div>
+          <div class="scope-mil scope-mil-top"></div>
+          <div class="scope-mil scope-mil-bottom"></div>
+          <div class="scope-mil scope-mil-left"></div>
+          <div class="scope-mil scope-mil-right"></div>
+          <div class="scope-center-dot"></div>
+        </div>
+
         <div id="jetpack-hud" aria-hidden="true">
           <span class="jetpack-icon">⚡</span>
           <div class="jetpack-info">
-            <span class="jetpack-label">JETPACK</span>
+            <span class="jetpack-label">THRUSTER</span>
             <div class="jetpack-bar-track">
               <div class="jetpack-bar-fill" id="jetpack-bar"></div>
             </div>
@@ -104,6 +130,15 @@
           <div class="ammo-reload-bar">
             <div class="ammo-reload-fill" id="ammo-reload-fill"></div>
           </div>
+        </div>
+
+        <!-- Lethal indicator (bottom-right near ammo) -->
+        <div id="lethal-hud" aria-hidden="true">
+          <span class="lethal-icon">◎</span>
+          <span class="lethal-body">
+            <span class="lethal-name" id="lethal-name">FRAG</span>
+            <span class="lethal-charges" id="lethal-charges">2</span>
+          </span>
         </div>
 
         <div id="interact-prompt" aria-hidden="true">
@@ -184,54 +219,197 @@
       <div id="menu-root">
         <section id="title-screen" class="menu-screen is-visible" aria-hidden="false">
           <div class="menu-backdrop"></div>
-          <div class="menu-content">
-            <p class="menu-tagline">Industrial Yard · Endless Shift</p>
-            <h1 class="menu-title">
-              <span>GRAVE</span><span class="menu-title-accent">SHIFT</span>
-            </h1>
-            <p class="menu-blurb">
-              Floodlights buzz. Something's wrong with the night crew.
-              Hold the yard. Stack the score.
-            </p>
-            <div class="menu-actions">
-              <button id="btn-start" class="menu-button menu-button-primary">PLAY</button>
-              <button id="btn-title-settings" class="menu-button">Settings</button>
-              <button id="btn-title-controls" class="menu-button">Controls</button>
+
+          <!-- Corner bracket decorations -->
+          <div class="title-corner title-corner--tl" aria-hidden="true"></div>
+          <div class="title-corner title-corner--tr" aria-hidden="true"></div>
+          <div class="title-corner title-corner--bl" aria-hidden="true"></div>
+          <div class="title-corner title-corner--br" aria-hidden="true"></div>
+
+          <div class="title-layout">
+            <!-- LEFT: Brand block -->
+            <div class="title-brand">
+              <p class="title-eyebrow">Industrial Yard &nbsp;·&nbsp; Endless Shift</p>
+              <h1 class="title-logo">
+                <span class="title-logo-grave">GRAVE</span>
+                <span class="title-logo-shift">SHIFT</span>
+              </h1>
+              <p class="title-blurb">
+                Floodlights buzz. Something's wrong with the night crew.<br>
+                Hold the yard. Stack the score.
+              </p>
+              <p class="title-hint">Press <kbd>Esc</kbd> in-game to pause</p>
             </div>
-            <p class="menu-hint">
-              Press <kbd>Esc</kbd> in-game to pause. Tap <kbd>⏸</kbd> on mobile.
-            </p>
+
+            <!-- RIGHT: Navigation list -->
+            <nav class="title-nav" aria-label="Main menu">
+              <button id="btn-start" class="title-nav-btn title-nav-btn--primary">
+                <span class="title-nav-icon">▶</span>
+                <span>Deploy</span>
+              </button>
+              <button id="btn-title-mod-shop" class="title-nav-btn">
+                <span class="title-nav-icon">◈</span>
+                <span>Mod Shop</span>
+              </button>
+              <button id="btn-title-settings" class="title-nav-btn">
+                <span class="title-nav-icon">◆</span>
+                <span>Settings</span>
+              </button>
+              <button id="btn-title-controls" class="title-nav-btn">
+                <span class="title-nav-icon">◆</span>
+                <span>Controls</span>
+              </button>
+            </nav>
+          </div>
+
+          <!-- Bottom status bar -->
+          <div class="title-statusbar" aria-hidden="true">
+            <span>SYS READY</span>
+            <span class="title-statusbar-dot"></span>
+            <span>GRAVE-SHIFT v1.0</span>
+            <span class="title-statusbar-dot"></span>
+            <span>THREAT LEVEL: EXTREME</span>
           </div>
         </section>
 
-        <section id="map-select-screen" class="menu-screen" aria-hidden="true">
+        <section id="map-select-screen" class="menu-screen menu-screen--lobby" aria-hidden="true">
           <div class="menu-backdrop"></div>
-          <div class="menu-content lobby-screen">
-            <p class="menu-tagline">Briefing</p>
-            <h2 class="menu-heading">SELECT MAP</h2>
-            <p class="lobby-hint">Each map changes how the horde arrives and how you move.</p>
-            <div id="lobby-map-cards" class="lobby-card-grid"></div>
-            <div class="menu-actions">
-              <button type="button" id="btn-lobby-map-back" class="menu-button menu-button-quiet">
-                Back
+          <div class="lobby-layout">
+
+            <!-- Sidebar -->
+            <aside class="lobby-sidebar">
+              <p class="lobby-step">01 &nbsp;/&nbsp; BRIEFING</p>
+              <h2 class="lobby-heading">SELECT<br>ZONE</h2>
+              <p class="lobby-lore">Each zone changes how the horde arrives, how gates open, and how you move. Choose carefully — there's no extraction.</p>
+              <div class="lobby-sidebar-rule" aria-hidden="true"></div>
+              <button type="button" id="btn-lobby-map-back" class="lobby-back-btn">
+                ← Return to Base
               </button>
+            </aside>
+
+            <!-- Card grid -->
+            <div class="lobby-main">
+              <div class="lobby-main-header" aria-hidden="true">
+                <span class="lobby-main-label">AVAILABLE ZONES</span>
+                <span class="lobby-main-rule"></span>
+              </div>
+              <div id="lobby-map-cards" class="lobby-card-grid"></div>
             </div>
+
           </div>
         </section>
 
-        <section id="player-select-screen" class="menu-screen" aria-hidden="true">
+        <section id="player-select-screen" class="menu-screen menu-screen--lobby" aria-hidden="true">
           <div class="menu-backdrop"></div>
-          <div class="menu-content lobby-screen">
-            <p class="menu-tagline">Loadout</p>
-            <h2 class="menu-heading">SELECT OPERATOR</h2>
-            <p class="lobby-hint">Same height as zombies; first-person body stays hidden to avoid clipping.</p>
-            <div id="lobby-player-cards" class="lobby-card-grid"></div>
-            <div class="menu-actions">
-              <button type="button" id="btn-lobby-player-back" class="menu-button menu-button-quiet">
-                Back
-              </button>
+          <div class="operative-select-layout" id="operative-select-layout">
+
+            <!-- Sidebar -->
+            <aside class="lobby-sidebar operative-sidebar">
+              <p class="lobby-step">02 &nbsp;/&nbsp; LOADOUT</p>
+              <h2 class="operative-sidebar-heading">SELECT<br>OPERATIVE</h2>
+              <p class="operative-sidebar-lore">Choose your operative and configure your loadout — ability, mod, sidearm, and lethal — before deploying to the yard.</p>
+              <div class="operative-roster-count" aria-hidden="true">
+                <span class="operative-roster-dot operative-roster-dot--live"></span>
+                <span>2 ACTIVE</span>
+                <span class="operative-roster-sep">·</span>
+                <span class="operative-roster-classified">4 CLASSIFIED</span>
+              </div>
+              <div class="lobby-sidebar-rule" aria-hidden="true"></div>
+
+              <div class="operative-selected-info" id="operative-selected-info" aria-hidden="true">
+                <p class="operative-selected-label">SELECTED OPERATIVE</p>
+                <p class="operative-selected-name" id="operative-selected-name">—</p>
+                <p class="operative-selected-loadout" id="operative-selected-loadout">No loadout set</p>
+              </div>
+
+              <div class="operative-sidebar-actions">
+                <button type="button" id="btn-deploy" class="operative-deploy-btn" disabled>
+                  <span class="operative-deploy-icon">▶</span>
+                  <span>DEPLOY</span>
+                </button>
+                <button type="button" id="btn-lobby-player-back" class="lobby-back-btn">
+                  ← Change Zone
+                </button>
+              </div>
+            </aside>
+
+            <!-- Operative cards (center column) -->
+            <div class="operative-card-panel">
+              <div class="operative-panel-header" aria-hidden="true">
+                <span class="operative-panel-label">PERSONNEL FILES</span>
+                <span class="operative-panel-rule"></span>
+                <span class="operative-panel-sub">SELECT A FILE TO OPEN</span>
+              </div>
+              <div id="lobby-player-cards" class="operative-card-grid"></div>
             </div>
-          </div>
+
+            <!-- Loadout panel (right column — slides in on operative selection) -->
+            <div class="loadout-panel" id="loadout-panel" aria-hidden="true">
+              <div class="loadout-panel-inner">
+
+                <!-- Slot tabs -->
+                <div class="loadout-tabs-header">
+                  <span class="loadout-tabs-label">LOADOUTS</span>
+                  <div class="loadout-tabs" id="loadout-tabs" role="tablist"></div>
+                </div>
+
+                <!-- Active slot editor -->
+                <div class="loadout-editor" id="loadout-editor">
+
+                  <!-- Rename row -->
+                  <div class="loadout-name-row">
+                    <input
+                      type="text"
+                      class="loadout-name-input"
+                      id="loadout-name-input"
+                      maxlength="20"
+                      aria-label="Loadout name"
+                      spellcheck="false"
+                    />
+                    <button type="button" class="loadout-name-confirm" id="loadout-name-confirm" aria-label="Save name">✓</button>
+                  </div>
+
+                  <!-- Special Ability -->
+                  <div class="loadout-category">
+                    <div class="loadout-cat-header">
+                      <span class="loadout-cat-label">SPECIAL ABILITY</span>
+                      <span class="loadout-cat-sub">One passive combat bonus</span>
+                    </div>
+                    <div class="loadout-pick-grid" id="loadout-ability-grid" role="group" aria-label="Special ability options"></div>
+                  </div>
+
+                  <!-- Mod -->
+                  <div class="loadout-category">
+                    <div class="loadout-cat-header">
+                      <span class="loadout-cat-label">MOD</span>
+                      <span class="loadout-cat-sub">Weapon or kit enhancement</span>
+                    </div>
+                    <div class="loadout-pick-grid" id="loadout-mod-grid" role="group" aria-label="Mod options"></div>
+                  </div>
+
+                  <!-- Primary sidearm -->
+                  <div class="loadout-category">
+                    <div class="loadout-cat-header">
+                      <span class="loadout-cat-label">PRIMARY</span>
+                      <span class="loadout-cat-sub">Starter sidearm · pistols only</span>
+                    </div>
+                    <div class="loadout-pick-grid" id="loadout-primary-grid" role="group" aria-label="Primary weapon options"></div>
+                  </div>
+
+                  <!-- Lethal -->
+                  <div class="loadout-category">
+                    <div class="loadout-cat-header">
+                      <span class="loadout-cat-label">LETHAL</span>
+                      <span class="loadout-cat-sub">Press G to deploy in-game</span>
+                    </div>
+                    <div class="loadout-pick-grid" id="loadout-lethal-grid" role="group" aria-label="Lethal equipment options"></div>
+                  </div>
+
+                </div><!-- /loadout-editor -->
+              </div><!-- /loadout-panel-inner -->
+            </div><!-- /loadout-panel -->
+
+          </div><!-- /operative-select-layout -->
         </section>
 
         <section id="pause-screen" class="menu-screen" aria-hidden="true">
@@ -418,26 +596,94 @@
           </div>
         </section>
 
+        <!-- ── Mod Shop ───────────────────────────────────────────────────── -->
+        <section id="mod-shop-screen" class="menu-screen" aria-hidden="true">
+          <div class="menu-backdrop"></div>
+          <div class="mod-shop-layout">
+            <!-- Sidebar -->
+            <div class="mod-shop-sidebar">
+              <p class="mod-shop-eyebrow">Permanent Upgrades</p>
+              <h2 class="mod-shop-title">MOD SHOP</h2>
+              <p class="mod-shop-blurb">Buy once. Use forever.<br>Mods persist across all runs.</p>
+              <div class="mod-shop-balance">
+                <span class="mod-shop-balance-label">YOUR SOULS</span>
+                <span class="mod-shop-balance-value" id="mod-shop-souls">0 Souls</span>
+              </div>
+              <button id="btn-mod-shop-back" class="mod-shop-back-btn">← Back to Title</button>
+            </div>
+
+            <!-- Mod grid -->
+            <div class="mod-shop-content">
+              <div id="mod-shop-grid" class="mod-shop-grid">
+                <!-- Populated by MenuController.renderModShop() -->
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ── Game Over ──────────────────────────────────────────────────── -->
         <section id="game-over-screen" class="menu-screen" aria-hidden="true">
           <div class="menu-backdrop"></div>
-          <div class="menu-content">
-            <p class="menu-tagline menu-tagline-danger">The yard has been overrun</p>
-            <h2 class="menu-heading menu-heading-danger">SHIFT OVER</h2>
-            <div class="game-over-stats">
-              <div class="stat-pair"><span>Wave Reached</span><strong id="go-wave">0</strong></div>
-              <div class="stat-pair"><span>Score</span><strong id="go-points">0</strong></div>
-              <div class="stat-pair"><span>Kills</span><strong id="go-kills">0</strong></div>
-              <div class="stat-pair"><span>Headshots</span><strong id="go-headshots">0</strong></div>
-              <div class="stat-pair"><span>Accuracy</span><strong id="go-accuracy">0%</strong></div>
-              <div class="stat-pair"><span>Survived</span><strong id="go-time">0:00</strong></div>
+          <div class="game-over-layout">
+            <!-- Left: run stats -->
+            <div class="game-over-left">
+              <p class="go-eyebrow">The yard has been overrun</p>
+              <h2 class="go-title">SHIFT OVER</h2>
+              <div class="game-over-stats">
+                <div class="stat-pair"><span>Wave Reached</span><strong id="go-wave">0</strong></div>
+                <div class="stat-pair"><span>Score</span><strong id="go-points">0</strong></div>
+                <div class="stat-pair"><span>Kills</span><strong id="go-kills">0</strong></div>
+                <div class="stat-pair"><span>Headshots</span><strong id="go-headshots">0</strong></div>
+                <div class="stat-pair"><span>Accuracy</span><strong id="go-accuracy">0%</strong></div>
+                <div class="stat-pair"><span>Survived</span><strong id="go-time">0:00</strong></div>
+              </div>
+              <div class="menu-actions">
+                <button id="btn-game-over-restart" class="menu-button menu-button-primary">
+                  Run It Back
+                </button>
+                <button id="btn-game-over-title" class="menu-button menu-button-quiet">
+                  Quit to Title
+                </button>
+                <button id="btn-go-mod-shop" class="menu-button menu-button-shop">
+                  ◈ Mod Shop
+                </button>
+              </div>
             </div>
-            <div class="menu-actions">
-              <button id="btn-game-over-restart" class="menu-button menu-button-primary">
-                Run It Back
-              </button>
-              <button id="btn-game-over-title" class="menu-button menu-button-quiet">
-                Quit to Title
-              </button>
+
+            <!-- Right: XP / Souls reward panel -->
+            <div class="game-over-reward">
+              <div class="go-reward-header">
+                <span class="go-reward-label">RUN REWARD</span>
+                <span id="go-levelup-badge" class="go-levelup-badge">LEVEL UP!</span>
+              </div>
+
+              <div class="go-level-row">
+                <span id="go-level-before" class="go-level-chip">LVL 1</span>
+                <span class="go-level-arrow">→</span>
+                <span id="go-level-after" class="go-level-chip go-level-chip--after">LVL 1</span>
+              </div>
+
+              <!-- XP bar -->
+              <div class="go-xp-bar-wrap">
+                <div id="go-xp-bar-fill" class="go-xp-bar-fill"></div>
+              </div>
+
+              <div class="go-reward-stats">
+                <div class="go-reward-row">
+                  <span class="go-reward-row-label">XP Earned</span>
+                  <span id="go-xp-gained" class="go-reward-row-val go-xp-color">+0 XP</span>
+                </div>
+                <div class="go-reward-row">
+                  <span class="go-reward-row-label">Souls Earned</span>
+                  <span id="go-souls-gained" class="go-reward-row-val go-souls-color">+0 Souls</span>
+                </div>
+                <div class="go-reward-row go-reward-row--total">
+                  <span class="go-reward-row-label">Total Souls</span>
+                  <span id="go-souls-total" class="go-reward-row-val">0 Souls</span>
+                </div>
+              </div>
+
+              <p class="go-reward-hint">Spend Souls in the Mod Shop to unlock permanent upgrades.</p>
             </div>
           </div>
         </section>

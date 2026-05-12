@@ -25,6 +25,8 @@ export type HudSnapshot = {
   weapon: Weapon;
   isReloading: boolean;
   reloadProgress: number;
+  lethalCharges?: number;
+  lethalName?: string;
 };
 
 export class Hud {
@@ -122,7 +124,7 @@ export class Hud {
     }
 
     const def = weapon.definition;
-    this.invHeldName.textContent = def.name;
+    this.invHeldName.textContent = weapon.getHudDisplayName();
     this.invHeldDetail.textContent = `${def.caliber} ammo · Magazine ${weapon.ammoMag}/${def.magazineSize} · Reserve ${weapon.ammoReserve}/${def.reserveAmmo}`;
 
     const frag = document.createDocumentFragment();
@@ -159,7 +161,7 @@ export class Hud {
     this.zombiesValue.textContent = `${snapshot.activeZombies + snapshot.queuedZombies}`;
 
     const def = snapshot.weapon.definition;
-    this.weaponName.textContent = def.name.toUpperCase();
+    this.weaponName.textContent = snapshot.weapon.getHudDisplayName().toUpperCase();
     this.weaponCaliber.textContent = `${def.caliber} · LOAD`;
 
     this.ammoMagValue.textContent = `${snapshot.weapon.ammoMag}`;
@@ -176,16 +178,27 @@ export class Hud {
       this.ammoReloadBar.classList.remove("is-active");
       this.ammoReloadFill.style.width = "0%";
     }
+
+    // Lethal indicator
+    const lethalEl = document.getElementById("lethal-hud");
+    const lethalChargesEl = document.getElementById("lethal-charges");
+    const lethalNameEl = document.getElementById("lethal-name");
+    if (lethalEl) {
+      const hasLethal = (snapshot.lethalCharges ?? 0) > 0 || snapshot.lethalName;
+      lethalEl.classList.toggle("is-active", !!hasLethal);
+      if (lethalChargesEl) lethalChargesEl.textContent = `${snapshot.lethalCharges ?? 0}`;
+      if (lethalNameEl) lethalNameEl.textContent = snapshot.lethalName ?? "";
+    }
   }
 
-  setJetpackStatus(active: boolean, remainingSeconds: number, totalSeconds: number): void {
+  setJetpackStatus(active: boolean, remainingSeconds: number, thrusterFuelRatio: number): void {
     if (!this.jetpackHud) return;
     const expiring = active && remainingSeconds < 10;
     this.jetpackHud.classList.toggle("is-active", active);
     this.jetpackHud.classList.toggle("is-expiring", expiring);
     if (!active) return;
-    const ratio = totalSeconds > 0 ? Math.max(0, Math.min(1, remainingSeconds / totalSeconds)) : 0;
-    if (this.jetpackBar) this.jetpackBar.style.width = `${ratio * 100}%`;
+    const fuel = Math.max(0, Math.min(1, thrusterFuelRatio));
+    if (this.jetpackBar) this.jetpackBar.style.width = `${fuel * 100}%`;
     if (this.jetpackTimerEl) this.jetpackTimerEl.textContent = `${Math.ceil(remainingSeconds)}s`;
   }
 

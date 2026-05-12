@@ -1,4 +1,5 @@
 import type { Settings, SettingsState } from "./Settings";
+import { GAME_CONFIG } from "./config";
 import { HYTOPIA } from "./hytopiaContent";
 
 type SfxName =
@@ -34,6 +35,9 @@ export class AudioEngine {
   private droneNode: { osc: OscillatorNode; gain: GainNode } | null = null;
   private heartbeatTimer: number | null = null;
   private current: SettingsState;
+  /** Easter-egg reward song: at most one start per run (see {@link resetTeddyEasterEggAudioState}). */
+  private teddyRewardSongStartedThisRun = false;
+  private teddyRewardSource: AudioBufferSourceNode | null = null;
 
   /** Decoded from {@link HYTOPIA.footstepManifest} (or legacy fallback). */
   private footstepBuffers: AudioBuffer[] = [];
@@ -527,5 +531,82 @@ export class AudioEngine {
     const node = ctx.createBufferSource();
     node.buffer = buffer;
     return node;
+  }
+
+  resetTeddyEasterEggAudioState(): void {
+    this.teddyRewardSongStartedThisRun = false;
+    this.stopTeddyEasterRewardSong();
+  }
+
+  stopTeddyEasterRewardSong(): void {
+    if (this.teddyRewardSource) {
+      try {
+        this.teddyRewardSource.stop();
+      } catch {
+        /* already stopped */
+      }
+      try {
+        this.teddyRewardSource.disconnect();
+      } catch {
+        /* */
+      }
+      this.teddyRewardSource = null;
+    }
+  }
+
+  playTeddyBearHit(): void {
+    if (!GAME_CONFIG.teddyBearEasterEgg.enabled) return;
+    void this.playOneShotUrl(GAME_CONFIG.teddyBearEasterEgg.hitSoundUrl, 0.92, this.sfxGain);
+  }
+
+  playTeddyEasterRewardSong(): void {
+    if (!GAME_CONFIG.teddyBearEasterEgg.enabled) return;
+    if (this.teddyRewardSongStartedThisRun || this.teddyRewardSource) return;
+    this.teddyRewardSongStartedThisRun = true;
+    void this.startTeddyRewardSongFromUrl(GAME_CONFIG.teddyBearEasterEgg.rewardSongUrl);
+  }
+
+  private async playOneShotUrl(url: string, volume: number, dest: GainNode | null): Promise<void> {
+    const ctx = this.ctx;
+    if (!ctx || !dest) return;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(String(res.status));
+      const ab = await res.arrayBuffer();
+      const buf = await ctx.decodeAudioData(ab.slice(0));
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const g = ctx.createGain();
+      g.gain.value = volume;
+      src.connect(g).connect(dest);
+      src.start();
+    } catch {
+      this.play("uiClick");
+    }
+  }
+
+  private async startTeddyRewardSongFromUrl(url: string): Promise<void> {
+    const ctx = this.ctx;
+    const music = this.musicGain;
+    if (!ctx || !music) return;
+    this.stopTeddyEasterRewardSong();
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(String(res.status));
+      const ab = await res.arrayBuffer();
+      const buf = await ctx.decodeAudioData(ab.slice(0));
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const g = ctx.createGain();
+      g.gain.value = 0.5;
+      src.connect(g).connect(music);
+      this.teddyRewardSource = src;
+      src.onended = () => {
+        this.teddyRewardSource = null;
+      };
+      src.start();
+    } catch {
+      this.play("waveCleared");
+    }
   }
 }

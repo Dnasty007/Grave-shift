@@ -80,33 +80,59 @@ export class CollisionWorld {
    * Cheap zombie pathing nudge: if the zombie is inside a collider that
    * blocks zombies, push it back out along the shortest axis.
    */
+  /** Push a circular XZ footprint out of one AABB (mutates `position`). Returns true if there was overlap. */
+  private pushOutOfBox(position: pc.Vec3, radius: number, box: CollisionBox): boolean {
+    if (!this.overlapsXZ(position.x, position.z, radius, box)) {
+      return false;
+    }
+
+    const overlapMinX = position.x - (box.minX - radius);
+    const overlapMaxX = (box.maxX + radius) - position.x;
+    const overlapMinZ = position.z - (box.minZ - radius);
+    const overlapMaxZ = (box.maxZ + radius) - position.z;
+
+    const minX = Math.min(overlapMinX, overlapMaxX);
+    const minZ = Math.min(overlapMinZ, overlapMaxZ);
+
+    if (minX < minZ) {
+      if (overlapMinX < overlapMaxX) {
+        position.x = box.minX - radius;
+      } else {
+        position.x = box.maxX + radius;
+      }
+    } else {
+      if (overlapMinZ < overlapMaxZ) {
+        position.z = box.minZ - radius;
+      } else {
+        position.z = box.maxZ + radius;
+      }
+    }
+    return true;
+  }
+
   resolveZombiePosition(position: pc.Vec3, radius: number): void {
     for (const box of this.boxes.values()) {
       if (!box.blocksZombies) continue;
-      if (!this.overlapsXZ(position.x, position.z, radius, box)) continue;
-
-      const overlapMinX = position.x - (box.minX - radius);
-      const overlapMaxX = (box.maxX + radius) - position.x;
-      const overlapMinZ = position.z - (box.minZ - radius);
-      const overlapMaxZ = (box.maxZ + radius) - position.z;
-
-      const minX = Math.min(overlapMinX, overlapMaxX);
-      const minZ = Math.min(overlapMinZ, overlapMaxZ);
-
-      if (minX < minZ) {
-        if (overlapMinX < overlapMaxX) {
-          position.x = box.minX - radius;
-        } else {
-          position.x = box.maxX + radius;
-        }
-      } else {
-        if (overlapMinZ < overlapMaxZ) {
-          position.z = box.minZ - radius;
-        } else {
-          position.z = box.maxZ + radius;
-        }
-      }
+      this.pushOutOfBox(position, radius, box);
     }
+  }
+
+  /**
+   * Resolve against every XZ collider (walls, crates, barrels, decorative boxes).
+   * Used so C4 sticks to props that are not zombie-blocking.
+   */
+  resolveAgainstAllColliders(position: pc.Vec3, radius: number): void {
+    for (const box of this.boxes.values()) {
+      this.pushOutOfBox(position, radius, box);
+    }
+  }
+
+  /** True if XZ footprint overlaps any collider (including non-zombie-blocking props). */
+  overlapsAnyColliderXZ(x: number, z: number, radius: number): boolean {
+    for (const box of this.boxes.values()) {
+      if (this.overlapsXZ(x, z, radius, box)) return true;
+    }
+    return false;
   }
 
   private overlapsXZ(x: number, z: number, radius: number, box: CollisionBox): boolean {
@@ -116,5 +142,17 @@ export class CollisionWorld {
       z + radius > box.minZ &&
       z - radius < box.maxZ
     );
+  }
+
+  /**
+   * True if a circle in XZ overlaps any collider that blocks movement (walls, props).
+   * Used by sticky bombs to detect wall impact.
+   */
+  overlapsBlockingXZ(x: number, z: number, radius: number): boolean {
+    for (const box of this.boxes.values()) {
+      if (!box.blocksZombies) continue;
+      if (this.overlapsXZ(x, z, radius, box)) return true;
+    }
+    return false;
   }
 }

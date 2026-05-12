@@ -15,6 +15,7 @@
  */
 
 import { HYTOPIA } from "./hytopiaContent";
+import type { JetpackVariant } from "./JetpackPickup";
 
 export type MapPresetId = "castle" | "yard" | "testPlane";
 
@@ -31,6 +32,14 @@ export type JetpackCosmeticRigProfile = {
   localPosition?: [number, number, number];
   localEuler?: [number, number, number];
   hideBuiltInMeshNames?: readonly string[];
+};
+
+/** Back / cosmetic mesh per {@link JetpackVariant} pickup. */
+export type JetpackVariantCosmeticSpec = {
+  gltfUrl: string;
+  localScale: [number, number, number];
+  localPosition: [number, number, number];
+  localEuler: [number, number, number];
 };
 
 export type MapImportVisualConfig = {
@@ -179,6 +188,29 @@ export const GAME_CONFIG = {
   pointsPerHit: 15,
   pointsPerKill: 100,
   pointsPerHeadshot: 175,
+  /**
+   * Development / balance testing. Set `unlimitedLethals: true` for 999 lethal uses with no spend.
+   * Turn off for normal gameplay.
+   */
+  dev: {
+    unlimitedLethals: true
+  },
+  /**
+   * Pack-a-Punch — COD Zombies style: pay points to raise tier on the **held** ranged weapon,
+   * compound damage, full ammo refill. Melee cannot be upgraded.
+   */
+  packAPunch: {
+    cost: 5000,
+    /** Damage multiplier per tier (compounded: effective = factor ^ tier). */
+    tierDamageMultiplier: 1.28,
+    maxTier: 5,
+    modelUrl: "/models/props/Pack_A_Punch.glb",
+    modelScale: 1.15,
+    interactRadius: 2.85,
+    /** Default spawn (m); Y adjusted by arena / terrain snap. Mystery box uses ~(0, 0, 6). */
+    position: { x: -6.5, y: 0, z: -5.2 },
+    rotationYDegrees: 38
+  },
   player: {
     maxHealth: 100,
     moveSpeed: 6.2,
@@ -283,23 +315,29 @@ export const GAME_CONFIG = {
      */
     animIdleShuffle: 0,
     /**
-     * Optional world-space jetpack / backpack glTF (`.glb` / `.gltf` under `public/`).
-     * Parented under the first matching bone on the hero rig (`back_anchor` on soldier-player).
-     * File must exist at this path under `public/` (e.g. `public/models/players/JetPack_V2.glb`).
+     * Jetpack back meshes: pickup variant (`JetpackPickup`) picks {@link JetpackVariant}.
+     * Base tuning was ~0.62; ×1.45 on both for a stronger silhouette on the hero.
      */
     jetpackCosmetic: {
       enabled: true,
-      gltfUrl: "/models/players/JetPack_V2.glb",
       attachBoneNames: ["back_anchor", "back-anchor", "body_piv", "torso"] as const,
-      /** Scale in parent bone space (JetPack_V2.glb reads well around ~0.6; lower if it clips the arms). */
-      localScale: [0.62, 0.62, 0.62] as [number, number, number],
-      localPosition: [0, 0, 0] as [number, number, number],
-      /** Degrees — adjust if the mesh faces the wrong way on the back. */
-      localEuler: [0, 0, 0] as [number, number, number],
-      /** Names of hero glTF nodes whose renders are turned off so they do not Z-fight with the jetpack. */
       hideBuiltInMeshNames: ["backpack"] as const,
-      /** Optional per-file overrides; Hytopia `player.gltf` uses `back-anchor` (also in default list). */
-      rigProfiles: {} as Record<string, JetpackCosmeticRigProfile>
+      /** Optional per-hero overrides; Hytopia `player.gltf` uses `back-anchor` (also in default list). */
+      rigProfiles: {} as Record<string, JetpackCosmeticRigProfile>,
+      variants: {
+        marauder: {
+          gltfUrl: "/models/players/JetPack_V2.glb",
+          localScale: [0.899, 0.899, 0.899] as [number, number, number],
+          localPosition: [0, 0, 0] as [number, number, number],
+          localEuler: [0, 0, 0] as [number, number, number]
+        },
+        valkyrie: {
+          gltfUrl: "/models/players/rkt44z_valkyrie_V3.glb",
+          localScale: [0.899, 0.899, 0.899] as [number, number, number],
+          localPosition: [0, 0, 0] as [number, number, number],
+          localEuler: [0, 0, 0] as [number, number, number]
+        }
+      } as Record<JetpackVariant, JetpackVariantCosmeticSpec>
     }
   },
   /**
@@ -307,15 +345,10 @@ export const GAME_CONFIG = {
    */
   enemyVisual: {
     useGltf: true,
-    /** Wave spawns: undead / humanoid variants only (Hytopia animals excluded). */
-    gltfUrls: [
-      "/models/enemies/zombie.gltf",
-      "/models/enemies/octoman-model.gltf",
-      "/models/enemies/tree-stalker-model.gltf",
-      "/models/enemies/skeleton-hammer-model.gltf"
-    ] as const,
-    /** When true, each spawn picks a random glTF from {@link gltfUrls}. */
-    randomizeVariant: true,
+    /** Wave spawns: single zombie type for now (add more paths + set {@link randomizeVariant}). */
+    gltfUrls: ["/models/enemies/zombie.gltf"] as const,
+    /** When true and multiple URLs exist, each spawn picks a random glTF. */
+    randomizeVariant: false,
     aimBodyY: 0.92,
     headTargetY: 2.45,
     headRadius: 0.4,
@@ -347,12 +380,17 @@ export const GAME_CONFIG = {
     eyeHeight: 1.55,
     radius: 0.48
   },
+  /** World / sky presentation (see `sceneSkybox.ts`, `GameApp.configureScene`). */
+  sceneLook: {
+    /** Procedural starfield cubemap + cooler lighting; `false` restores Hytopia partly-cloudy sky. */
+    outerSpaceSky: true
+  },
   /**
    * Nine-Tails (Kurama) combat pet: roams near the player (leash), fox-fire + chakra nova.
    * Always active in a run when enabled.
    */
   nineTailsPet: {
-    enabled: true,
+    enabled: false,
     glbUrl: "/models/pets/Kurama_NineTails_V3.glb",
     /** Model-specific scale — tune if the import is huge or tiny vs the hero. */
     modelScale: 0.14,
@@ -399,6 +437,12 @@ export const GAME_CONFIG = {
     additionalPerWave: 2,
     maxAliveAtOnce: 8
   },
+  /**
+   * World pickups (not enemies). Max-ammo uses a glowing golden cube — set chance to 0 to disable.
+   */
+  pickups: {
+    maxAmmoDropChanceOnKill: 0
+  },
   fx: {
     screenShakeBase: 0.45,
     screenShakeKill: 0.9,
@@ -431,6 +475,39 @@ export const GAME_CONFIG = {
     /** How long the pickup hovers before disappearing (seconds). */
     lifetimeSeconds: 60,
     /** How long the player keeps the jetpack ability after picking it up (seconds). */
-    powerupDurationSeconds: 60
+    powerupDurationSeconds: 60,
+    /** Thruster fuel (seconds of full burn at 1× drain); refilled on each pickup. */
+    thrusterFuelMax: 14,
+    /** Upward acceleration (m/s²) while holding jump mid-air with fuel. */
+    thrusterUpAccel: 28,
+    /** Cap upward speed from thrusters (m/s). */
+    thrusterMaxUpSpeed: 22,
+    /** Fuel consumed per second while thrusting. */
+    thrusterFuelDrainPerSecond: 1,
+    /** While jetpack active, airborne, falling, holding jump — max downward speed if not thrusting (m/s). */
+    glideMaxFallSpeed: 7,
+    /** Fall distances below this (feet to ground apex delta, m) never hurt. */
+    fallSafeHeightMeters: 4.2,
+    /** HP lost per meter fallen beyond {@link fallSafeHeightMeters}. */
+    fallDamagePerMeter: 9
+  },
+  /**
+   * Easter egg: three teddy GLBs in the arena. Each new bear hit plays `hitSoundUrl`;
+   * after all three are destroyed, `rewardSongUrl` plays once per run (music bus).
+   */
+  teddyBearEasterEgg: {
+    enabled: true,
+    modelUrl: "/models/easter/ww2_bear_ultimate_base.glb",
+    modelScale: 1.35,
+    modelYOffset: 0,
+    hitRadius: 0.4,
+    hitCenterYOffset: 0.34,
+    spawnPositions: [
+      { x: -13, y: 0, z: 11 },
+      { x: 15, y: 0, z: -8 },
+      { x: 5, y: 0, z: -15 }
+    ],
+    hitSoundUrl: "/audio/easter/teddy-hit.mp3",
+    rewardSongUrl: "/audio/easter/teddy-easter-song.mp3"
   }
 } as const;

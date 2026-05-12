@@ -12,6 +12,8 @@ import type { EnemyModelKit, Zombie } from "./Zombie";
 import type { Map as GameMap } from "./Map";
 import { getPlayerVisualRuntime } from "./runSession";
 import type { AudioEngine } from "./AudioEngine";
+import type { JetpackVariant } from "./JetpackPickup";
+import type { TeddyBearShotTarget } from "./TeddyBearEasterEgg";
 
 /**
  * First-person rig + combat for one `player` entity.
@@ -35,6 +37,8 @@ export type ShotResult = {
   zombie: Zombie | null;
   empty: boolean;
   weaponId: string;
+  /** Teddy easter-egg bear indices hit this frame (at least one pellet each), deduped. */
+  teddyBearIndices: readonly number[];
 };
 
 const PLAYER_RADIUS = 0.6;
@@ -43,6 +47,31 @@ export class PlayerController {
   readonly root = new pc.Entity("player");
 
   health: number = GAME_CONFIG.player.maxHealth;
+
+  // ── Loadout ability / mod flags (set by GameApp on each run) ──────────────
+  /** Phantom Mag: fire without consuming ammo. */
+  ghostMags = false;
+  /** Iron Will: survive the first lethal hit this round at 1 HP. */
+  ironWillActive = false;
+  ironWillUsedThisRound = false;
+  /** Stopping Power: damage multiplier applied to every bullet. */
+  damageMultiplier = 1.0;
+  /** Quick Hands: reload time multiplier (< 1 = faster). */
+  reloadSpeedMultiplier = 1.0;
+  /** Dead Sprint: always move at full sprint speed. */
+  deadSprint = false;
+  /** Iron Trigger: fire rate multiplier (< 1 = faster cooldown). */
+  fireCooldownMultiplier = 1.0;
+  /** Dead Eye: headshot damage bonus multiplier (applied on top of base headshot mult). */
+  headshotBonus = 0;
+  /** Thick Skin: incoming damage multiplier (< 1 = less damage). */
+  incomingDamageMultiplier = 1.0;
+  /** Fleet Foot: bonus to base move speed (additive fraction, e.g. 0.12 = +12%). */
+  moveSpeedBonus = 0;
+  /** Mag Swapper: if true, weapon cycle instantly finishes any active reload. */
+  magSwapperActive = false;
+  /** Vital Harvest: HP restored on every kill. */
+  vitalHarvestHp = 0;
 
   /** Camera rig: root = feet/world move; pivot = eye height; camera = shoot ray origin */
 
@@ -63,6 +92,11 @@ export class PlayerController {
   private velocity = new pc.Vec3(); // weighted inertia
   private lastDamageDirection: { x: number; y: number } | null = null;
   private recoilPitchKick = 0;
+  // ── ADS ───────────────────────────────────────────────────────────────────
+  private adsProgress = 0;          // 0 = hip, 1 = fully ADS
+  private baseFov = 75;             // synced from settings; ADS zooms inward
+  private lastLookDeltaX = 0;
+  private lastLookDeltaY = 0;
   /** Jump / fall vertical speed on feet (ignored in fly or noclip). */
   private verticalVelocity = 0;
   private characterVisual: pc.Entity | null = null;
@@ -74,11 +108,14 @@ export class PlayerController {
   private footstepPhase = 0;
   private readonly audio: AudioEngine | null;
 
-  // --- Jetpack powerup state ---
+  // --- Jetpack powerup + thrusters + fall damage ---
   private jetpackActive = false;
   private jetpackTimer = 0;
-  private readonly JETPACK_JUMP_MULT = 1.85;
-  private readonly JETPACK_GLIDE_FALL_SPEED = 2.2;
+  /** Matches last pickup / default marauder mesh. */
+  private jetpackVariant: JetpackVariant = "marauder";
+  private thrusterFuel = 0;
+  private jetpackFallPeakY = 0;
+  private readonly JETPACK_JUMP_MULT = 1.45;
 
   // --- Construction: camera + subscribe FOV; imported mode uses 1.7 m eye height ---
 
@@ -108,10 +145,13 @@ export class PlayerController {
       fov: settings.get().fov
     });
 
+    this.baseFov = settings.get().fov;
     settings.subscribe((state) => {
-      const cameraComponent = this.camera.camera;
-      if (cameraComponent) {
-        cameraComponent.fov = state.fov;
+      this.baseFov = state.fov;
+      // Only immediately apply if not in ADS (otherwise the ADS lerp handles it)
+      if (this.adsProgress < 0.05) {
+        const cameraComponent = this.camera.camera;
+        if (cameraComponent) cameraComponent.fov = state.fov;
       }
     });
 
@@ -128,6 +168,11 @@ export class PlayerController {
   }
 
   private static clearColorForMapImport(importVisualEnabled: boolean): pc.Color {
+    if (GAME_CONFIG.sceneLook.outerSpaceSky) {
+      return importVisualEnabled
+        ? new pc.Color(0.02, 0.03, 0.08)
+        : new pc.Color(0.05, 0.07, 0.14);
+    }
     return importVisualEnabled
       ? new pc.Color(0.55, 0.68, 0.82)
       : new pc.Color(0.52, 0.66, 0.84);
@@ -233,16 +278,16 @@ export class PlayerController {
    * After `attachCharacterModel`, parents an extra glTF (jetpack) under a named bone.
    * Renders stay on even when the hero body is hidden in first person.
    */
-  attachJetpackCosmetic(kit: EnemyModelKit): void {
+  attachJetpackCosmetic(kit: EnemyModelKit, variant: JetpackVariant): void {
     const cfg = GAME_CONFIG.playerVisual.jetpackCosmetic;
-    if (!cfg.enabled || !cfg.gltfUrl) return;
+    if (!cfg.enabled || !cfg.variants[variant]) return;
     const visual = this.characterVisual;
     if (!visual) return;
 
     const prev = visual.findByName("player-jetpack-cosmetic");
     if (prev) prev.destroy();
 
-    const eff = this.getEffectiveJetpackCosmetic();
+    const eff = this.getEffectiveJetpackCosmetic(variant);
     let mount: pc.GraphNode | null = null;
     for (const bone of eff.attachBoneNames) {
       const found = visual.findByName(bone);
@@ -271,11 +316,17 @@ export class PlayerController {
     jet.setLocalPosition(px, py, pz);
     jet.setLocalEulerAngles(rx, ry, rz);
     mount.addChild(jet);
+    this.jetpackVariant = variant;
     this.applyPersonVisualState(this.settings.get());
   }
 
-  /** Merge base jetpack cosmetic config with optional per-hero `rigProfiles` entry. */
-  private getEffectiveJetpackCosmetic(): {
+  /** Last pickup variant (cosmetic glTF); default marauder before any pickup. */
+  getJetpackVariant(): JetpackVariant {
+    return this.jetpackVariant;
+  }
+
+  /** Merge base + per-variant mesh transforms + optional per-hero `rigProfiles`. */
+  private getEffectiveJetpackCosmetic(variant: JetpackVariant): {
     attachBoneNames: readonly string[];
     localScale: [number, number, number];
     localPosition: [number, number, number];
@@ -283,13 +334,14 @@ export class PlayerController {
     hideBuiltInMeshNames: readonly string[];
   } {
     const cfg = GAME_CONFIG.playerVisual.jetpackCosmetic;
+    const spec = cfg.variants[variant];
     const file = getPlayerVisualRuntime().gltfUrl.split("/").pop() ?? "";
     const prof: JetpackCosmeticRigProfile | undefined = cfg.rigProfiles?.[file];
     return {
       attachBoneNames: prof?.attachBoneNames ?? cfg.attachBoneNames,
-      localScale: prof?.localScale ?? cfg.localScale,
-      localPosition: prof?.localPosition ?? cfg.localPosition,
-      localEuler: prof?.localEuler ?? cfg.localEuler,
+      localScale: prof?.localScale ?? spec.localScale,
+      localPosition: prof?.localPosition ?? spec.localPosition,
+      localEuler: prof?.localEuler ?? spec.localEuler,
       hideBuiltInMeshNames: prof?.hideBuiltInMeshNames ?? cfg.hideBuiltInMeshNames
     };
   }
@@ -298,8 +350,10 @@ export class PlayerController {
   private applyJetpackBuiltInHiding(): void {
     const cfg = GAME_CONFIG.playerVisual.jetpackCosmetic;
     if (!cfg.enabled || !this.characterVisual) return;
-    const eff = this.getEffectiveJetpackCosmetic();
-    for (const name of eff.hideBuiltInMeshNames) {
+    const file = getPlayerVisualRuntime().gltfUrl.split("/").pop() ?? "";
+    const prof: JetpackCosmeticRigProfile | undefined = cfg.rigProfiles?.[file];
+    const hideNames = prof?.hideBuiltInMeshNames ?? cfg.hideBuiltInMeshNames;
+    for (const name of hideNames) {
       const node = this.characterVisual.findByName(name);
       if (!(node instanceof pc.Entity)) continue;
       const renders = node.findComponents("render") as pc.RenderComponent[];
@@ -417,8 +471,24 @@ export class PlayerController {
 
   // --- Run reset: health, spawn (arena vs MAP_CONFIG), ammo ---
 
+  resetLoadoutFlags(): void {
+    this.ghostMags = false;
+    this.ironWillActive = false;
+    this.ironWillUsedThisRound = false;
+    this.damageMultiplier = 1.0;
+    this.reloadSpeedMultiplier = 1.0;
+    this.deadSprint = false;
+    this.fireCooldownMultiplier = 1.0;
+    this.headshotBonus = 0;
+    this.incomingDamageMultiplier = 1.0;
+    this.moveSpeedBonus = 0;
+    this.magSwapperActive = false;
+    this.vitalHarvestHp = 0;
+  }
+
   reset(): void {
     this.health = GAME_CONFIG.player.maxHealth;
+    this.ironWillUsedThisRound = false; // Refresh iron will each run
     this.pitch = -6;
     this.fireCooldown = 0;
     this.currentSpeed = 0;
@@ -428,6 +498,9 @@ export class PlayerController {
     this.footstepPhase = 0;
     this.jetpackActive = false;
     this.jetpackTimer = 0;
+    this.thrusterFuel = 0;
+    this.jetpackVariant = "marauder";
+    this.jetpackFallPeakY = 0;
 
     if (MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena) {
       const s = MAP_CONFIG.importVisual.playerSpawn;
@@ -461,6 +534,17 @@ export class PlayerController {
     if (!this.inventory.cycle(delta)) return false;
     this.viewmodel.setWeapon(this.inventory.getCurrent());
     this.fireCooldown = Math.max(this.fireCooldown, 0.4);
+    // Mag Swapper: instantly finish any active reload on weapon swap
+    if (this.magSwapperActive) {
+      const w = this.inventory.getCurrent() as Weapon & { _isReloading?: boolean; _reloadTimer?: number };
+      if (w._isReloading) {
+        w._isReloading = false;
+        w._reloadTimer = 0;
+        const refill = Math.min(w.ammoReserve, w.definition.magazineSize - w.ammoMag);
+        w.ammoMag += refill;
+        w.ammoReserve -= refill;
+      }
+    }
     return true;
   }
 
@@ -498,12 +582,14 @@ export class PlayerController {
       return;
     }
 
-    // Tick jetpack timer
+    const jp = GAME_CONFIG.jetpack;
+
     if (this.jetpackActive) {
       this.jetpackTimer -= dt;
       if (this.jetpackTimer <= 0) {
         this.jetpackTimer = 0;
         this.jetpackActive = false;
+        this.thrusterFuel = 0;
       }
     }
 
@@ -524,9 +610,12 @@ export class PlayerController {
     const feetTarget = groundY + clearance;
     const onGround = pos.y <= feetTarget + 0.085 && this.verticalVelocity <= 0.45;
 
+    if (onGround) {
+      this.jetpackFallPeakY = feetTarget;
+    }
+
     const wantJump = this.input.consumeJumpRequest();
     if (wantJump && onGround) {
-      // Jetpack grants a significantly higher jump
       const impulse = this.jetpackActive
         ? GAME_CONFIG.player.jumpImpulse * this.JETPACK_JUMP_MULT
         : GAME_CONFIG.player.jumpImpulse;
@@ -535,24 +624,50 @@ export class PlayerController {
 
     this.verticalVelocity -= GAME_CONFIG.player.jumpGravity * dt;
 
-    // Jetpack glide: holding Space while airborne and falling slows descent dramatically
+    let thrusting = false;
+    if (this.jetpackActive && this.thrusterFuel > 0 && this.input.isJumpHeld() && !onGround) {
+      this.verticalVelocity += jp.thrusterUpAccel * dt;
+      this.verticalVelocity = Math.min(this.verticalVelocity, jp.thrusterMaxUpSpeed);
+      this.thrusterFuel -= jp.thrusterFuelDrainPerSecond * dt;
+      if (this.thrusterFuel < 0) {
+        this.thrusterFuel = 0;
+      }
+      thrusting = true;
+    }
+
     if (
       this.jetpackActive &&
       !onGround &&
+      !thrusting &&
       this.verticalVelocity < 0 &&
       this.input.isJumpHeld()
     ) {
-      this.verticalVelocity = Math.max(this.verticalVelocity, -this.JETPACK_GLIDE_FALL_SPEED);
+      this.verticalVelocity = Math.max(this.verticalVelocity, -jp.glideMaxFallSpeed);
     }
 
     let y = pos.y + this.verticalVelocity * dt;
     if (y < feetTarget) {
+      if (this.verticalVelocity < 0) {
+        const drop = this.jetpackFallPeakY - feetTarget;
+        if (drop > jp.fallSafeHeightMeters) {
+          const dmg = (drop - jp.fallSafeHeightMeters) * jp.fallDamagePerMeter;
+          if (dmg >= 1) {
+            this.damage(dmg);
+          }
+        }
+      }
       y = feetTarget;
       if (this.verticalVelocity < 0) {
         this.verticalVelocity = 0;
       }
+      this.jetpackFallPeakY = feetTarget;
     }
+
     this.root.setPosition(pos.x, y, pos.z);
+
+    if (!onGround || y > feetTarget + 0.09) {
+      this.jetpackFallPeakY = Math.max(this.jetpackFallPeakY, y);
+    }
   }
 
   /** Same grounding rule as {@link applyJumpAndGravity} — used for footstep SFX. */
@@ -709,10 +824,10 @@ export class PlayerController {
 
   // --- Main tick: movement (XZ + collision), look, reload, firing ---
 
-  update(dt: number, zombies: Zombie[]): ShotResult | null {
+  update(dt: number, zombies: Zombie[], teddyTargets: readonly TeddyBearShotTarget[] = []): ShotResult | null {
     this.fireCooldown = Math.max(0, this.fireCooldown - dt);
     this.didFireThisFrame = false;
-    this.recoilPitchKick = Math.max(0, this.recoilPitchKick - dt * 5);
+    this.recoilPitchKick = Math.max(0, this.recoilPitchKick - dt * 7);
 
     const settingsState = this.settings.get();
     const allowThird = settingsState.allowThirdPersonToggle && !this.input.isTouchMode();
@@ -730,17 +845,22 @@ export class PlayerController {
       : settingsState.mouseSensitivity;
     const verticalSign = settingsState.invertY ? -1 : 1;
 
-    this.yaw +=
-      lookDelta.x * GAME_CONFIG.player.mouseLookSensitivity * sensitivityScale;
-    this.pitch = clamp(
-      this.pitch +
-        lookDelta.y *
-          GAME_CONFIG.player.mouseLookSensitivity *
-          sensitivityScale *
-          verticalSign,
-      -72,
-      72
-    );
+    const scaledLookX = lookDelta.x * GAME_CONFIG.player.mouseLookSensitivity * sensitivityScale;
+    const scaledLookY = lookDelta.y * GAME_CONFIG.player.mouseLookSensitivity * sensitivityScale * verticalSign;
+    this.lastLookDeltaX = scaledLookX;
+    this.lastLookDeltaY = scaledLookY;
+
+    this.yaw += scaledLookX;
+    this.pitch = clamp(this.pitch + scaledLookY, -72, 72);
+
+    // ── ADS FOV ───────────────────────────────────────────────────────────
+    const wantADS = this.input.isADS() && !Boolean((this.inventory.getCurrent() as Weapon & { _isReloading?: boolean })._isReloading);
+    const adsTarget = wantADS ? 1 : 0;
+    this.adsProgress += (adsTarget - this.adsProgress) * Math.min(1, dt * 10);
+    const zoomDeg = this.getAdsZoomDegrees();
+    const effectiveFov = this.baseFov - this.adsProgress * zoomDeg;
+    const camComp = this.camera.camera;
+    if (camComp) camComp.fov = effectiveFov;
 
     this.root.setEulerAngles(0, this.yaw, 0);
     this.pivot.setLocalEulerAngles(this.pitch - this.recoilPitchKick * 60, 0, 0);
@@ -756,10 +876,14 @@ export class PlayerController {
     }
 
     const isSprinting = this.input.isSprinting();
-    let targetSpeed = isSprinting
+    // Dead Sprint ability: always move at sprint speed
+    const useSprintSpeed = isSprinting || this.deadSprint;
+    let targetSpeed = useSprintSpeed
       ? GAME_CONFIG.player.sprintSpeed *
         clamp(settingsState.sprintSpeedMultiplier, 0.5, 2.5)
       : GAME_CONFIG.player.moveSpeed;
+    // Fleet Foot: additive speed bonus
+    targetSpeed *= 1 + this.moveSpeedBonus;
 
     if (MAP_CONFIG.importVisual.enabled && MAP_CONFIG.importVisual.replacesArena) {
       targetSpeed *= MAP_CONFIG.importVisual.openWorldMoveMultiplier;
@@ -825,7 +949,7 @@ export class PlayerController {
     this.currentSpeed = currentPosition.distance(this.root.getPosition()) / Math.max(0.0001, dt);
 
     this.updatePlayerCharacterLocomotion(settingsState, moveInput);
-    this.tickFootsteps(dt, settingsState, moveInput, isSprinting);
+    this.tickFootsteps(dt, settingsState, moveInput, useSprintSpeed);
 
     const weapon = this.inventory.getCurrent();
     const internal = weapon as Weapon & { _isReloading?: boolean; _reloadTimer?: number };
@@ -844,7 +968,12 @@ export class PlayerController {
         moveSpeed: this.currentSpeed,
         isFiring: this.input.isFiring(),
         didFire: false,
-        isReloading: true
+        isReloading: true,
+        isADS: false, // can't ADS while reloading
+        isSniperWeapon: this.isWeaponSniper(),
+        lookDeltaX: this.lastLookDeltaX,
+        lookDeltaY: this.lastLookDeltaY,
+        strafeInput: 0
       });
       return null;
     }
@@ -860,10 +989,11 @@ export class PlayerController {
         this.fireCooldown = 0.18;
         result = this.emptyShot(weapon);
       } else {
-        result = this.fire(weapon, zombies);
+        result = this.fire(weapon, zombies, teddyTargets);
         this.didFireThisFrame = true;
-        // High-power recoil feel
-        this.recoilPitchKick = Math.min(0.32, this.recoilPitchKick + weapon.definition.recoilKick * 1.35);
+        // Strong recoil kick — reduced when ADS (steadier aim)
+        const kickMult = 1 - this.adsProgress * 0.45;
+        this.recoilPitchKick = Math.min(0.45, this.recoilPitchKick + weapon.definition.recoilKick * 2.2 * kickMult);
       }
     }
 
@@ -871,7 +1001,12 @@ export class PlayerController {
       moveSpeed: this.currentSpeed,
       isFiring: this.input.isFiring(),
       didFire: this.didFireThisFrame,
-      isReloading: Boolean(internal._isReloading)
+      isReloading: Boolean(internal._isReloading),
+      isADS: this.input.isADS(),
+      isSniperWeapon: this.isWeaponSniper(),
+      lookDeltaX: this.lastLookDeltaX,
+      lookDeltaY: this.lastLookDeltaY,
+      strafeInput: moveInput.x
     });
 
     return result;
@@ -880,7 +1015,16 @@ export class PlayerController {
   // --- Incoming zombie damage → health + flash direction for UI ---
 
   damage(amount: number, sourcePosition?: pc.Vec3): void {
-    this.health = Math.max(0, this.health - amount);
+    // Thick Skin: reduce incoming damage
+    const actualAmount = amount * this.incomingDamageMultiplier;
+    // Iron Will: survive the first lethal hit this round at 1 HP
+    if (this.ironWillActive && !this.ironWillUsedThisRound && this.health - actualAmount <= 0) {
+      this.ironWillUsedThisRound = true;
+      this.health = 1;
+      // Still trigger the directional flash below
+    } else {
+      this.health = Math.max(0, this.health - actualAmount);
+    }
 
     if (sourcePosition) {
       const player = this.root.getPosition();
@@ -907,10 +1051,35 @@ export class PlayerController {
     return this.health / GAME_CONFIG.player.maxHealth;
   }
 
-  /** Grant jetpack powerup for `duration` seconds. Refreshes timer if already active. */
-  grantJetpack(duration: number): void {
+  /** True while right-mouse ADS is transitioning or fully active. */
+  get adsActive(): boolean {
+    return this.adsProgress > 0.05;
+  }
+
+  /** True when a sniper-class weapon is fully scoped — tells GameApp to show scope overlay. */
+  get isSnipingScope(): boolean {
+    return this.adsProgress > 0.88 && this.isWeaponSniper();
+  }
+
+  private isWeaponSniper(): boolean {
+    return this.inventory.getCurrent().definition.range >= 120;
+  }
+
+  /** Degrees of FOV zoom to apply at full ADS for the current weapon. */
+  private getAdsZoomDegrees(): number {
+    const range = this.inventory.getCurrent().definition.range;
+    if (range >= 120) return 32;  // sniper
+    if (range >= 80)  return 16;  // rifle
+    if (range >= 50)  return 10;  // SMG
+    return 8;                     // pistol
+  }
+
+  /** Pickup: refreshes duration, refills thruster fuel; game shell attaches matching glTF for `variant`. */
+  grantJetpack(duration: number, variant: JetpackVariant = "marauder"): void {
     this.jetpackActive = true;
     this.jetpackTimer = duration;
+    this.jetpackVariant = variant;
+    this.thrusterFuel = GAME_CONFIG.jetpack.thrusterFuelMax;
   }
 
   get hasJetpack(): boolean {
@@ -922,6 +1091,15 @@ export class PlayerController {
     return Math.max(0, this.jetpackTimer);
   }
 
+  /** Thruster fuel 0–1 for HUD (0 when jetpack inactive). */
+  getThrusterFuelRatio(): number {
+    const max = GAME_CONFIG.jetpack.thrusterFuelMax;
+    if (!this.jetpackActive || max <= 0) {
+      return 0;
+    }
+    return Math.max(0, Math.min(1, this.thrusterFuel / max));
+  }
+
   tryStartReload(): boolean {
     const weapon = this.inventory.getCurrent();
     const internal = weapon as Weapon & { _isReloading?: boolean; _reloadTimer?: number };
@@ -929,7 +1107,7 @@ export class PlayerController {
     if (weapon.ammoMag === weapon.definition.magazineSize) return false;
     if (weapon.ammoReserve <= 0) return false;
     internal._isReloading = true;
-    internal._reloadTimer = weapon.definition.reloadSeconds;
+    internal._reloadTimer = weapon.definition.reloadSeconds * this.reloadSpeedMultiplier;
     return true;
   }
 
@@ -949,14 +1127,21 @@ export class PlayerController {
       impactPoint: origin.clone().add(direction.mulScalar(weapon.definition.range)),
       zombie: null,
       empty: true,
-      weaponId: weapon.definition.id
+      weaponId: weapon.definition.id,
+      teddyBearIndices: []
     };
   }
 
-  private fire(weapon: Weapon, zombies: Zombie[]): ShotResult {
+  private fire(
+    weapon: Weapon,
+    zombies: Zombie[],
+    teddyTargets: readonly TeddyBearShotTarget[]
+  ): ShotResult {
     const def = weapon.definition;
-    this.fireCooldown = def.fireIntervalSeconds;
-    weapon.ammoMag -= 1;
+    this.fireCooldown = def.fireIntervalSeconds * this.fireCooldownMultiplier;
+    if (!this.ghostMags) {
+      weapon.ammoMag -= 1;
+    }
 
     const origin = this.camera.getPosition().clone();
     const baseDirection = this.camera.forward.clone().normalize();
@@ -973,9 +1158,15 @@ export class PlayerController {
       .clone()
       .add(baseDirection.clone().mulScalar(def.range));
 
+    const teddyHitBatch = new Set<number>();
+
+    // ADS tightens spread significantly — fully ADS'd = 25% of base spread
+    const adsSpreadMult = 1 - this.adsProgress * 0.75;
+    const effectiveSpreadDeg = def.spreadDegrees * adsSpreadMult;
+
     for (let p = 0; p < pellets; p += 1) {
       const direction = baseDirection.clone();
-      const spreadRad = (def.spreadDegrees * Math.PI) / 180;
+      const spreadRad = (effectiveSpreadDeg * Math.PI) / 180;
       const offsetAngle = (Math.random() - 0.5) * 2 * spreadRad;
       const offsetTilt = (Math.random() - 0.5) * 2 * spreadRad;
       direction
@@ -1014,16 +1205,41 @@ export class PlayerController {
         }
       }
 
-      const impactDistance = Math.min(closestDistance, def.range);
+      let closestTeddyIndex: number | null = null;
+      let teddyHitDistance = Number.POSITIVE_INFINITY;
+      for (let ti = 0; ti < teddyTargets.length; ti += 1) {
+        const tb = teddyTargets[ti];
+        if (!tb.alive) continue;
+        const th = raySphereIntersection(origin, direction, tb.getCenter(), tb.hitRadius);
+        if (th !== null && th <= def.range && th < teddyHitDistance) {
+          teddyHitDistance = th;
+          closestTeddyIndex = ti;
+        }
+      }
+
+      const winsTeddy =
+        closestTeddyIndex !== null && teddyHitDistance < closestDistance - 1e-4;
+
+      const impactDistance = Math.min(
+        winsTeddy ? teddyHitDistance : closestDistance,
+        def.range
+      );
       const impactPoint = origin.clone().add(direction.clone().mulScalar(impactDistance));
 
       if (p === 0 || impactDistance > furthestImpact.distance(origin)) {
         furthestImpact = impactPoint;
       }
 
+      if (winsTeddy) {
+        teddyHitBatch.add(closestTeddyIndex!);
+        continue;
+      }
+
       if (!closestZombie) continue;
 
-      const damage = closestIsHeadshot ? def.damage * def.headshotMultiplier : def.damage;
+      const headshotMult = closestIsHeadshot ? def.headshotMultiplier + this.headshotBonus : 1;
+      const baseDamage = closestIsHeadshot ? def.damage * headshotMult : def.damage;
+      const damage = baseDamage * this.damageMultiplier * weapon.getPackAPunchDamageMultiplier();
       const killed = closestZombie.applyDamage(damage);
 
       totalHit = true;
@@ -1046,7 +1262,8 @@ export class PlayerController {
       impactPoint: firstHitPoint ?? furthestImpact,
       zombie: firstZombie,
       empty: false,
-      weaponId: def.id
+      weaponId: def.id,
+      teddyBearIndices: Array.from(teddyHitBatch)
     };
   }
 }

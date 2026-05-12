@@ -414,9 +414,8 @@ export class Effects {
     });
   }
 
-  spawnDebris(position: pc.Vec3, enabled: boolean): void {
+  spawnDebris(position: pc.Vec3, enabled: boolean, count = 5, speedScale = 1): void {
     if (!enabled) return;
-    const count = 5;
     for (let i = 0; i < count; i += 1) {
       const piece = new pc.Entity("debris");
       piece.addComponent("render", {
@@ -429,10 +428,10 @@ export class Effects {
       this.app.root.addChild(piece);
 
       const angle = Math.random() * Math.PI * 2;
-      const speed = 1.0 + Math.random() * 1.6;
+      const speed = (1.0 + Math.random() * 1.6) * speedScale;
       const vx = Math.cos(angle) * speed;
       const vz = Math.sin(angle) * speed;
-      const vy = 1.0 + Math.random() * 1.5;
+      const vy = (1.0 + Math.random() * 1.5) * speedScale;
       const startX = position.x;
       const startY = position.y;
       const startZ = position.z;
@@ -452,5 +451,68 @@ export class Effects {
         }
       });
     }
+  }
+
+  /** Large additive fireball core for C4 / heavy explosions (brief). */
+  spawnC4BlastCore(position: pc.Vec3): void {
+    const mat = new pc.StandardMaterial();
+    mat.diffuse = new pc.Color(0, 0, 0);
+    mat.emissive = new pc.Color(2.4, 0.85, 0.1);
+    mat.useLighting = false;
+    mat.blendType = pc.BLEND_ADDITIVE;
+    mat.opacity = 0.72;
+    mat.depthWrite = false;
+    mat.update();
+    const core = new pc.Entity("c4-blast-core");
+    core.addComponent("render", { type: "sphere", material: mat });
+    const base = 1.15;
+    core.setLocalScale(base, base, base);
+    core.setPosition(position.x, position.y + 0.15, position.z);
+    this.app.root.addChild(core);
+    const total = 0.26;
+    this.active.push({
+      entity: core,
+      remaining: total,
+      total,
+      fade: (entity, t) => {
+        const sc = base * (1 + t * 3.2);
+        entity.setLocalScale(sc, sc, sc);
+        mat.opacity = 0.72 * (1 - t) * (1 - t);
+        mat.update();
+      }
+    });
+  }
+
+  /**
+   * Brief additive flash at the grenade during the fuse warning (procedural — no particle texture).
+   */
+  spawnGrenadeArmingPulse(position: pc.Vec3, strength: number): void {
+    if (strength < 0.12) return;
+    const mat = new pc.StandardMaterial();
+    mat.diffuse = new pc.Color(0, 0, 0);
+    mat.emissive = new pc.Color(1.15 * strength, 0.38 * strength, 0.06 * strength);
+    mat.useLighting = false;
+    mat.blendType = pc.BLEND_ADDITIVE;
+    mat.opacity = Math.min(0.85, 0.35 + strength * 0.45);
+    mat.depthWrite = false;
+    mat.update();
+    const flash = new pc.Entity("grenade-arming-pulse");
+    flash.addComponent("render", { type: "sphere", material: mat });
+    const base = 0.22 + 0.55 * strength;
+    flash.setLocalScale(base, base, base);
+    flash.setPosition(position.x, position.y, position.z);
+    this.app.root.addChild(flash);
+    const total = 0.1;
+    this.active.push({
+      entity: flash,
+      remaining: total,
+      total,
+      fade: (entity, t) => {
+        const sc = base * (1 + t * 0.95);
+        entity.setLocalScale(sc, sc, sc);
+        mat.opacity = Math.min(0.85, 0.35 + strength * 0.45) * (1 - t) * (1 - t);
+        mat.update();
+      }
+    });
   }
 }

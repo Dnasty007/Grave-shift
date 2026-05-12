@@ -1,7 +1,7 @@
 import * as pc from "playcanvas";
 import type { WeaponId, WeaponInventory } from "./Weapon";
 
-export type InteractKind = "wall-buy" | "door" | "power" | "info" | "mystery-box";
+export type InteractKind = "wall-buy" | "door" | "power" | "info" | "mystery-box" | "pack-a-punch";
 
 export type InteractPrompt = {
   title: string;
@@ -14,7 +14,7 @@ export type InteractPrompt = {
 export type InteractResult = {
   success: boolean;
   pointsSpent: number;
-  type: "bought" | "refilled" | "opened" | "noChange" | "rejected" | "mystery";
+  type: "bought" | "refilled" | "opened" | "noChange" | "rejected" | "mystery" | "packPunch";
   weaponBought?: WeaponId;
   message?: string;
 };

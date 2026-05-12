@@ -59,7 +59,7 @@ export class WeaponWheel {
   }
 
   private ensureItems(weapons: ReadonlyArray<Weapon>): void {
-    const sig = weapons.map((w) => w.definition.id).join("|");
+    const sig = weapons.map((w) => `${w.definition.id}:${w.packAPunchTier}`).join("|");
     if (sig === this.lastSignature && this.itemsEl.children.length === weapons.length) {
       for (let i = 0; i < weapons.length; i++) {
         const w = weapons[i]!;
@@ -68,7 +68,7 @@ export class WeaponWheel {
         el.dataset.weaponId = w.definition.id;
         const nameEl = el.querySelector(".weapon-wheel-name");
         const metaEl = el.querySelector(".weapon-wheel-meta");
-        if (nameEl) nameEl.textContent = w.definition.name.toUpperCase();
+        if (nameEl) nameEl.textContent = w.getHudDisplayName().toUpperCase();
         if (metaEl) metaEl.textContent = `${w.ammoMag}/${w.definition.magazineSize} · ${w.definition.caliber}`;
       }
       return;
@@ -92,7 +92,7 @@ export class WeaponWheel {
 
       const name = document.createElement("div");
       name.className = "weapon-wheel-name";
-      name.textContent = w.definition.name.toUpperCase();
+      name.textContent = w.getHudDisplayName().toUpperCase();
 
       const meta = document.createElement("div");
       meta.className = "weapon-wheel-meta";

@@ -1,3 +1,4 @@
+import { GAME_CONFIG } from "./config";
 import {
   HYTOPIA_GUN_DEFINITIONS,
   HYTOPIA_MELEE_DEFINITIONS,
@@ -193,6 +194,8 @@ export class Weapon {
   readonly definition: WeaponDefinition;
   ammoMag: number;
   ammoReserve: number;
+  /** Pack-a-Punch tiers (0 = base). Each purchase raises tier (capped) and refills ammo. */
+  packAPunchTier = 0;
 
   constructor(definition: WeaponDefinition) {
     this.definition = definition;
@@ -211,6 +214,38 @@ export class Weapon {
 
   hasAnyAmmo(): boolean {
     return this.ammoMag > 0 || this.ammoReserve > 0;
+  }
+
+  /** HUD / wheel: show Pack-a-Punch tier on upgraded weapons. */
+  getHudDisplayName(): string {
+    if (this.packAPunchTier <= 0) {
+      return this.definition.name;
+    }
+    return `${this.definition.name} (PaP ×${this.packAPunchTier})`;
+  }
+
+  isMeleeWeapon(): boolean {
+    return this.definition.caliber === "melee";
+  }
+
+  getPackAPunchDamageMultiplier(): number {
+    if (this.packAPunchTier <= 0) {
+      return 1;
+    }
+    const f = GAME_CONFIG.packAPunch.tierDamageMultiplier;
+    return f ** this.packAPunchTier;
+  }
+
+  /**
+   * Apply one Pack-a-Punch purchase: raise tier (until max), refill mag + reserve.
+   */
+  applyPackAPunchUpgrade(): void {
+    const { maxTier } = GAME_CONFIG.packAPunch;
+    if (this.packAPunchTier < maxTier) {
+      this.packAPunchTier += 1;
+    }
+    this.ammoMag = this.definition.magazineSize;
+    this.ammoReserve = this.definition.reserveAmmo;
   }
 }
 

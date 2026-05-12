@@ -153,6 +153,32 @@ export class ScreenEffects {
     this.waveBanner.classList.add("is-visible");
   }
 
+  /**
+   * Cinematic level-up: full-screen golden flash + animated banner.
+   */
+  triggerLevelUp(level: number): void {
+    // Full-screen flash
+    const flash = this.container.querySelector<HTMLElement>("#levelup-flash");
+    if (flash) {
+      flash.classList.remove("is-active");
+      void flash.offsetWidth;
+      flash.classList.add("is-active");
+    }
+
+    // Level-up banner
+    const banner = this.container.querySelector<HTMLElement>("#levelup-banner");
+    const numEl = this.container.querySelector<HTMLElement>("#levelup-banner-num");
+    if (banner && numEl) {
+      numEl.textContent = `LVL ${level}`;
+      banner.classList.remove("is-visible");
+      void banner.offsetWidth;
+      banner.classList.add("is-visible");
+    }
+
+    // Heavy screen shake
+    this.triggerScreenShake(3.2);
+  }
+
   private applyShake(): void {
     if (this.shakeTime <= 0) {
       if (this.shakeOffsetX !== 0 || this.shakeOffsetY !== 0) {
