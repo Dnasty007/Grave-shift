@@ -1,0 +1,134 @@
+IceDragonnew:
+  Type: RAVAGER
+  Display: ''
+  Health: 500
+  Damage: 2
+  Equipments:
+  - AIR HAND
+  BossBar:
+    Enabled: true
+    Title: '&6&lIce Dragon'
+    Color: BLUE
+    Style: SOLID
+  Modules:
+    ThreatTable: true
+  Skills:
+  - cancelevent{sync=true} @Self ~onAttack
+  - skill{s=IceDragonPush} @Self ~onTimer:2
+  - skill{s=IceDragonStep} @Self ~onTimer:10
+  - sound{s=entity.wither.hurt;v=4;p=0.8} @Self ~onDamaged
+  - Aura{auraName=MobAura;onTick=IceDragonAttacks;interval=1;duration=999999} @self ~onSpawn
+  - skill{s=IceDragonFire1;sync=true} @self ~onTimer:400
+  - skill{s=IceDragonFire2;sync=true} @self ~onTimer:240
+  - skill{s=IceDragonFreeRoam;sync=true} @self ~onTimer:1200
+  - skill{s=IceFlyFire;sync=true} @self ~onTimer:280
+  - skill{s=breathefire;sync=true} @self ~onTimer:260
+  - skill{s=IceDragonFlyPath} @self ~onTimer:10
+  - skill{s=IceDragonFlylow} @self ~onTimer:20
+  - skill{s=IceDragonFlyhigh} @self ~onTimer:20
+  - skill{s=IceDragonFlap} @self ~onTimer:48
+  - model{mid=dragonice;n=false} @self ~onSpawn
+  Options:
+    LockPitch: true
+    KnockbackResistance: 1
+    PreventOtherDrops: true
+    ApplyInvisibility: true
+    Silent: true
+    FollowRange: 32
+    MaxCombatDistance: 64
+    Collidable: false
+    MovementSpeed: 0.5
+    PreventMobKillDrops: true
+    PreventItemPickup: true
+    PreventSunburn: true
+  Modules:
+    ImmunityTable: true
+    ThreatTable: true
+  DamageModifiers:
+  - MAGIC 0.1
+  - SUFFOCATION 0
+  Faction: icedragon 
+  BossBar:
+    Enabled: true
+    Range: 100
+    Color: RED
+    Style: SOLID
+    Title: "&6&lIce Dragon"
+  AIGoalSelectors:
+  - 0 Clear
+  - 1 MeleeAttack
+  - 2 RandomStroll 
+  - 3 Float 
+  AITargetSelectors:
+  - 0 clear
+  - 1 attacker
+  - 2 players
+  - 3 OtherFaction
+    
+    
+IceDragonMount:
+  Type: RAVAGER
+  AIGoalSelectors:
+  - 0 clear
+  - 3 float
+  - 4 randomstroll
+  AITargetSelectors:
+  - 0 clear
+  Drops: []
+  Equipment: []
+  DamageModifiers:
+  - FALL 0.00
+  Skills:
+  - model{mid=dragonice;drive=true;n=false} @self ~onSpawn
+  - skill{s=dragonice_scheduler} @self ~onSpawn
+  - skill{s=IceDragonMount} @trigger ~onInteract
+  - skill{s=IceDragonSounds} @self ~onSpawn
+  - sound{s=entity.wither.death;v=0.8;p=0.2} @self ~onDeath
+  - addtag{t=mount} @self ~onSpawn
+  Display: "§6Ice Dragon"
+  Health: 10
+  Damage: 0
+  Options:
+    LockPitch: true
+    KnockbackResistance: 1
+    PreventOtherDrops: true
+    ApplyInvisibility: true
+    Silent: true
+    FollowRange: 32
+    MaxCombatDistance: 64
+    Collidable: false
+    MovementSpeed: 0.1
+    PreventMobKillDrops: true
+    PreventItemPickup: true
+    PreventSunburn: true
+  Modules:
+    ImmunityTable: true
+    ThreatTable: true
+  DamageModifiers:
+  - MAGIC 0.1
+  - SUFFOCATION 0
+  Faction: icedragon 
+  BossBar:
+    Enabled: false
+    Range: 100
+    Color: RED
+    Style: SOLID
+    Title: "icedragon"
+  AIGoalSelectors:
+  - 0 Clear
+  - 1 MeleeAttack
+  - 2 RandomStroll 
+  - 3 Float 
+  AITargetSelectors:
+  - 0 clear
+  - 1 attacker
+  - 2 players
+  - 3 OtherFaction
+    
+    
+
+
+
+
+
+

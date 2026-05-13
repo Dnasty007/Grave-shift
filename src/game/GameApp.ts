@@ -25,12 +25,14 @@ import {
 } from "./Weapon";
 import { WeaponWheel } from "./WeaponWheel";
 import { Zombie, type EnemyModelKit } from "./Zombie";
+import { DragonBoss } from "./DragonBoss";
 import { AiAlly } from "./AiAlly";
 import { NineTailsPet } from "./NineTailsPet";
 import { MaxAmmoDrop } from "./PowerupDrop";
 import { JetpackPickup, type JetpackVariant } from "./JetpackPickup";
 import { MysteryBox, MYSTERY_BOX_POOL, MYSTERY_BOX_POOL_NAMES } from "./MysteryBox";
 import { PackAPunchMachine } from "./PackAPunch";
+import { RoundSkipperBlock } from "./RoundSkipperBlock";
 import { PlayerStash } from "./PlayerStash";
 import { WorldItemDrop } from "./WorldItemDrop";
 import type { Door } from "./Door";
@@ -180,6 +182,8 @@ export class GameApp {
   private lastAdsState = false;
 
   private zombies: Zombie[] = [];
+  /** Active Ice Dragon boss — managed separately so we can draw its HP bar. */
+  private dragonBoss: DragonBoss | null = null;
   private ally: AiAlly | null = null;
   private nineTailsPet: NineTailsPet | null = null;
   private nineTailsPetKit: EnemyModelKit | null = null;
@@ -191,6 +195,7 @@ export class GameApp {
   private jetpackCosmeticAssets: Partial<Record<JetpackVariant, pc.Asset>> = {};
   private mysteryBox: MysteryBox | null = null;
   private packAPunch: PackAPunchMachine | null = null;
+  private devRoundSkipper: RoundSkipperBlock | null = null;
   private readonly stash = new PlayerStash();
   private worldDrops: WorldItemDrop[] = [];
   private inventorySelectedSlot = 0;
@@ -206,6 +211,8 @@ export class GameApp {
   private playerGravityDropTargetY: number | null = null;
 
   private readonly enemyModelKits: EnemyModelKit[] = [];
+  private hellhoundKit: EnemyModelKit | null = null;
+  private bossKit: EnemyModelKit | null = null;
   private readonly weaponViewAssetEntries: ReadonlyMap<WeaponId, { asset: pc.Asset }>;
 
   /** Last lobby picks (restart / Run it back skips map & operator screens). */
@@ -221,6 +228,8 @@ export class GameApp {
   private runXpGained = 0;
   /** Simulated level at start of run (or last level-up). Used to detect new level-ups. */
   private inRunLevel = 0;
+  /** weapon-id → kills this run — fed to PlayerAccount at end of run. */
+  private runWeaponKills: Record<string, number> = {};
   /** Active 3-D level-up visual effects (pillar + ring). */
   private levelUpFx: Array<{
     pillar: pc.Entity;
@@ -272,6 +281,13 @@ export class GameApp {
 
     this.settings = new Settings();
     this.audio = new AudioEngine(this.settings);
+    void Promise.resolve().then(() => this.audio.prefetchMenuAndUiSamples());
+    /** Unlock Web Audio on first gesture anywhere (menu sits above canvas; canvas-only unlock missed most clicks). */
+    const unlockWebAudioOnce = () => {
+      this.audio.unlock();
+    };
+    document.addEventListener("pointerdown", unlockWebAudioOnce, { capture: true, once: true });
+    document.addEventListener("keydown", unlockWebAudioOnce, { capture: true, once: true });
     this.effects = new Effects(this.app);
     this.screenEffects = new ScreenEffects(canvas, document.body, this.settings);
 
@@ -288,6 +304,32 @@ export class GameApp {
         });
         this.app.assets.load(asset);
       }
+    }
+
+    if (GAME_CONFIG.hellhoundWave.enabled && GAME_CONFIG.enemyVisual.useGltf) {
+      const hUrl = GAME_CONFIG.hellhoundWave.gltfUrl;
+      const asset = new pc.Asset("hellhound-wolf", "container", { url: hUrl });
+      this.app.assets.add(asset);
+      asset.on("error", (err: string) => {
+        console.warn(`[GameApp] Hellhound glTF failed (${hUrl}):`, err);
+      });
+      asset.ready(() => {
+        this.hellhoundKit = kitFromContainerAsset(asset);
+      });
+      this.app.assets.load(asset);
+    }
+
+    if (GAME_CONFIG.bossWave.enabled && GAME_CONFIG.enemyVisual.useGltf) {
+      const bUrl = GAME_CONFIG.bossContent.gltfUrl;
+      const asset = new pc.Asset("boss-ice-dragon", "container", { url: bUrl });
+      this.app.assets.add(asset);
+      asset.on("error", (err: string) => {
+        console.warn(`[GameApp] Boss glTF failed (${bUrl}):`, err);
+      });
+      asset.ready(() => {
+        this.bossKit = kitFromContainerAsset(asset);
+      });
+      this.app.assets.load(asset);
     }
 
     this.nineTailsPetAssetPromise = new Promise<void>((resolve) => {
@@ -338,18 +380,24 @@ export class GameApp {
       }
     }
 
-    this.menus = new MenuController(document.body, this.settings, this.account, {
-      onBeginRun: (sel) => {
-        this.lastMapId = sel.mapId;
-        this.lastPlayerId = sel.playerId;
-        this.activeLoadout = sel.loadout;
-        void this.beginRunWithSetup();
+    this.menus = new MenuController(
+      document.body,
+      this.settings,
+      this.account,
+      {
+        onBeginRun: (sel) => {
+          this.lastMapId = sel.mapId;
+          this.lastPlayerId = sel.playerId;
+          this.activeLoadout = sel.loadout;
+          void this.beginRunWithSetup();
+        },
+        onResume: () => this.resume(),
+        onRestart: () => void this.beginRunWithSetup(),
+        onReturnToTitle: () => this.returnToTitle(),
+        onPauseToggleRequested: () => this.togglePause()
       },
-      onResume: () => this.resume(),
-      onRestart: () => void this.beginRunWithSetup(),
-      onReturnToTitle: () => this.returnToTitle(),
-      onPauseToggleRequested: () => this.togglePause()
-    });
+      this.audio
+    );
 
     this.input.setCallbacks({
       onPauseRequested: () => this.togglePause(),
@@ -370,17 +418,39 @@ export class GameApp {
     this.waveDirector = new WaveDirector(
       0,
       {
-        onSpawn: ({ position, health, speed }) => {
-          const zombie = new Zombie(position, { health, speed }, this.collision, this.pickEnemyModelKit());
+        onSpawn: ({ position, health, speed, hellhound }) => {
+          const kit =
+            hellhound && this.hellhoundKit ? this.hellhoundKit : this.pickEnemyModelKit();
+          const isHellhoundVisual = Boolean(hellhound && this.hellhoundKit);
+          const zombie = new Zombie(
+            position,
+            {
+              health,
+              speed,
+              hellhound: isHellhoundVisual && GAME_CONFIG.hellhoundWave.enabled
+            },
+            this.collision,
+            kit
+          );
           this.zombies.push(zombie);
           this.app.root.addChild(zombie.root);
           if (MAP_CONFIG.importVisual.replacesArena && MAP_CONFIG.importVisual.snapFeetToGround) {
             this.map.snapEntityFeetToImportedGround(zombie.root, position.x, position.z, position.y);
           }
         },
-        onWaveStarted: (wave) => {
-          this.screenEffects.showWaveBanner(formatWaveRound(wave));
-          this.audio.play("waveStart");
+        onWaveStarted: (wave, hellhoundWave) => {
+          const isBoss = GAME_CONFIG.bossWave.enabled && wave === GAME_CONFIG.bossWave.waveNumber;
+          if (isBoss) {
+            this.screenEffects.showWaveBanner(`ICE DRAGON — ${formatWaveRound(wave)}`);
+            this.audio.play("waveStart");
+            this.spawnBossForWave(wave);
+          } else if (hellhoundWave) {
+            this.screenEffects.showWaveBanner(`HELLHOUNDS — ${formatWaveRound(wave)}`);
+            this.audio.playHellhoundWaveIntro();
+          } else {
+            this.screenEffects.showWaveBanner(formatWaveRound(wave));
+            this.audio.play("waveStart");
+          }
           this.audio.setDroneIntensity(Math.min(1, wave * 0.18));
           this.map.triggerFlicker(0.85);
         },
@@ -417,6 +487,7 @@ export class GameApp {
     this.menus.showTitle();
     this.input.setInputBlocked(true);
     this.renderHud();
+    this.syncMenuAmbientAudio();
 
     canvas.addEventListener("pointerdown", () => {
       this.audio.unlock();
@@ -580,6 +651,15 @@ export class GameApp {
 
     this.zombies = this.zombies.filter((zombie) => zombie.alive);
 
+    // ── Dragon boss cleanup — remove from zombies array + entity tree when dead ──
+    if (this.dragonBoss && !this.dragonBoss.alive) {
+      this.dragonBoss.root.destroy();
+      this.dragonBoss = null;
+      this.syncBossHpBar(null);
+    } else if (this.dragonBoss) {
+      this.syncBossHpBar(this.dragonBoss.healthFraction);
+    }
+
     // Update power-up drops; remove picked-up ones and apply their effect
     if (this.maxAmmoDrops.length > 0) {
       const playerPos = this.player.getPosition();
@@ -644,7 +724,10 @@ export class GameApp {
 
     const healthRatio = this.player.getHealthRatio();
     this.screenEffects.setHealthRatio(healthRatio);
-    this.audio.setHeartbeatRate(healthRatio < 0.45 ? 1 - healthRatio / 0.45 : 0);
+    this.audio.setHeartbeatRate(
+      healthRatio < 0.45 ? 1 - healthRatio / 0.45 : 0,
+      healthRatio
+    );
 
     if (this.player.health <= 0) {
       this.endRun();
@@ -775,6 +858,14 @@ export class GameApp {
 
   private attemptInteraction(): void {
     if (this.phase !== "playing") return;
+    // `pickTarget` runs at end of frame; E/F can fire between frames — refresh target so we don't
+    // interact with a stale wall-buy / door while looking at the dev skip cube.
+    this.interactions.pickTarget(
+      this.player.getCameraPosition(),
+      this.player.getCameraForward(),
+      this.points,
+      this.inventory
+    );
     const result = this.interactions.trigger(this.points, this.inventory);
     if (!result) return;
 
@@ -818,6 +909,17 @@ export class GameApp {
         this.map.triggerFlicker(0.55);
         this.screenEffects.triggerScreenShake(GAME_CONFIG.fx.screenShakeBase * 0.65);
         this.player.notifyWeaponInventoryChanged();
+        break;
+      case "devRoundSkip":
+        for (const z of this.zombies) {
+          z.root.destroy();
+        }
+        this.zombies = [];
+        this.waveDirector.jumpToWaveStart(
+          result.devSkipToWave ?? GAME_CONFIG.devRoundSkipper.targetWave
+        );
+        this.map.triggerFlicker(0.75);
+        this.screenEffects.triggerScreenShake(GAME_CONFIG.fx.screenShakeBase);
         break;
     }
 
@@ -1045,6 +1147,10 @@ export class GameApp {
             GAME_CONFIG.player.maxHealth
           );
         }
+
+        // ── Career weapon kill tracking ────────────────────────────────────
+        const wid = this.inventory.getCurrent().definition.id;
+        this.runWeaponKills[wid] = (this.runWeaponKills[wid] ?? 0) + 1;
 
         // ── In-run XP + level-up detection ────────────────────────────────
         const killXp = shot.headshot ? 45 : 30;
@@ -2147,6 +2253,68 @@ export class GameApp {
     }
   }
 
+  private teardownDevRoundSkipper(): void {
+    if (this.devRoundSkipper) {
+      this.interactions.unregister(this.devRoundSkipper.id);
+      this.devRoundSkipper.destroy();
+      this.devRoundSkipper = null;
+    }
+  }
+
+  /**
+   * Spawn the Ice Dragon as a {@link DragonBoss} — flies in from above, then lands.
+   * Director sets spawn quota to 0 for this wave so no normal zombies appear.
+   */
+  private spawnBossForWave(wave: number): void {
+    const bw = GAME_CONFIG.bossWave;
+    if (!bw.enabled || wave !== bw.waveNumber) {
+      return;
+    }
+
+    // Tear down any existing dragon from a prior run/debug restart
+    if (this.dragonBoss) {
+      this.dragonBoss.root.destroy();
+      this.dragonBoss = null;
+    }
+
+    const position = this.map.pickRandomActiveSpawnPosition(
+      this.player.getPosition(),
+      bw.spawnMinDistance,
+      { requireMinDistance: true }
+    ) ?? new pc.Vec3(
+      this.player.getPosition().x + 20,
+      0,
+      this.player.getPosition().z + 20
+    );
+
+    const baseHealth =
+      GAME_CONFIG.zombie.baseHealth + (wave - 1) * GAME_CONFIG.zombie.healthPerWave;
+    const health = Math.max(1, Math.floor(baseHealth * bw.healthMultiplier));
+
+    const dragon = new DragonBoss(
+      position,
+      health,
+      this.bossKit,
+      /* onLand — screen shake + banner */ () => {
+        this.screenEffects.triggerScreenShake(0.6);
+        this.screenEffects.showWaveBanner("ICE DRAGON HAS LANDED");
+        this.audio.play("impact");
+      },
+      /* onIceBomb — spawn ice impact FX */ (bombPos: pc.Vec3) => {
+        this.effects.spawnDebris(bombPos, this.settings.get().bloodFx);
+        this.screenEffects.triggerScreenShake(0.18);
+      }
+    );
+
+    this.dragonBoss = dragon;
+    this.app.root.addChild(dragon.root);
+
+    // Also register in zombies[] so PlayerController hit detection picks it up
+    this.zombies.push(dragon as unknown as Zombie);
+
+    console.log("[GameApp] Ice Dragon spawned — descending from altitude.");
+  }
+
   private resolveTeddyBearGroundY(x: number, z: number, refY: number): number {
     if (MAP_CONFIG.importVisual.replacesArena && MAP_CONFIG.importVisual.snapFeetToGround) {
       const y = this.map.sampleImportedTerrainYNearFeet(x, z, refY);
@@ -2176,6 +2344,12 @@ export class GameApp {
       zombie.root.destroy();
     }
     this.zombies = [];
+    // Destroy any active dragon boss from a previous run
+    if (this.dragonBoss) {
+      this.dragonBoss.root.destroy();
+      this.dragonBoss = null;
+    }
+    this.syncBossHpBar(null);
     this.teardownAlly();
     this.teardownNineTailsPet();
     if (this.mysteryBox) {
@@ -2186,6 +2360,7 @@ export class GameApp {
       this.packAPunch.destroy();
       this.packAPunch = null;
     }
+    this.teardownDevRoundSkipper();
     for (const drop of this.maxAmmoDrops) {
       drop.destroy();
     }
@@ -2203,6 +2378,7 @@ export class GameApp {
     this.points = 0;
     this.stats = this.makeStats();
     this.runXpGained = 0;
+    this.runWeaponKills = {};
     this.inRunLevel = this.account.level;
     this.clearLevelUpFx();
     this.terrainFollowTimer = 0;
@@ -2328,6 +2504,16 @@ export class GameApp {
     }
     this.interactions.register(this.packAPunch);
 
+    this.teardownDevRoundSkipper();
+    if (GAME_CONFIG.devRoundSkipper.enabled) {
+      this.devRoundSkipper = new RoundSkipperBlock(this.app, this.app.root);
+      if (MAP_CONFIG.importVisual.replacesArena && MAP_CONFIG.importVisual.snapFeetToGround) {
+        const rs = GAME_CONFIG.devRoundSkipper.position;
+        this.map.snapEntityFeetToImportedGround(this.devRoundSkipper.getRoot(), rs.x, rs.z, rs.y);
+      }
+      this.interactions.register(this.devRoundSkipper);
+    }
+
     await this.spawnTeddyBearEasterEgg();
 
     this.phase = "playing";
@@ -2347,6 +2533,8 @@ export class GameApp {
       document.activeElement.blur();
     }
     this.renderHud();
+
+    this.syncMenuAmbientAudio();
 
     if (MAP_CONFIG.importVisual.replacesArena && MAP_CONFIG.importVisual.snapFeetToGround) {
       if (this.map.snapPlayerFeetToImportedGround(this.player.root)) {
@@ -2408,7 +2596,8 @@ export class GameApp {
       kills: this.stats.kills,
       wave: this.waveDirector.currentWave,
       survivedSeconds: survived,
-      headshots: this.stats.headshots
+      headshots: this.stats.headshots,
+      weaponKills: this.runWeaponKills
     });
     this.menus.showGameOver({
       wave: this.waveDirector.currentWave,
@@ -2420,6 +2609,7 @@ export class GameApp {
       survivedSeconds: survived,
       reward
     });
+    this.syncMenuAmbientAudio();
   }
 
   private togglePause(): void {
@@ -2437,6 +2627,7 @@ export class GameApp {
       this.audio.setDroneIntensity(0.05);
       this.audio.stopHeartbeat();
       this.menus.showPause();
+      this.syncMenuAmbientAudio();
     } else if (this.phase === "paused") {
       this.resume();
     }
@@ -2453,6 +2644,7 @@ export class GameApp {
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
+    this.syncMenuAmbientAudio();
   }
 
   private returnToTitle(): void {
@@ -2470,6 +2662,7 @@ export class GameApp {
       this.packAPunch.destroy();
       this.packAPunch = null;
     }
+    this.teardownDevRoundSkipper();
     for (const drop of this.maxAmmoDrops) {
       drop.destroy();
     }
@@ -2495,7 +2688,7 @@ export class GameApp {
     this.input.setGameOver(false);
     this.input.setPaused(false);
     this.input.setInputBlocked(true);
-    this.audio.setDroneIntensity(0);
+    this.audio.setDroneIntensity(0.07);
     this.audio.stopHeartbeat();
     if (document.pointerLockElement === this.canvas) {
       document.exitPointerLock();
@@ -2510,6 +2703,7 @@ export class GameApp {
     this.points = 0;
     this.stats = this.makeStats();
     this.runXpGained = 0;
+    this.runWeaponKills = {};
     this.inRunLevel = this.account.level;
     this.clearLevelUpFx();
     this.playerGravityDropActive = false;
@@ -2521,6 +2715,35 @@ export class GameApp {
     void this.weaponWheel.sync(false, [], 0, 0, 0);
     this.hud.setInteractPrompt(null);
     this.renderHud();
+    this.syncMenuAmbientAudio();
+  }
+
+  /** Loop {@link GAME_CONFIG.audio.menuMusicUrl} whenever menus are up; stop during rounds. */
+  private syncMenuAmbientAudio(): void {
+    if (this.phase === "title" || this.phase === "paused" || this.phase === "gameOver") {
+      this.audio.startMenuMusicLoop();
+    } else {
+      this.audio.stopMenuMusicLoop();
+    }
+  }
+
+  // --- Boss HP bar ───────────────────────────────────────────────────────────
+
+  private syncBossHpBar(fraction: number | null): void {
+    const wrap = document.getElementById("boss-hp-wrap");
+    const fill = document.getElementById("boss-hp-fill");
+    const label = document.getElementById("boss-hp-label");
+    if (!wrap || !fill) return;
+
+    if (fraction === null) {
+      wrap.classList.remove("is-visible");
+      return;
+    }
+    wrap.classList.add("is-visible");
+    fill.style.width = `${Math.max(0, fraction * 100).toFixed(1)}%`;
+    if (label) {
+      label.textContent = `ICE DRAGON — ${Math.ceil(fraction * 100)}%`;
+    }
   }
 
   // --- DOM HUD: vitals, ammo, dev toggles (snapshotted each playing frame) ---

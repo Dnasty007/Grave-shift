@@ -3,6 +3,7 @@ dist/
 
 # Local Cursor / review tooling (do not publish)
 .video-review/
+.claude/
 
 # Huge Mineways exports — add locally next to the OBJ, then npm run convert-map
 public/maps/*.obj

@@ -438,6 +438,73 @@ export const GAME_CONFIG = {
     maxAliveAtOnce: 8
   },
   /**
+   * “Dog round” every N waves (CoD-style hellhounds): wolf glTF spawns + intro sting.
+   */
+  hellhoundWave: {
+    enabled: true,
+    /** Dog rounds at 6, 12, … — kept off wave 10 so the boss round is not also a dog round. */
+    everyNthWave: 6,
+    /** Pack size for the special round (still limited by waves.maxAliveAtOnce). */
+    spawnCount: 12,
+    healthMultiplier: 0.9,
+    speedMultiplier: 1.3,
+    /** Uniform scale vs {@link voxelAvatar.modelScale} for the wolf mesh. */
+    modelScaleMultiplier: 1.22,
+    gltfUrl: "/models/enemies/hytopia-animals/wolf.gltf",
+    introSoundUrl: "/audio/sfx/hellhound-wave-sound.mp3",
+    introSoundGain: 0.92
+  },
+  /**
+   * Boss encounter: single large Ice Dragon (`bossContent.gltfUrl`) replaces normal wave spawns.
+   */
+  bossWave: {
+    enabled: true,
+    waveNumber: 10,
+    healthMultiplier: 48,
+    speedMultiplier: 0.7,
+    /** Uniform scale vs {@link voxelAvatar.modelScale} for the dragon mesh. */
+    modelScaleMultiplier: 2.75,
+    /**
+     * Boss spawn: stay at least this far from the player (large meshes need more space than horde spawns).
+     */
+    spawnMinDistance: 28,
+    /** XZ radius for `CollisionWorld.resolveZombiePosition` (wall nudge); ~half the dragon’s footprint. */
+    collisionRadius: 2.85,
+    /** Melee reach — larger than normal zombies so the player isn’t inside the mesh before hits register. */
+    attackRange: 6.25,
+    attackDamage: 22,
+    attackCooldownSeconds: 1.15,
+    /**
+     * Extra local Y on the glTF child (feet vs pivot). Negative shifts the mesh down if the bind pose sits above the root.
+     */
+    gltfVisualYOffset: 0,
+    /** Sideways weave strength while chasing (0 = straight line only). */
+    strafeStrength: 0.62,
+    aimBodyY: 3.35,
+    headTargetY: 5.85,
+    headRadius: 1.05
+  },
+  /**
+   * Dev / QA: glowing block — interact to **kill all zombies** and **start** the given wave
+   * (clears director state, then runs the same start logic as a normal advance). Disable for shipping.
+   */
+  devRoundSkipper: {
+    enabled: true,
+    position: { x: -10, y: 0, z: 12 },
+    interactRadius: 3,
+    /** Wave number to jump to (e.g. 10 to test boss). */
+    targetWave: 10
+  },
+  /**
+   * Ice Dragon boss content (MythicMobs YAML is reference-only until a boss AI layer exists).
+   * Files live under `public/models/boss/`.
+   */
+  bossContent: {
+    gltfUrl: "/models/boss/dragonice.gltf",
+    mobDefinitionYamlUrl: "/models/boss/IceDragon.yml",
+    skillsYamlUrl: "/models/boss/IceDragonSkills.yml"
+  },
+  /**
    * World pickups (not enemies). Max-ammo uses a glowing golden cube — set chance to 0 to disable.
    */
   pickups: {
@@ -460,7 +527,19 @@ export const GAME_CONFIG = {
   audio: {
     defaultMaster: 0.75,
     defaultSfx: 0.85,
-    defaultMusic: 0.4
+    defaultMusic: 0.4,
+    /** Wired to every `play("uiClick")` (menus + HUD). */
+    uiClickUrl: "/audio/ui/ui-click.mp3",
+    /** Looped on the music bus while title / lobby / pause / game over screens are active. */
+    menuMusicUrl: "/audio/menu/ghost-stories.mp3",
+    /** Gain for the menu loop on the music bus (stacks with Music volume slider). */
+    menuMusicGain: 0.55,
+    /** One-shot on the SFX bus each heartbeat tick when health ≤ lowHealthHeartbeatThreshold. */
+    lowHealthHeartbeatUrl: "/audio/sfx/heart-beat-low-health.mp3",
+    /** Use lowHealthHeartbeat sample instead of synth when health ratio is at or below this. */
+    lowHealthHeartbeatThreshold: 0.25,
+    /** Floor on ms between low-health heartbeat samples (avoid overlap if the clip is long). */
+    lowHealthHeartbeatMinIntervalMs: 340
   },
   /**
    * Jetpack powerup drop and ability tuning.
@@ -508,6 +587,7 @@ export const GAME_CONFIG = {
       { x: 5, y: 0, z: -15 }
     ],
     hitSoundUrl: "/audio/easter/teddy-hit.mp3",
-    rewardSongUrl: "/audio/easter/teddy-easter-song.mp3"
+    /** Plays once per run on the music bus after all three bears are destroyed. */
+    rewardSongUrl: "/audio/easter/the-piston-stops.mp3"
   }
 } as const;

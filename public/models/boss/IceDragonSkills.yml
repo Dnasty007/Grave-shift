@@ -1,0 +1,368 @@
+IceDragonStep:
+  Conditions:
+  - moving{} true
+  - onground{} true
+  Skills:
+  - sound{s=entity.polar_bear.step;v=4;p=0.9} @Self
+IceDragonPush:
+  Skills:
+  - throw{velocity=2;velocityY=0} @PIR{r=5}
+IceDragonMechanics:
+  Cooldown: 0
+  Conditions:
+  Skills: 
+  - skill{s=DungeonBanditRogueAttacks} @self
+  - skill{s=DungeonBanditRogueIdle} @self
+  - skill{s=DungeonBanditRogueMove} @self
+IceDragonAttacks:
+  Cooldown: 1
+  Conditions:
+  - targetwithin{d=15} true
+  - targetinlineofsight{} true
+  - hasaura Attack false
+  Skills: 
+  - randomskill{skills=Claw,Claw,IceDragonAttack3} @self
+Claw:
+  Conditions:
+  - offgcd true
+  - targetinlineofsight
+  - stance{s=fly} false
+  - stance{s=flyfire} false
+  - stance{s=flyflame} false
+  - stance{s=gfire1} false
+  - stance{s=gfire2} false
+  - targetwithin{d=10} true
+  - hasaura Attack false
+  Skills:
+  - gcd{ticks=40}
+  - Aura{auraName=Attack;interval=1;duration=36} @self
+  - state{s=attack3} @self
+  - delay 30
+  - throw{velocity=25;velocityY=5} @EIR{r=13}
+  - damage{a=5} @PIR{r=10}
+  - effect:particles{particle=block_crack;m=redstone_block;amount=50;hS=1;vS=1;y=1.5;s=0.25} @LivingInCone{a=45.0;r=6.0;rot=0.0}
+IceDragonAttack3:
+  Conditions:
+  - offgcd true
+  - stance{s=fly} false
+  - stance{s=flyfire} false
+  - stance{s=flyflame} false
+  - stance{s=gfire1} false
+  - stance{s=gfire2} false
+  - targetwithin{d=10} true
+  - hasaura Attack false
+  Skills:
+  - potion{type=SLOW;level=20;d=30;force=true;p=false} @Self
+  - Aura{auraName=Attack;interval=1;duration=64} @self
+  - gcd{ticks=60}
+  - state{s=attack2} @self
+  - delay 30
+  - throw{velocity=25;velocityY=5} @PIR{r=13}
+  - damage{a=5} @PIR{r=10}
+  - effect:particles{particle=Hugeexplosion;a=5;y=0.25;hS=3;vS=3} @Forward{f=4}
+  - effect:particles{particle=block_crack;m=ice;amount=500;hS=3;vS=3;s=0.2} @origin
+  - effect:particles{p=reddust;color=#4276AC;amount=500;hS=3;vS=3;speed=0.2} @origin
+  - sound{s=entity.generic.explode;v=2} @Self
+  - effect:particlering{particle=campfire_cosy_smoke;radius=4;points=32;amount=1;hS=.25;vS=0;size=3} @origin
+
+  
+  
+Fire-Tick:
+  Skills:
+  - effect:particles{particle=SOUL_FIRE_FLAME;amount=2.5;hS=1;vS=1;speed=0.2} @origin
+  - effect:particles{particle=block_crack;m=ice;amount=25;hS=1;vS=1;s=0.2} @origin
+  - effect:particles{p=reddust;color=#4276AC;amount=25;hS=1;vS=1;speed=0.2} @origin
+Fire-Hit:
+  Skills:
+  - damage{a=5}
+  - effect:blockmask{m=ice;r=5;d=100}
+  - effect:blockmask{m=soul_fire;r=0.5;d=100;oa=true}
+IceDragonFire2:
+  Cooldown: 60
+  Conditions:
+  - stance{s=fly} false
+  - onground true
+  - stance{s=gfire1} false
+  - stance{s=gfire2} false
+  Skills:
+  - CancelEvent
+  - stance{s=gfire2} @self
+  - effect:particles{p=reddust;color=#4276AC;amount=15;hS=0.1;vS=0.1;speed=0;repeat=80;repeatInterval=1} @ModelPart{mid=dragonice;part=mouth}
+  - sound{s=entity.wither.ambient;v=2;p=0.1;repeat=11;repeatInterval=2} @Self
+  - sound{s=entity.ender_dragon.growl;v=2} @Self
+  - potion{type=SLOW;level=20;d=130;force=true} @Self
+  - look{headOnly=true;immediately=true;repeat=110;repeatinterval=1} @Target
+  - state{s=attacke} @self
+  - delay 13
+  - aura{i=1;d=110;oT=Dragonfire2p} @Self
+  - delay 130
+  - stance{s=default} @self
+Dragonfire2p:
+  Skills:
+  - projectile{onTick=Fire2-Tick;onHit=Fire2-Hit;onEnd=DragonFireEnd;v=20;i=1;syo=1;sfo=3;hR=1;vR=1;sE=false} @Target
+Fire2-Tick:
+  Skills:
+  - effect:particlesphere{p=reddust;color=#4276AC;amount=5;radius=3;hs=0;vs=0} @Origin
+  - effect:particlesphere{particle=block_crack;m=ice;amount=5;radius=3} @Origin
+Fire2-Hit:
+  Skills:
+  - damage{a=2}
+  - effect:blockmask{m=ice;r=5;d=100}
+  - effect:blockmask{m=soul_fire;r=0.5;d=100;oa=true}
+IceDragonFreeRoam:
+  Cooldown: 250
+  Conditions:
+  - stance{s=fly} false
+  - outside true
+  - onground true
+  - stance{s=gfire1} false
+  - stance{s=gfire2} false
+  - offgcd true
+  - incombat false
+  Skills:
+  - gcd{ticks=2400}
+  - CancelEvent
+  - clearThreat{} @self  
+  - runaitargetselector{target=clear}
+  - effect:particlering{particle=campfire_cosy_smoke;radius=9;points=16;amount=1;hS=.25;vS=0;size=3} @origin
+  - effect:particles{p=falling_dust;amount=2;speed=0;hS=1.25;vS=1.25;repeat=5;repeatinterval=2} @self
+  - throw{velocity=25;velocityY=10} @PIR{r=10}
+  - lunge{velocity=0.3;velocityY=1;repeat=5;repeatInterval=1} @Forward{f=2.0;yoffset=1.5}
+#  - defaultstate{m=dragonice;t=walk;s=fly} @self
+#  - defaultstate{m=dragonice;t=idle;s=flyidle} @self
+  - setstance{s=fly} @self
+#  - setrotation{relative=true;yaw=90;repeat=20;repeatInterval=60} @Self
+  - lunge{velocity=0.50;repeat=1100;repeatInterval=1} @Forward
+  - delay 1100
+  - setstance{s=descend} @self
+  - delay 20
+  - runaitargetselector{target=players}
+  - effect:particlering{particle=campfire_cosy_smoke;radius=5;points=32;amount=1;hS=.25;vS=0;size=3} @origin
+  - blockwave{duration=100;material=stone;radius=5;radiusY=5;velocity=5;shape=sphere} @selflocation
+  - delay 10
+  - state{s=walk}
+#  - defaultstate{m=dragonice;t=walk;s=walk} @self
+#  - defaultstate{m=dragonice;t=idle;s=idle} @self
+  - delay 30
+  - setstance{s=default}
+  
+breathefire:
+  Cooldown: 250
+  Conditions:
+  - stance{s=fly} false
+  - outside true
+  - onground true
+  - offgcd
+  - stance{s=gfire1} false
+  - stance{s=gfire2} false
+  Skills:
+  - gcd{ticks=1006}
+  - CancelEvent
+  - effect:particlering{particle=campfire_cosy_smoke;radius=9;points=32;amount=1;hS=.25;vS=0;size=3} @origin
+  - effect:particles{p=falling_dust;amount=2;speed=0;hS=1.25;vS=1.25;repeat=5;repeatinterval=2} @self
+  - throw{velocity=15;velocityY=5} @PIR{r=10}
+  - lunge{velocity=0.5;velocityY=2;repeat=10;repeatInterval=1} @Forward{f=2.0;yoffset=2.0}     
+  - delay 30
+  - lunge{velocity=0.50} @Target
+  - delay 1
+  - setstance{s=fly} @self
+#  - state{s=fly}
+  - lunge{velocity=0.50;repeat=200;repeatInterval=1} @Forward
+  - setrotation{relative=true;yaw=90;repeat=3;repeatInterval=60} @Self
+  - delay 200
+  - lunge{velocity=0.50;repeat=300;repeatInterval=1} @Target
+  - skill{s=breathefireA} @Target
+#  - state{s=glidefire;r=true;delay=300} @self
+  - delay 300
+  - setrotation{relative=true;yaw=90;repeat=7;repeatInterval=60} @Self
+  - lunge{velocity=0.50;repeat=400;repeatInterval=1} @Forward
+  - delay 400
+  - runaitargetselector{target=players}
+  - setstance{s=descend} @self
+  - runaitargetselector{target=players}
+  - delay 25
+  - effect:particlering{particle=campfire_cosy_smoke;radius=5;points=32;amount=1;hS=.25;vS=0;size=3} @origin
+  - blockwave{duration=100;material=ice;radius=5;radiusY=5;velocity=5;shape=sphere} @selflocation
+  - delay 10
+  - state{s=flyidle;r=true} @self
+  - state{s=fly;r=true} @self
+  - state{s=walk}
+  - delay 30
+  - setstance{s=default}
+  
+breathefireA:
+  Skills:
+  - sound{s=entity.wither.ambient;v=5;p=0.1;repeat=60;repeatInterval=5} @Self
+#  - state{s=glidefire} @self
+  - sound{s=item.firecharge.use;v=2;repeat=62;repeatInterval=5} @Self
+  - sound{s=entity.ender_dragon.growl;v=2} @Self
+  - aura{i=1;d=300;oT=breathefireP} @Self
+breathefireP:
+  Skills:
+  - projectile{onTick=breathefire-Tick;onHit=breathefire-Hit;onEnd=IceDragonFireEnd;v=27;i=1;syo=1;sfo=3;hR=2;vR=2;sE=false;mr=100} @Target
+breathefire-Tick:
+  Skills:
+  - effect:particlesphere{particle=soul_fire_flame;amount=3;radius=2;hs=0;vs=0} @Origin
+  - effect:particlesphere{p=reddust;color=#4276AC;amount=3;radius=2;hs=0;vs=0} @Origin
+  - effect:particlesphere{particle=block_crack;m=ice;amount=1;radius=2} @Origin
+breathefire-Hit:
+  Skills:
+  - damage{a=2}   
+IceDragonFireEnd:
+  Skills:
+  - effect:blockmask{m=ice;r=5;d=100}
+  - effect:blockmask{m=soul_fire;r=0.5;d=100;oa=true}
+IceFlyFire:
+  Cooldown: 250
+  Conditions:
+  - stance{s=fly} false
+  - outside true
+  - onground true
+  - offgcd
+  - stance{s=gfire1} false
+  - stance{s=gfire2} false
+  Skills:
+  - gcd{ticks=1196}
+  - CancelEvent
+  - effect:particlering{particle=campfire_cosy_smoke;radius=9;points=32;amount=1;hS=.25;vS=0;size=3} @origin
+  - effect:particles{p=falling_dust;amount=2;speed=0;hS=1.25;vS=1.25;repeat=5;repeatinterval=2} @self
+  - throw{velocity=15;velocityY=5} @PIR{r=10}
+  - lunge{velocity=0.5;velocityY=2;repeat=10;repeatInterval=1} @Forward{f=2.0;yoffset=2.0}     
+  - delay 30
+#  - state{s=fly}
+  - lunge{velocity=0.50} @Target
+  - delay 1
+  - setstance{s=fly} @self
+  - setrotation{relative=true;yaw=90;repeat=22;repeatInterval=60} @Self
+  - lunge{velocity=0.50;repeat=1100;repeatInterval=1} @Forward
+  - delay 200
+  - skill{s=IceFlyFireA} @Target
+  - state{s=flyidle;r=true;delay=500}
+  - state{s=fly;delay=500}
+  - delay 900
+  - setstance{s=descend} @self
+  - delay 25
+  - effect:particlering{particle=campfire_cosy_smoke;radius=5;points=32;amount=1;hS=.25;vS=0;size=3} @origin
+  - blockwave{duration=100;material=ice;radius=5;radiusY=5;velocity=5;shape=sphere} @selflocation
+  - runaitargetselector{target=players}
+  - delay 10
+  - state{s=flyidle;r=true} @self
+  - state{s=fly;r=true} @self
+  - state{s=walk}
+  - delay 30
+  - setstance{s=default}
+
+IceFlyFireA:
+  Skills:
+  - sound{s=entity.wither.ambient;v=5;p=0.1;repeat=100;repeatInterval=5} @Self
+#  - state{s=fly} @self
+  - sound{s=item.firecharge.use;v=2;repeat=62;repeatInterval=5} @Self
+  - sound{s=entity.ender_dragon.growl;v=2} @Self
+  - aura{i=1;d=500;oT=IceFlyFireP} @Self
+IceFlyFireP:
+  Skills:
+  - projectile{onTick=IceFlyFire-Tick;onHit=IceFlyFire-Hit;onEnd=IceDragonFireEnd;v=30;i=1;hR=2;vR=2;syo=1;sfo=3;sE=false;mr=100} @Target
+IceFlyFire-Tick:
+  Skills:
+  - effect:particlesphere{particle=soul_fire_flame;amount=3;radius=3;hs=0;vs=0} @Origin
+  - effect:particlesphere{p=reddust;color=#4276AC;amount=3;radius=3;hs=0;vs=0} @Origin
+  - effect:particlesphere{particle=block_crack;m=ice;amount=1;radius=3} @Origin
+IceFlyFire-Hit:
+  Skills:
+  - damage{a=10}
+IceDragonFlylow:
+  Conditions:
+  - altitude{a=<12} true
+  - stance{s=fly} true 
+  Skills:
+#  - state{s=fly}
+  - sound{s=entity.ender_dragon.flap;v=10;p=0.8} @Self
+  - lunge{velocity=0.5;velocityY=0.5;repeat=20;repeatInterval=1} @Forward
+FlyPath:
+  Conditions:
+  - stance{s=fly} true
+  Skills:
+  - totem{c=1;oS=FlyPathTotem} @Forward{f=5.0} 
+  
+FlyPathTotem:
+  Skills:
+  - skill{s=Flyblock} @BlocksInRadius{radius=3;radiusy=1;noise=0;shape=sphere;onlyair=false;noair=true}
+  
+Flyblock:
+  TargetConditions:
+  - blocktype{type=air,water} false
+  Skills:
+  - lunge{velocity=0.50;repeat=10;repeatInterval=2} @forward
+  - setrotation{relative=true;yaw=90} @Self
+  
+IceDragonFlyhigh:
+  Conditions:
+  - altitude{a=>16} true
+  - stance{s=fly} true
+  Skills:
+#  - state{s=fly} 
+  - lunge{velocity=0.5;velocityY=-0.5;repeat=20;repeatInterval=1} @Forward
+IceDragonFlap:
+  Conditions:
+  - altitude{a=<16} true
+  - altitude{a=>12} true
+  Skills:
+  - state{s=fly;repeatInterval=1}
+  - sound{s=entity.ender_dragon.flap;v=10;p=0.8} @Self
+  
+  
+icedragonmountplayer:
+  Conditions:
+  - offgcd true
+  Skills:
+#  - state{s=fly} 
+  - mountmodel{mid=icedragon;driver=true;pbone=seat1,seat2;dmg=false}
+  
+IceDragonMount:
+  Skills:
+  - mountmodel{mode=flying;f=true;d=true} @trigger
+
+dragonice_scheduler:
+  Skills:
+  - Aura{auraName=IceDragonAnimating-Aura;onTick=IceDragonAnimating;interval=2;d=91600000} @self
+  - skill{s=IceDragonAnimating_Fly_Management} @self
+
+IceDragonAnimating:
+  Skills:
+  - skill{s=IceDragonAnimating_Ground}
+  - skill{s=IceDragonAnimating_Fly}
+
+IceDragonAnimating_Ground:
+  Conditions:
+  - hastag{t=ground} false
+  - altitude{a=0to2} true
+  Skills:
+  - defaultstate{t=walk;s=walk} @self
+  - defaultstate{t=idle;s=idle} @self
+  - state{s=idle_once;li=0;lo=0} @self
+  - addtag{t=ground} @self
+  - removetag{t=fly} @self
+  
+IceDragonAnimating_Fly:
+  Conditions:
+  - hastag{t=fly} false
+  - altitude{a=3to300} true
+  Skills:
+  - defaultstate{t=walk;s=fly} @self
+  - defaultstate{t=idle;s=flyidle} @self
+  - removetag{t=ground} @self
+  - addtag{t=fly} @self
+
+
+applyslow:
+  Cooldown: 0
+  Conditions:
+  Skills:
+  - potion{type=SLOW;duration=200;level=200} @self
+  
+removeslow:
+  Cooldown: 0
+  Conditions:
+  Skills:
+  - potionclear @self
+

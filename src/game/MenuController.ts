@@ -21,6 +21,8 @@ import {
   type LethalId
 } from "./LoadoutStore";
 import { PlayerAccount, type RunReward, getXpForCurrentLevel, getLevelForXp } from "./PlayerAccount";
+import type { AudioEngine } from "./AudioEngine";
+import { HYTOPIA_GUN_DEFINITIONS, HYTOPIA_MELEE_DEFINITIONS } from "./hytopiaWeaponDefs";
 
 export type { LoadoutData };
 
@@ -65,6 +67,7 @@ export class MenuController {
   private readonly settings: Settings;
   private readonly account: PlayerAccount;
   private readonly callbacks: MenuCallbacks;
+  private readonly audio: AudioEngine | null;
   private readonly settingsBackTarget: { current: "pause" | "title" } = { current: "title" };
 
   private readonly screens: Record<Exclude<MenuName, "none">, HTMLElement>;
@@ -82,11 +85,18 @@ export class MenuController {
   /** Persistent loadout store (localStorage-backed). */
   private readonly loadoutStore = new LoadoutStore();
 
-  constructor(root: HTMLElement, settings: Settings, account: PlayerAccount, callbacks: MenuCallbacks) {
+  constructor(
+    root: HTMLElement,
+    settings: Settings,
+    account: PlayerAccount,
+    callbacks: MenuCallbacks,
+    audio: AudioEngine | null = null
+  ) {
     this.root = root;
     this.settings = settings;
     this.account = account;
     this.callbacks = callbacks;
+    this.audio = audio;
 
     const titleScreen = root.querySelector<HTMLElement>("#title-screen");
     const mapSelectScreen = root.querySelector<HTMLElement>("#map-select-screen");
@@ -208,6 +218,16 @@ export class MenuController {
 
   // ── Menu navigation ────────────────────────────────────────────────────────
 
+  private sfxUiClick(): void {
+    this.audio?.unlock();
+    this.audio?.play("uiClick");
+  }
+
+  private sfxDeploy(): void {
+    this.audio?.unlock();
+    this.audio?.play("weaponBuy");
+  }
+
   showTitle(): void {
     this.show("title");
   }
@@ -325,10 +345,18 @@ export class MenuController {
   // ── Menu button bindings ───────────────────────────────────────────────────
 
   private bindMenuButtons(): void {
-    const bind = (id: string, handler: () => void) => {
+    const bind = (
+      id: string,
+      handler: () => void,
+      kind: "click" | "deploy" | "none" = "click"
+    ) => {
       const element = this.root.querySelector<HTMLButtonElement>(`#${id}`);
       if (!element) return;
-      element.addEventListener("click", () => handler());
+      element.addEventListener("click", () => {
+        if (kind === "click") this.sfxUiClick();
+        else if (kind === "deploy") this.sfxDeploy();
+        handler();
+      });
     };
 
     bind("btn-start", () => {
@@ -343,6 +371,7 @@ export class MenuController {
         if (!t || !(t instanceof HTMLElement)) return;
         const id = t.dataset.mapId as MapPresetId | undefined;
         if (!id) return;
+        this.sfxUiClick();
         this.pendingMapId = id;
         this.show("playerSelect");
       });
@@ -356,6 +385,7 @@ export class MenuController {
         if (!t || !(t instanceof HTMLElement)) return;
         const id = t.dataset.playerId as PlayerModelId | undefined;
         if (!id) return;
+        this.sfxUiClick();
         this.setActiveOperative(id);
       });
     }
@@ -363,6 +393,7 @@ export class MenuController {
     // Deploy button
     bind("btn-deploy", () => {
       if (!this.pendingPlayerId) return;
+      this.sfxDeploy();
       const loadout = this.loadoutStore.get(this.activeLoadoutId);
       this.callbacks.onBeginRun({
         mapId: this.pendingMapId,
@@ -370,7 +401,7 @@ export class MenuController {
         loadout
       });
       this.hide();
-    });
+    }, "none");
 
     bind("btn-lobby-map-back", () => this.show("title"));
     bind("btn-lobby-player-back", () => this.show("mapSelect"));
@@ -438,6 +469,32 @@ export class MenuController {
       this.callbacks.onReturnToTitle();
       this.show("title");
     });
+
+    // ── Player Stats Panel ──────────────────────────────────────────────────
+    const statsPanel = this.root.querySelector<HTMLElement>("#player-stats-panel");
+    const statsOpenBtn = this.root.querySelector<HTMLButtonElement>("#btn-open-stats");
+    const statsCloseBtn = this.root.querySelector<HTMLButtonElement>("#btn-close-stats");
+
+    const openStatsPanel = () => {
+      if (!statsPanel) return;
+      this.sfxUiClick();
+      this.populateStatsPanel();
+      statsPanel.classList.add("is-open");
+      statsPanel.setAttribute("aria-hidden", "false");
+    };
+
+    const closeStatsPanel = () => {
+      if (!statsPanel) return;
+      this.sfxUiClick();
+      statsPanel.classList.remove("is-open");
+      statsPanel.setAttribute("aria-hidden", "true");
+    };
+
+    statsOpenBtn?.addEventListener("click", openStatsPanel);
+    statsCloseBtn?.addEventListener("click", closeStatsPanel);
+
+    // Click the dimmed backdrop behind the drawer to close
+    statsPanel?.querySelector(".psp-backdrop")?.addEventListener("click", closeStatsPanel);
   }
 
   // ── Operative selection ────────────────────────────────────────────────────
@@ -518,6 +575,72 @@ export class MenuController {
     }
   }
 
+  // ── Player Stats Panel ────────────────────────────────────────────────────
+
+  private populateStatsPanel(): void {
+    const qEl = (id: string) => this.root.querySelector<HTMLElement>(`#${id}`);
+    const qSvg = (id: string) => this.root.querySelector<SVGCircleElement>(`#${id}`);
+
+    const set = (id: string, val: string) => {
+      const el = qEl(id);
+      if (el) el.textContent = val;
+    };
+
+    // Level + XP progress
+    const level = this.account.level;
+    const { current, needed } = this.account.xpProgress;
+    const pct = needed > 0 ? current / needed : 0;
+    const circumference = 2 * Math.PI * 34; // r=34 → ≈213.6
+
+    set("psp-level-num", String(level));
+    set("psp-xp-label", `${current.toLocaleString()} / ${needed.toLocaleString()} XP`);
+    set("psp-total-xp", `Total: ${this.account.totalXp.toLocaleString()} XP`);
+
+    const barFill = qEl("psp-xp-bar-fill");
+    if (barFill) {
+      // Animate bar with a small rAF delay
+      barFill.style.transition = "none";
+      barFill.style.width = "0%";
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          barFill.style.transition = "width 1.1s cubic-bezier(0.22, 1, 0.36, 1)";
+          barFill.style.width = `${(pct * 100).toFixed(1)}%`;
+        });
+      });
+    }
+
+    const ringFill = qSvg("psp-ring-fill");
+    if (ringFill) {
+      const offset = circumference * (1 - pct);
+      ringFill.style.strokeDashoffset = String(circumference); // reset
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          ringFill.style.strokeDashoffset = String(offset);
+        });
+      });
+    }
+
+    // Career stats
+    set("psp-highest-round", this.account.highestRound > 0
+      ? `Round ${this.account.highestRound}` : "—");
+    set("psp-total-kills", this.account.totalKills.toLocaleString());
+    set("psp-souls", this.account.souls.toLocaleString());
+
+    // Favorite weapon — build a unified weapon name lookup across all sources
+    const weaponDefs: Record<string, { name: string }> = {};
+    for (const [id, meta] of Object.entries(PRIMARY_META)) {
+      weaponDefs[id] = { name: meta.label };
+    }
+    for (const [, def] of Object.entries(HYTOPIA_GUN_DEFINITIONS)) {
+      weaponDefs[def.id] = { name: def.name };
+    }
+    for (const [, def] of Object.entries(HYTOPIA_MELEE_DEFINITIONS)) {
+      weaponDefs[def.id] = { name: def.name };
+    }
+    const favName = this.account.getFavoriteWeaponName(weaponDefs);
+    set("psp-fav-weapon", favName);
+  }
+
   // ── Loadout panel ─────────────────────────────────────────────────────────
 
   private bindLoadoutPanel(): void {
@@ -557,7 +680,11 @@ export class MenuController {
       const id = btn.dataset.buyMod as ModId | undefined;
       if (!id) return;
       const bought = this.account.buyMod(id);
-      if (bought) this.renderModShop();
+      if (bought) {
+        this.audio?.unlock();
+        this.audio?.play("weaponBuy");
+        this.renderModShop();
+      }
     });
   }
 
@@ -625,6 +752,7 @@ export class MenuController {
       btn.textContent = slot.name;
       btn.dataset.slotId = `${slot.id}`;
       btn.addEventListener("click", () => {
+        this.sfxUiClick();
         this.activeLoadoutId = slot.id;
         this.renderLoadoutTabs();
         this.renderLoadoutEditor();
@@ -682,6 +810,7 @@ export class MenuController {
           <button type="button" class="loadout-mod-shop-link" id="loadout-mod-shop-link">Visit Mod Shop →</button>
         </div>`;
         host.querySelector("#loadout-mod-shop-link")?.addEventListener("click", () => {
+          this.sfxUiClick();
           this.renderModShop();
           this.show("modShop");
         });
@@ -770,6 +899,7 @@ export class MenuController {
         </span>`;
 
       btn.addEventListener("click", () => {
+        this.sfxUiClick();
         onChange(opt.id);
         // Re-render just this grid to update active states
         this.renderLoadoutEditor();

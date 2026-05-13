@@ -52,6 +52,8 @@ export type RunInput = {
   wave: number;
   survivedSeconds: number;
   headshots: number;
+  /** Weapon id → kill count for this run. Used to update career favorite weapon. */
+  weaponKills?: Partial<Record<string, number>>;
 };
 
 export type RunReward = {
@@ -71,13 +73,21 @@ type AccountData = {
   totalXp: number;
   souls: number;
   ownedMods: ModId[];
+  /** Career stats — persisted across runs. */
+  highestRound: number;
+  totalKills: number;
+  /** weapon-id → total career kills with that weapon. */
+  weaponKillCounts: Partial<Record<string, number>>;
 };
 
 const buildDefault = (): AccountData => ({
   version: 1,
   totalXp: 0,
   souls: 0,
-  ownedMods: []
+  ownedMods: [],
+  highestRound: 0,
+  totalKills: 0,
+  weaponKillCounts: {}
 });
 
 export class PlayerAccount {
@@ -103,6 +113,34 @@ export class PlayerAccount {
 
   get xpProgress(): { current: number; needed: number } {
     return getXpForCurrentLevel(this.data.totalXp);
+  }
+
+  get highestRound(): number {
+    return this.data.highestRound;
+  }
+
+  get totalKills(): number {
+    return this.data.totalKills;
+  }
+
+  /** Weapon id with the most career kills, or null if no kills on record. */
+  get favoriteWeapon(): string | null {
+    let max = 0;
+    let fav: string | null = null;
+    for (const [id, count] of Object.entries(this.data.weaponKillCounts)) {
+      if ((count ?? 0) > max) {
+        max = count as number;
+        fav = id;
+      }
+    }
+    return fav;
+  }
+
+  /** Human-readable display name for the favorite weapon (falls back to raw id). */
+  getFavoriteWeaponName(allWeaponDefs: Record<string, { name: string }>): string {
+    const id = this.favoriteWeapon;
+    if (!id) return "—";
+    return allWeaponDefs[id]?.name ?? id;
   }
 
   ownedMods(): Set<ModId> {
@@ -158,6 +196,18 @@ export class PlayerAccount {
 
     this.data.totalXp += xpGained;
     this.data.souls += soulsGained;
+
+    // Update career stats
+    if (input.wave > this.data.highestRound) {
+      this.data.highestRound = input.wave;
+    }
+    this.data.totalKills += input.kills;
+    if (input.weaponKills) {
+      for (const [id, count] of Object.entries(input.weaponKills)) {
+        this.data.weaponKillCounts[id] = (this.data.weaponKillCounts[id] ?? 0) + (count ?? 0);
+      }
+    }
+
     this.save();
 
     const levelAfter = this.level;
@@ -193,7 +243,12 @@ export class PlayerAccount {
         version: 1,
         totalXp: typeof parsed.totalXp === "number" ? parsed.totalXp : 0,
         souls: typeof parsed.souls === "number" ? parsed.souls : 0,
-        ownedMods: Array.isArray(parsed.ownedMods) ? (parsed.ownedMods as ModId[]) : []
+        ownedMods: Array.isArray(parsed.ownedMods) ? (parsed.ownedMods as ModId[]) : [],
+        highestRound: typeof parsed.highestRound === "number" ? parsed.highestRound : 0,
+        totalKills: typeof parsed.totalKills === "number" ? parsed.totalKills : 0,
+        weaponKillCounts: (typeof parsed.weaponKillCounts === "object" && parsed.weaponKillCounts && !Array.isArray(parsed.weaponKillCounts))
+          ? parsed.weaponKillCounts as Partial<Record<string, number>>
+          : {}
       };
     } catch {
       return buildDefault();

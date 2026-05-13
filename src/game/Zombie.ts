@@ -6,6 +6,15 @@ import type { CollisionWorld } from "./CollisionWorld";
 export type ZombieStats = {
   health: number;
   speed: number;
+  /** Hellhound / wolf round enemy — uses {@link GAME_CONFIG.hellhoundWave} model scale. */
+  hellhound?: boolean;
+  /**
+   * Boss encounter — wider melee reach, strafe chase, large wall nudge radius.
+   * Use {@link bossLargeModel} when the glTF is the huge dragon (not a fallback humanoid kit).
+   */
+  boss?: boolean;
+  /** When false with {@link boss}, keeps humanoid scale on a fallback kit but still uses boss AI. */
+  bossLargeModel?: boolean;
 };
 
 /** Loaded glTF: fresh mesh instance + lookup for {@link AnimTrack}s by glTF clip name. */
@@ -51,6 +60,10 @@ export class Zombie {
   private readonly aimBodyY: number;
   private readonly headTargetY: number;
   private readonly headHitRadius: number;
+  private readonly isBoss: boolean;
+  private readonly bossLargeVisual: boolean;
+  private readonly zombieCollisionRadius: number;
+  private readonly gltfExtraYOffset: number;
   private animComponent: pc.AnimComponent | null = null;
   private resolveAnim: ((name: string) => AnimTrack | undefined) | null = null;
   /** "walk" | "run" — which locomotion clip is playing. */
@@ -78,9 +91,17 @@ export class Zombie {
     this.collision = collision;
 
     const visCfg = GAME_CONFIG.enemyVisual;
-    this.aimBodyY = visCfg.aimBodyY;
-    this.headTargetY = visCfg.headTargetY;
-    this.headHitRadius = visCfg.headRadius;
+    const bw = GAME_CONFIG.bossWave;
+    const isBoss = Boolean(stats.boss && bw.enabled);
+    const bossLarge =
+      isBoss && (stats.bossLargeModel !== false);
+    this.isBoss = isBoss;
+    this.bossLargeVisual = bossLarge;
+    this.zombieCollisionRadius = isBoss ? bw.collisionRadius : ZOMBIE_RADIUS;
+    this.gltfExtraYOffset = bossLarge ? bw.gltfVisualYOffset : 0;
+    this.aimBodyY = isBoss ? bw.aimBodyY : visCfg.aimBodyY;
+    this.headTargetY = isBoss ? bw.headTargetY : visCfg.headTargetY;
+    this.headHitRadius = isBoss ? bw.headRadius : visCfg.headRadius;
 
     let gltfEntity: pc.Entity | null = null;
     if (modelKit && GAME_CONFIG.enemyVisual.useGltf) {
@@ -115,9 +136,15 @@ export class Zombie {
     if (this.useGltfModel && gltfEntity && modelKit) {
       gltfEntity.name = "enemy-gltf";
       const av = GAME_CONFIG.voxelAvatar;
-      const s = av.modelScale;
+      const hMul =
+        this.bossLargeVisual
+          ? bw.modelScaleMultiplier
+          : stats.hellhound && GAME_CONFIG.hellhoundWave.enabled
+            ? GAME_CONFIG.hellhoundWave.modelScaleMultiplier
+            : 1;
+      const s = av.modelScale * hMul;
       gltfEntity.setLocalScale(s, s, s);
-      gltfEntity.setLocalPosition(0, av.yOffset, 0);
+      gltfEntity.setLocalPosition(0, av.yOffset + this.gltfExtraYOffset, 0);
       gltfEntity.setLocalEulerAngles(0, av.yawOffsetDeg, 0);
       this.root.addChild(gltfEntity);
       this.collectImportedFlashMaterials(gltfEntity);
@@ -158,7 +185,12 @@ export class Zombie {
       this.root.addChild(this.rightEye);
     }
 
-    this.root.setLocalScale(0, 0, 0);
+    if (this.isBoss) {
+      this.spawnAlpha = 1;
+      this.root.setLocalScale(1, 1, 1);
+    } else {
+      this.root.setLocalScale(0, 0, 0);
+    }
   }
 
   private attachGltfLocomotion(visual: pc.Entity, kit: EnemyModelKit): void {
@@ -293,6 +325,8 @@ export class Zombie {
       this.spawnAlpha = Math.min(1, this.spawnAlpha + dt * 1.6);
       const s = this.spawnAlpha;
       this.root.setLocalScale(s, s, s);
+    } else if (!this.isBoss && this.root.getLocalScale().x !== 1) {
+      this.root.setLocalScale(1, 1, 1);
     }
 
     this.attackCooldown = Math.max(0, this.attackCooldown - dt);
@@ -323,20 +357,28 @@ export class Zombie {
       this.root.setLocalRotation(this.facePlayerQuat);
     }
 
-    if (distance <= GAME_CONFIG.zombie.attackRange) {
+    const attackR = this.isBoss ? GAME_CONFIG.bossWave.attackRange : GAME_CONFIG.zombie.attackRange;
+
+    if (distance <= attackR) {
       if (this.attackCooldown <= 0) {
-        this.attackCooldown = GAME_CONFIG.zombie.attackCooldownSeconds;
-        onPlayerHit(GAME_CONFIG.zombie.attackDamage, position);
+        this.attackCooldown = this.isBoss
+          ? GAME_CONFIG.bossWave.attackCooldownSeconds
+          : GAME_CONFIG.zombie.attackCooldownSeconds;
+        onPlayerHit(
+          this.isBoss ? GAME_CONFIG.bossWave.attackDamage : GAME_CONFIG.zombie.attackDamage,
+          position
+        );
       }
     } else {
       const separation = new pc.Vec3();
+      const sepNear = this.isBoss ? 3.6 : 1.25;
 
       for (const other of zombies) {
         if (!other.alive || other.id === this.id) continue;
         const away = position.clone().sub(other.getPosition());
         const gap = away.length();
-        if (gap > 0 && gap < 1.25) {
-          away.normalize().mulScalar((1.25 - gap) * 0.85);
+        if (gap > 0 && gap < sepNear) {
+          away.normalize().mulScalar((sepNear - gap) * (this.isBoss ? 0.5 : 0.85));
           separation.add(away);
         }
       }
@@ -347,12 +389,18 @@ export class Zombie {
         let nx = position.x + mx * this.speed * dt;
         let nz = position.z + mz * this.speed * dt;
 
+        if (this.isBoss && GAME_CONFIG.bossWave.strafeStrength > 0 && distance > attackR * 1.08) {
+          const sw = Math.sin(this.armSwingPhase * 0.33) * GAME_CONFIG.bossWave.strafeStrength;
+          nx += -mz * sw * this.speed * dt;
+          nz += mx * sw * this.speed * dt;
+        }
+
         if (separation.lengthSq() > 1e-12) {
           separation.y = 0;
           const along = separation.x * mx + separation.z * mz;
           separation.x -= mx * along;
           separation.z -= mz * along;
-          separation.mulScalar(0.38);
+          separation.mulScalar(this.isBoss ? 0.55 : 0.38);
           if (separation.lengthSq() > 1e-12) {
             nx += separation.x;
             nz += separation.z;
@@ -362,13 +410,13 @@ export class Zombie {
         position.z = nz;
       } else if (separation.lengthSq() > 1e-12) {
         separation.y = 0;
-        separation.mulScalar(0.38);
+        separation.mulScalar(this.isBoss ? 0.55 : 0.38);
         position.x += separation.x;
         position.z += separation.z;
       }
 
       if (this.collision) {
-        this.collision.resolveZombiePosition(position, ZOMBIE_RADIUS);
+        this.collision.resolveZombiePosition(position, this.zombieCollisionRadius);
       }
       this.root.setPosition(position);
     }
@@ -378,8 +426,12 @@ export class Zombie {
 
     if (this.useGltfModel && this.visualModel) {
       const yBase = GAME_CONFIG.voxelAvatar.yOffset;
-      this.visualModel.setLocalPosition(0, yBase + bobY * 0.06, lurch * 0.02);
-      const chasing = distance > GAME_CONFIG.zombie.attackRange;
+      this.visualModel.setLocalPosition(
+        0,
+        yBase + this.gltfExtraYOffset + bobY * (this.isBoss ? 0.02 : 0.06),
+        lurch * (this.isBoss ? 0.01 : 0.02)
+      );
+      const chasing = distance > attackR;
       this.updateGltfLocomotion(chasing);
     } else {
       this.body.setLocalPosition(lurch * 0.4, 0.95 + bobY, 0);

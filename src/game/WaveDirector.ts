@@ -6,13 +6,15 @@ type SpawnRequest = {
   wave: number;
   health: number;
   speed: number;
+  /** Wolf / hellhound round spawn (visual + tuning). */
+  hellhound: boolean;
 };
 
 type SpawnPicker = (playerPosition: pc.Vec3) => pc.Vec3 | null;
 
 type WaveCallbacks = {
   onSpawn: (request: SpawnRequest) => void;
-  onWaveStarted: (wave: number) => void;
+  onWaveStarted: (wave: number, hellhoundWave: boolean) => void;
   onWaveCleared: (wave: number) => void;
   onIntermission: (wave: number, seconds: number) => void;
 };
@@ -28,6 +30,8 @@ export class WaveDirector {
   private intermission = 1.8;
   private spawnCooldown = 0;
   private waveActive = false;
+  /** True for the current wave if it uses {@link GAME_CONFIG.hellhoundWave} spawns. */
+  private hellhoundWaveActive = false;
   private readonly callbacks: WaveCallbacks;
   private readonly spawnPicker: SpawnPicker;
 
@@ -42,6 +46,7 @@ export class WaveDirector {
     this.intermission = 1.8;
     this.spawnCooldown = 0;
     this.waveActive = false;
+    this.hellhoundWaveActive = false;
   }
 
   // --- Wave tick: intermission HUD → staggered spawns → wave cleared detection ---
@@ -80,15 +85,26 @@ export class WaveDirector {
       this.queuedSpawns -= 1;
       this.spawnCooldown = 0.45;
 
+      const baseHealth =
+        GAME_CONFIG.zombie.baseHealth +
+        (this.currentWave - 1) * GAME_CONFIG.zombie.healthPerWave;
+      const baseSpeed =
+        GAME_CONFIG.zombie.baseSpeed +
+        (this.currentWave - 1) * GAME_CONFIG.zombie.speedPerWave;
+      const hw = GAME_CONFIG.hellhoundWave;
+      let health = baseHealth;
+      let speed = baseSpeed;
+      if (this.hellhoundWaveActive && hw.enabled) {
+        health = Math.max(1, Math.floor(baseHealth * hw.healthMultiplier));
+        speed = baseSpeed * hw.speedMultiplier;
+      }
+
       this.callbacks.onSpawn({
         position,
         wave: this.currentWave,
-        health:
-          GAME_CONFIG.zombie.baseHealth +
-          (this.currentWave - 1) * GAME_CONFIG.zombie.healthPerWave,
-        speed:
-          GAME_CONFIG.zombie.baseSpeed +
-          (this.currentWave - 1) * GAME_CONFIG.zombie.speedPerWave
+        health,
+        speed,
+        hellhound: this.hellhoundWaveActive
       });
     }
 
@@ -109,11 +125,36 @@ export class WaveDirector {
 
   private startWave(): void {
     this.currentWave += 1;
-    this.queuedSpawns =
-      GAME_CONFIG.waves.startingCount +
-      (this.currentWave - 1) * GAME_CONFIG.waves.additionalPerWave;
+    const hw = GAME_CONFIG.hellhoundWave;
+    const bw = GAME_CONFIG.bossWave;
+    const isBoss = bw.enabled && this.currentWave === bw.waveNumber;
+    const isHellhound =
+      !isBoss &&
+      hw.enabled &&
+      this.currentWave > 0 &&
+      this.currentWave % hw.everyNthWave === 0;
+    this.hellhoundWaveActive = isHellhound;
+    this.queuedSpawns = isBoss
+      ? 0
+      : isHellhound
+        ? hw.spawnCount
+        : GAME_CONFIG.waves.startingCount +
+          (this.currentWave - 1) * GAME_CONFIG.waves.additionalPerWave;
     this.spawnCooldown = 0;
     this.waveActive = true;
-    this.callbacks.onWaveStarted(this.currentWave);
+    this.callbacks.onWaveStarted(this.currentWave, this.hellhoundWaveActive);
+  }
+
+  jumpToWaveStart(targetWave: number): void {
+    if (targetWave < 1) {
+      return;
+    }
+    this.intermission = 0;
+    this.spawnCooldown = 0;
+    this.queuedSpawns = 0;
+    this.waveActive = false;
+    this.hellhoundWaveActive = false;
+    this.currentWave = targetWave - 1;
+    this.startWave();
   }
 }

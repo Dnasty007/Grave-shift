@@ -1,7 +1,14 @@
 import * as pc from "playcanvas";
 import type { WeaponId, WeaponInventory } from "./Weapon";
 
-export type InteractKind = "wall-buy" | "door" | "power" | "info" | "mystery-box" | "pack-a-punch";
+export type InteractKind =
+  | "wall-buy"
+  | "door"
+  | "power"
+  | "info"
+  | "mystery-box"
+  | "pack-a-punch"
+  | "dev-round-skip";
 
 export type InteractPrompt = {
   title: string;
@@ -14,9 +21,19 @@ export type InteractPrompt = {
 export type InteractResult = {
   success: boolean;
   pointsSpent: number;
-  type: "bought" | "refilled" | "opened" | "noChange" | "rejected" | "mystery" | "packPunch";
+  type:
+    | "bought"
+    | "refilled"
+    | "opened"
+    | "noChange"
+    | "rejected"
+    | "mystery"
+    | "packPunch"
+    | "devRoundSkip";
   weaponBought?: WeaponId;
   message?: string;
+  /** When {@link type} is `devRoundSkip`, wave director advances to this wave. */
+  devSkipToWave?: number;
 };
 
 export interface Interactable {

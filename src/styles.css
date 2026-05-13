@@ -1113,25 +1113,31 @@ body.touch-mode #touch-controls .touch-button {
   margin: 0 0 32px;
   line-height: 0.88;
   font-size: clamp(4.5rem, 9vw, 8rem);
-  font-weight: 900;
-  letter-spacing: 0.04em;
+  /**
+   * Daemonesque is only embedded at `font-weight: normal` (@font-face).
+   * Heavier weights trigger **synthesized bold** — strokes get artificially fattened,
+   * distressed detail is lost, and the wordmark reads “too wide.” Use the real outlines.
+   */
+  font-weight: 400;
+  font-synthesis: none;
+  letter-spacing: 0.015em;
 }
 
 .title-logo-grave {
   display: block;
   color: #e5e5e5;
   text-shadow:
-    0 0 40px rgba(229, 229, 229, 0.1),
-    0 4px 60px rgba(0, 0, 0, 0.8);
+    0 0 28px rgba(229, 229, 229, 0.08),
+    0 3px 36px rgba(0, 0, 0, 0.65);
 }
 
 .title-logo-shift {
   display: block;
   color: #990000;
   text-shadow:
-    0 0 24px rgba(153, 0, 0, 0.75),
-    0 0 60px rgba(90, 0, 0, 0.5),
-    0 0 100px rgba(60, 0, 0, 0.3);
+    0 0 18px rgba(153, 0, 0, 0.55),
+    0 0 42px rgba(90, 0, 0, 0.38),
+    0 0 72px rgba(60, 0, 0, 0.22);
 }
 
 .title-blurb {
@@ -4158,4 +4164,403 @@ body.touch-mode #touch-controls .touch-button {
 
 #crosshair.is-scope-hidden {
   display: none;
+}
+
+/* ═══════════════════════════════════════════════════════
+   PLAYER STATS TRIGGER BUTTON (operative sidebar)
+═══════════════════════════════════════════════════════ */
+
+.stats-trigger-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  margin: 0 0 1.1rem;
+  background: rgba(153, 0, 0, 0.08);
+  border: 1px solid rgba(153, 0, 0, 0.25);
+  border-radius: 4px;
+  cursor: pointer;
+  color: rgba(229, 229, 229, 0.7);
+  font-family: var(--font-display, 'Oswald', sans-serif);
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+
+.stats-trigger-btn:hover {
+  background: rgba(153, 0, 0, 0.22);
+  border-color: rgba(200, 30, 30, 0.55);
+  color: #f0ece4;
+}
+
+.stats-trigger-icon {
+  font-size: 0.8rem;
+  color: rgba(220, 50, 50, 0.85);
+  flex-shrink: 0;
+  animation: stats-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes stats-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.stats-trigger-label {
+  flex: 1;
+  text-align: left;
+}
+
+.stats-trigger-arrow {
+  font-size: 1rem;
+  color: rgba(229, 229, 229, 0.35);
+  transition: transform 0.2s, color 0.2s;
+}
+
+.stats-trigger-btn:hover .stats-trigger-arrow {
+  transform: translateX(3px);
+  color: rgba(220, 50, 50, 0.7);
+}
+
+/* ═══════════════════════════════════════════════════════
+   PLAYER STATS PANEL  (#player-stats-panel)
+═══════════════════════════════════════════════════════ */
+
+.player-stats-panel {
+  /* sits inside #player-select-screen, covers it */
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: none;
+  align-items: stretch;
+  pointer-events: none;
+}
+
+.player-stats-panel.is-open {
+  display: flex;
+  pointer-events: auto;
+}
+
+/* semi-transparent backdrop — click closes panel */
+.psp-backdrop {
+  flex: 1;
+  background: rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+}
+
+/* the drawer slides in from the left */
+.psp-drawer {
+  width: min(380px, 85vw);
+  background: linear-gradient(160deg, #0e0a0a 0%, #180c0c 100%);
+  border-right: 1px solid rgba(153, 0, 0, 0.35);
+  box-shadow: 4px 0 32px rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 2.5rem 2rem 2rem;
+  overflow-y: auto;
+  transform: translateX(-100%);
+  transition: transform 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.player-stats-panel.is-open .psp-drawer {
+  transform: translateX(0);
+}
+
+/* ── Header ─────────────────────────────────────────── */
+
+.psp-header {
+  position: relative;
+  margin-bottom: 2rem;
+}
+
+.psp-header-label {
+  font-family: var(--font-display, 'Oswald', sans-serif);
+  font-size: 0.58rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(220, 50, 50, 0.75);
+  margin-bottom: 0.35rem;
+}
+
+.psp-heading {
+  font-family: var(--font-display, 'Oswald', sans-serif);
+  font-size: 2.2rem;
+  font-weight: 700;
+  line-height: 1;
+  color: #f0ece4;
+  letter-spacing: 0.04em;
+  margin: 0;
+}
+
+.psp-close-btn {
+  position: absolute;
+  top: 0;
+  right: 0;
+  background: none;
+  border: 1px solid rgba(229, 229, 229, 0.15);
+  border-radius: 3px;
+  color: rgba(229, 229, 229, 0.55);
+  font-size: 0.8rem;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+
+.psp-close-btn:hover {
+  border-color: rgba(220, 50, 50, 0.6);
+  color: #e05050;
+  background: rgba(153, 0, 0, 0.15);
+}
+
+/* ── Level ring block ────────────────────────────────── */
+
+.psp-level-block {
+  display: flex;
+  align-items: center;
+  gap: 1.4rem;
+  margin-bottom: 1.6rem;
+}
+
+.psp-level-ring {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  flex-shrink: 0;
+}
+
+.psp-ring-svg {
+  width: 80px;
+  height: 80px;
+  transform: rotate(-90deg);
+}
+
+.psp-ring-track {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 5;
+}
+
+.psp-ring-fill {
+  fill: none;
+  stroke: #cc2222;
+  stroke-width: 5;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 1.1s cubic-bezier(0.22, 1, 0.36, 1);
+  filter: drop-shadow(0 0 4px rgba(220, 50, 50, 0.6));
+}
+
+.psp-level-inner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.psp-level-label {
+  font-family: var(--font-display, 'Oswald', sans-serif);
+  font-size: 0.52rem;
+  letter-spacing: 0.18em;
+  color: rgba(229, 229, 229, 0.5);
+  line-height: 1;
+}
+
+.psp-level-num {
+  font-family: var(--font-display, 'Oswald', sans-serif);
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #f0ece4;
+  line-height: 1;
+}
+
+/* XP bar column */
+.psp-xp-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.psp-xp-bar-wrap {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.psp-xp-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #880000, #cc2222);
+  border-radius: 3px;
+  transition: width 1.1s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.psp-xp-label {
+  font-size: 0.68rem;
+  color: #7ab8e8;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+}
+
+.psp-total-xp {
+  font-size: 0.6rem;
+  color: rgba(229, 229, 229, 0.38);
+  letter-spacing: 0.08em;
+}
+
+/* ── Divider ─────────────────────────────────────────── */
+
+.psp-divider {
+  height: 1px;
+  background: linear-gradient(90deg, rgba(153, 0, 0, 0.5), transparent);
+  margin-bottom: 1.5rem;
+}
+
+/* ── Stat cards grid ─────────────────────────────────── */
+
+.psp-stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-bottom: 1.6rem;
+}
+
+.psp-stat-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  padding: 0.9rem 0.85rem 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.psp-stat-card:hover {
+  background: rgba(153, 0, 0, 0.08);
+  border-color: rgba(153, 0, 0, 0.3);
+}
+
+.psp-stat-card--wide {
+  grid-column: 1 / -1;
+}
+
+.psp-stat-icon {
+  font-size: 1rem;
+  margin-bottom: 0.2rem;
+  opacity: 0.8;
+}
+
+.psp-stat-val {
+  font-family: var(--font-display, 'Oswald', sans-serif);
+  font-size: 1.55rem;
+  font-weight: 700;
+  color: #f0ece4;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.psp-stat-val--weapon {
+  font-size: 1.1rem;
+  letter-spacing: 0.03em;
+}
+
+.psp-stat-label {
+  font-size: 0.6rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: rgba(229, 229, 229, 0.42);
+}
+
+/* ── Footer hint ─────────────────────────────────────── */
+
+.psp-footer-hint {
+  margin-top: auto;
+  padding-top: 1rem;
+  font-size: 0.6rem;
+  color: rgba(229, 229, 229, 0.28);
+  letter-spacing: 0.1em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+/* ── Mobile adjustments ──────────────────────────────── */
+@media (max-width: 600px) {
+  .psp-drawer {
+    width: 90vw;
+    padding: 1.8rem 1.4rem 1.4rem;
+  }
+
+  .psp-heading {
+    font-size: 1.7rem;
+  }
+
+  .psp-stat-val {
+    font-size: 1.25rem;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   BOSS HP BAR  (#boss-hp-wrap)
+═══════════════════════════════════════════════════════ */
+
+#boss-hp-wrap {
+  position: fixed;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(520px, 70vw);
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  z-index: 30;
+  pointer-events: none;
+}
+
+#boss-hp-wrap.is-visible {
+  display: flex;
+}
+
+.boss-hp-label {
+  font-family: var(--font-display, 'Oswald', sans-serif);
+  font-size: 0.68rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(180, 60, 60, 0.95);
+  text-shadow: 0 0 12px rgba(220, 50, 50, 0.6);
+  animation: boss-label-pulse 2s ease-in-out infinite;
+}
+
+@keyframes boss-label-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
+}
+
+.boss-hp-track {
+  width: 100%;
+  height: 10px;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(180, 30, 30, 0.5);
+  border-radius: 5px;
+  overflow: hidden;
+  box-shadow: 0 0 16px rgba(180, 30, 30, 0.3);
+}
+
+.boss-hp-fill {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #3a0000, #c00000 40%, #ff4444 100%);
+  border-radius: 5px;
+  transition: width 0.25s ease-out;
+  box-shadow: inset 0 0 8px rgba(255, 100, 100, 0.4);
 }

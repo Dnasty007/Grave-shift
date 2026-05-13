@@ -43,22 +43,80 @@ export class AudioEngine {
   private footstepBuffers: AudioBuffer[] = [];
   private footstepLoadStarted = false;
 
+  /** UI click sample (see {@link GAME_CONFIG.audio.uiClickUrl}). */
+  private uiClickBuffer: AudioBuffer | null = null;
+  /**
+   * Title / pause / game-over bed: {@link HTMLAudioElement} so the track can start on load without
+   * waiting for Web Audio unlock (menu overlay clicks never hit the canvas `pointerdown` listener).
+   */
+  private readonly menuHtmlAudio: HTMLAudioElement;
+  private uiAndMenuLoadStarted = false;
+  /** When true, start the menu loop as soon as the buffer and context exist. */
+  private menuMusicRequested = false;
+  /** Last argument passed to {@link setDroneIntensity} (used when menu music ducks the drone off). */
+  private lastDroneIntensityArg = 0;
+  /** Decoded sample for critical heartbeat; synth fallback if missing. */
+  private lowHealthHeartbeatBuffer: AudioBuffer | null = null;
+  private lowHealthHeartbeatDuration = 0;
+  /** Latest health ratio passed to {@link setHeartbeatRate} (drives sample vs synth). */
+  private heartbeatHealthRatio = 1;
+  /** Decoded hellhound wave intro sample. */
+  private hellhoundWaveIntroBuffer: AudioBuffer | null = null;
+
+  /**
+   * True after {@link unlock} has created master/sfx/music gains and connected to destination.
+   * Decode-only prefetch may create {@link ctx} earlier without wiring the graph.
+   */
+  private audioGraphWired = false;
+
   constructor(settings: Settings) {
+    const menuUrl = GAME_CONFIG.audio.menuMusicUrl;
+    this.menuHtmlAudio = new Audio(menuUrl);
+    this.menuHtmlAudio.loop = true;
+    this.menuHtmlAudio.preload = "auto";
+    this.menuHtmlAudio.setAttribute("playsinline", "");
+
     this.current = settings.get();
     settings.subscribe((next) => {
       this.current = next;
       this.applyVolumes();
     });
+    this.applyMenuHtmlVolume();
   }
 
-  unlock(): void {
-    if (this.ctx) {
-      if (this.ctx.state === "suspended") {
-        void this.ctx.resume();
-      }
+  /**
+   * Start fetching/decoding menu + UI samples as soon as the page loads (suspended `AudioContext`).
+   * Browsers allow decode before the first user gesture; {@link unlock} resumes playback and wires the graph.
+   * Call from `GameApp` right after construction so Ghost Stories is ready when the title screen appears.
+   */
+  prefetchMenuAndUiSamples(): void {
+    this.ensureDecodeContext();
+    if (!this.ctx) {
       return;
     }
+    this.beginUiAndMenuSampleLoad();
+  }
 
+  private ensureDecodeContext(): void {
+    if (this.ctx) {
+      return;
+    }
+    const Ctor =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+    if (!Ctor) {
+      return;
+    }
+    try {
+      this.ctx = new Ctor();
+    } catch {
+      /* Some environments block context until a gesture */
+    }
+  }
+
+  /** First user gesture: resume context, wire output graph if needed, attach menu loop when buffers exist. */
+  unlock(): void {
     const Ctor =
       window.AudioContext ||
       (window as unknown as { webkitAudioContext?: typeof AudioContext })
@@ -68,18 +126,37 @@ export class AudioEngine {
       return;
     }
 
-    this.ctx = new Ctor();
-    this.masterGain = this.ctx.createGain();
-    this.sfxGain = this.ctx.createGain();
-    this.musicGain = this.ctx.createGain();
+    if (!this.ctx) {
+      try {
+        this.ctx = new Ctor();
+      } catch {
+        return;
+      }
+    }
 
-    this.sfxGain.connect(this.masterGain);
-    this.musicGain.connect(this.masterGain);
-    this.masterGain.connect(this.ctx.destination);
+    if (!this.audioGraphWired) {
+      this.masterGain = this.ctx.createGain();
+      this.sfxGain = this.ctx.createGain();
+      this.musicGain = this.ctx.createGain();
 
-    this.applyVolumes();
-    this.startDrone();
-    this.beginFootstepSampleLoad();
+      this.sfxGain.connect(this.masterGain);
+      this.musicGain.connect(this.masterGain);
+      this.masterGain.connect(this.ctx.destination);
+
+      this.audioGraphWired = true;
+      this.applyVolumes();
+      this.startDrone();
+      this.applyDroneGain();
+      this.beginFootstepSampleLoad();
+    }
+
+    if (this.ctx.state === "suspended") {
+      void this.ctx.resume();
+    }
+
+    this.beginUiAndMenuSampleLoad();
+    this.playMenuHtmlIfRequested();
+    this.rescheduleHeartbeatIfActive();
   }
 
   /**
@@ -89,7 +166,11 @@ export class AudioEngine {
     const ctx = this.ctx;
     const sfx = this.sfxGain;
     const buffers = this.footstepBuffers;
-    if (!ctx || !sfx || buffers.length === 0) {
+    if (!ctx || !sfx) {
+      return;
+    }
+    if (buffers.length === 0) {
+      this.playSyntheticFootstep(sprinting);
       return;
     }
 
@@ -153,8 +234,174 @@ export class AudioEngine {
     );
     this.footstepBuffers = buffers;
     if (buffers.length === 0) {
-      console.warn("[AudioEngine] No footstep audio decoded from manifest:", urls);
+      console.warn(
+        "[AudioEngine] No footstep samples loaded; using synthetic steps. Add MP3s under public/ or fix manifest:",
+        urls
+      );
     }
+  }
+
+  /** Short band-limited thud when no footstep buffers are available (missing assets / fetch blocked). */
+  private playSyntheticFootstep(sprinting: boolean): void {
+    const ctx = this.ctx;
+    const sfx = this.sfxGain;
+    if (!ctx || !sfx) return;
+    const now = ctx.currentTime;
+    const dur = sprinting ? 0.045 : 0.055;
+    const peak = sprinting ? 0.2 : 0.16;
+    const noise = this.createNoise(dur + 0.02);
+    const hp = ctx.createBiquadFilter();
+    const lp = ctx.createBiquadFilter();
+    const gain = ctx.createGain();
+    hp.type = "highpass";
+    hp.frequency.value = 90;
+    lp.type = "lowpass";
+    lp.frequency.setValueAtTime(sprinting ? 2200 : 1800, now);
+    lp.frequency.exponentialRampToValueAtTime(400, now + dur);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(peak, now + 0.004);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    noise.connect(hp).connect(lp).connect(gain).connect(sfx);
+    noise.start(now);
+    noise.stop(now + dur + 0.03);
+  }
+
+  private beginUiAndMenuSampleLoad(): void {
+    if (!this.ctx || this.uiAndMenuLoadStarted) {
+      return;
+    }
+    this.uiAndMenuLoadStarted = true;
+    void this.loadUiAndMenuSamples();
+  }
+
+  private async loadUiAndMenuSamples(): Promise<void> {
+    const ctx = this.ctx;
+    if (!ctx) return;
+
+    const { uiClickUrl, lowHealthHeartbeatUrl } = GAME_CONFIG.audio;
+    const hound = GAME_CONFIG.hellhoundWave;
+
+    const decodeUrl = async (url: string): Promise<AudioBuffer | null> => {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        const ab = await res.arrayBuffer();
+        return await ctx.decodeAudioData(ab.slice(0));
+      } catch {
+        return null;
+      }
+    };
+
+    const [uiBuf, lowBuf, houndBuf] = await Promise.all([
+      decodeUrl(uiClickUrl),
+      decodeUrl(lowHealthHeartbeatUrl),
+      hound.enabled ? decodeUrl(hound.introSoundUrl) : Promise.resolve(null)
+    ]);
+
+    this.uiClickBuffer = uiBuf;
+    if (!this.uiClickBuffer) {
+      console.warn("[AudioEngine] UI click sample missing or failed:", uiClickUrl);
+    }
+
+    this.lowHealthHeartbeatBuffer = lowBuf;
+    this.lowHealthHeartbeatDuration = lowBuf ? lowBuf.duration : 0;
+    if (!this.lowHealthHeartbeatBuffer) {
+      console.warn("[AudioEngine] Low-health heartbeat sample missing or failed:", lowHealthHeartbeatUrl);
+    }
+
+    if (hound.enabled) {
+      this.hellhoundWaveIntroBuffer = houndBuf;
+      if (!this.hellhoundWaveIntroBuffer) {
+        console.warn("[AudioEngine] Hellhound intro missing or failed:", hound.introSoundUrl);
+      }
+    }
+
+    this.playMenuHtmlIfRequested();
+    this.rescheduleHeartbeatIfActive();
+  }
+
+  /** Rebuild heartbeat interval after async buffers arrive (e.g. low-health MP3 decoded). */
+  private rescheduleHeartbeatIfActive(): void {
+    if (!this.ctx || !this.sfxGain) return;
+    if (this.heartbeatTimer === null || this.heartbeatIntensity <= 0.01) {
+      return;
+    }
+    const hr = this.heartbeatHealthRatio;
+    const clamped = this.heartbeatIntensity;
+    const thr = GAME_CONFIG.audio.lowHealthHeartbeatThreshold;
+    const useSample = this.lowHealthHeartbeatBuffer !== null && hr <= thr + 1e-5;
+
+    window.clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+
+    let interval = Math.max(280, 1100 - 600 * clamped);
+    if (useSample && this.lowHealthHeartbeatDuration > 0) {
+      interval = Math.max(
+        interval,
+        Math.ceil(this.lowHealthHeartbeatDuration * 1000 * 0.92),
+        GAME_CONFIG.audio.lowHealthHeartbeatMinIntervalMs
+      );
+    }
+
+    this.playHeartbeat(clamped);
+    this.heartbeatTimer = window.setInterval(() => {
+      this.playHeartbeat(this.heartbeatIntensity);
+    }, interval);
+  }
+
+  /** Loops {@link GAME_CONFIG.audio.menuMusicUrl} via {@link menuHtmlAudio} (no Web Audio unlock required). */
+  startMenuMusicLoop(): void {
+    this.menuMusicRequested = true;
+    this.applyMenuHtmlVolume();
+    void this.menuHtmlAudio.play().catch(() => {
+      /* autoplay policy — {@link unlock} or any gesture retries via {@link playMenuHtmlIfRequested} */
+    });
+    this.applyDroneGain();
+  }
+
+  stopMenuMusicLoop(): void {
+    this.menuMusicRequested = false;
+    this.menuHtmlAudio.pause();
+    this.menuHtmlAudio.currentTime = 0;
+    this.applyDroneGain();
+  }
+
+  private playMenuHtmlIfRequested(): void {
+    if (!this.menuMusicRequested) {
+      return;
+    }
+    this.applyMenuHtmlVolume();
+    void this.menuHtmlAudio.play().catch(() => {});
+  }
+
+  private applyMenuHtmlVolume(): void {
+    const g = GAME_CONFIG.audio.menuMusicGain;
+    const v = this.current.masterVolume * this.current.musicVolume * g;
+    this.menuHtmlAudio.volume = Math.max(0, Math.min(1, v));
+  }
+
+  /** Sting when a hellhound (wolf) wave starts; falls back to `waveStart` if the sample is missing. */
+  playHellhoundWaveIntro(): void {
+    if (!GAME_CONFIG.hellhoundWave.enabled) {
+      return;
+    }
+    const ctx = this.ctx;
+    const sfx = this.sfxGain;
+    const buf = this.hellhoundWaveIntroBuffer;
+    if (!ctx || !sfx) {
+      return;
+    }
+    if (buf) {
+      const now = ctx.currentTime;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(GAME_CONFIG.hellhoundWave.introSoundGain, now);
+      src.connect(g).connect(sfx);
+      src.start(now);
+      return;
+    }
+    this.play("waveStart");
   }
 
   play(name: SfxName): void {
@@ -237,23 +484,42 @@ export class AudioEngine {
 
   private heartbeatIntensity = 0;
 
-  setHeartbeatRate(intensity: number): void {
+  setHeartbeatRate(intensity: number, healthRatio?: number): void {
     if (!this.ctx || !this.sfxGain) {
       return;
     }
 
     const clamped = Math.max(0, Math.min(1, intensity));
+    const hr =
+      healthRatio !== undefined
+        ? Math.max(0, Math.min(1, healthRatio))
+        : clamped <= 0.01
+          ? 1
+          : (1 - clamped) * 0.45;
 
     if (clamped <= 0.01) {
       this.stopHeartbeat();
       this.heartbeatIntensity = 0;
+      this.heartbeatHealthRatio = hr;
       return;
     }
 
-    if (Math.abs(clamped - this.heartbeatIntensity) < 0.05 && this.heartbeatTimer !== null) {
+    const thr = GAME_CONFIG.audio.lowHealthHeartbeatThreshold;
+    const useSample = this.lowHealthHeartbeatBuffer !== null && hr <= thr + 1e-5;
+    const wasSample =
+      this.lowHealthHeartbeatBuffer !== null && this.heartbeatHealthRatio <= thr + 1e-5;
+
+    if (
+      Math.abs(clamped - this.heartbeatIntensity) < 0.05 &&
+      this.heartbeatTimer !== null &&
+      useSample === wasSample &&
+      Math.abs(hr - this.heartbeatHealthRatio) < 0.004
+    ) {
+      this.heartbeatHealthRatio = hr;
       return;
     }
 
+    this.heartbeatHealthRatio = hr;
     this.heartbeatIntensity = clamped;
 
     if (this.heartbeatTimer !== null) {
@@ -261,7 +527,15 @@ export class AudioEngine {
       this.heartbeatTimer = null;
     }
 
-    const interval = Math.max(280, 1100 - 600 * clamped);
+    let interval = Math.max(280, 1100 - 600 * clamped);
+    if (useSample && this.lowHealthHeartbeatDuration > 0) {
+      interval = Math.max(
+        interval,
+        Math.ceil(this.lowHealthHeartbeatDuration * 1000 * 0.92),
+        GAME_CONFIG.audio.lowHealthHeartbeatMinIntervalMs
+      );
+    }
+
     this.playHeartbeat(clamped);
     this.heartbeatTimer = window.setInterval(() => {
       this.playHeartbeat(this.heartbeatIntensity);
@@ -273,27 +547,38 @@ export class AudioEngine {
       window.clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+    this.heartbeatHealthRatio = 1;
   }
 
   setDroneIntensity(intensity: number): void {
+    this.lastDroneIntensityArg = intensity;
+    this.applyDroneGain();
+  }
+
+  /** Ramp procedural drone; silenced while the HTML menu bed is requested (see {@link startMenuMusicLoop}). */
+  private applyDroneGain(): void {
     if (!this.ctx || !this.droneNode) {
       return;
     }
-    const target = Math.max(0, Math.min(0.18, 0.04 + intensity * 0.12));
+    const target = Math.max(0, Math.min(0.18, 0.04 + this.lastDroneIntensityArg * 0.12));
+    const menuDucks = this.menuMusicRequested;
+    const out = menuDucks ? 0 : target;
     this.droneNode.gain.gain.cancelScheduledValues(this.ctx.currentTime);
     this.droneNode.gain.gain.linearRampToValueAtTime(
-      target,
+      out,
       this.ctx.currentTime + 0.6
     );
   }
 
   private applyVolumes(): void {
     if (!this.masterGain || !this.sfxGain || !this.musicGain) {
+      this.applyMenuHtmlVolume();
       return;
     }
     this.masterGain.gain.value = this.current.masterVolume;
     this.sfxGain.gain.value = this.current.sfxVolume;
     this.musicGain.gain.value = this.current.musicVolume;
+    this.applyMenuHtmlVolume();
   }
 
   private startDrone(): void {
@@ -458,6 +743,22 @@ export class AudioEngine {
   }
 
   private playUiClick(): void {
+    const ctx = this.ctx;
+    const sfx = this.sfxGain;
+    const buf = this.uiClickBuffer;
+    if (!ctx || !sfx) {
+      return;
+    }
+    if (buf) {
+      const now = ctx.currentTime;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.82, now);
+      src.connect(g).connect(sfx);
+      src.start(now);
+      return;
+    }
     this.tone(660, 440, 0.06, "square", 0.12);
   }
 
@@ -469,6 +770,25 @@ export class AudioEngine {
     const ctx = this.ctx;
     const sfx = this.sfxGain;
     if (!ctx || !sfx) return;
+    if (ctx.state === "suspended") {
+      void ctx.resume();
+    }
+
+    const buf = this.lowHealthHeartbeatBuffer;
+    const thr = GAME_CONFIG.audio.lowHealthHeartbeatThreshold;
+    if (buf && this.heartbeatHealthRatio <= thr + 1e-5) {
+      const now = ctx.currentTime;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const g = ctx.createGain();
+      const peak = Math.min(1, (0.55 + intensity * 0.45) * 1.2);
+      g.gain.setValueAtTime(peak, now);
+      src.playbackRate.value = 0.9 + intensity * 0.22;
+      src.connect(g).connect(sfx);
+      src.start(now);
+      return;
+    }
+
     const now = ctx.currentTime;
     const peak = 0.18 + intensity * 0.4;
 

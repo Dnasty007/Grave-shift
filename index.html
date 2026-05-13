@@ -71,6 +71,14 @@
           </div>
         </div>
 
+        <!-- Boss HP bar — shown during dragon encounter (wave 10) -->
+        <div id="boss-hp-wrap" aria-hidden="true">
+          <div id="boss-hp-label" class="boss-hp-label">ICE DRAGON</div>
+          <div class="boss-hp-track">
+            <div id="boss-hp-fill" class="boss-hp-fill"></div>
+          </div>
+        </div>
+
         <div id="crosshair" aria-hidden="true">
           <span class="crosshair-line crosshair-top"></span>
           <span class="crosshair-line crosshair-bottom"></span>
@@ -314,6 +322,14 @@
                 <span class="operative-roster-sep">·</span>
                 <span class="operative-roster-classified">4 CLASSIFIED</span>
               </div>
+
+              <!-- Player stats trigger -->
+              <button type="button" id="btn-open-stats" class="stats-trigger-btn" aria-label="View player stats">
+                <span class="stats-trigger-icon">◉</span>
+                <span class="stats-trigger-label">PLAYER STATS</span>
+                <span class="stats-trigger-arrow">›</span>
+              </button>
+
               <div class="lobby-sidebar-rule" aria-hidden="true"></div>
 
               <div class="operative-selected-info" id="operative-selected-info" aria-hidden="true">
@@ -410,6 +426,71 @@
             </div><!-- /loadout-panel -->
 
           </div><!-- /operative-select-layout -->
+
+          <!-- ── Player Stats Panel overlay ────────────────────────── -->
+          <div id="player-stats-panel" class="player-stats-panel" aria-hidden="true">
+            <div class="psp-backdrop"></div>
+            <div class="psp-drawer">
+
+              <header class="psp-header">
+                <div class="psp-header-label">OPERATIVE DOSSIER</div>
+                <h2 class="psp-heading">PLAYER<br>STATS</h2>
+                <button type="button" id="btn-close-stats" class="psp-close-btn" aria-label="Close stats">✕</button>
+              </header>
+
+              <!-- Level ring -->
+              <div class="psp-level-block">
+                <div class="psp-level-ring" id="psp-level-ring">
+                  <svg class="psp-ring-svg" viewBox="0 0 80 80">
+                    <circle class="psp-ring-track" cx="40" cy="40" r="34"/>
+                    <circle class="psp-ring-fill" id="psp-ring-fill" cx="40" cy="40" r="34"
+                            stroke-dasharray="213.6"
+                            stroke-dashoffset="213.6"/>
+                  </svg>
+                  <div class="psp-level-inner">
+                    <span class="psp-level-label">LVL</span>
+                    <span class="psp-level-num" id="psp-level-num">1</span>
+                  </div>
+                </div>
+                <div class="psp-xp-col">
+                  <div class="psp-xp-bar-wrap">
+                    <div class="psp-xp-bar-fill" id="psp-xp-bar-fill"></div>
+                  </div>
+                  <div class="psp-xp-label" id="psp-xp-label">0 / 480 XP</div>
+                  <div class="psp-total-xp" id="psp-total-xp">Total: 0 XP</div>
+                </div>
+              </div>
+
+              <!-- Stat rows -->
+              <div class="psp-divider"></div>
+              <div class="psp-stat-grid">
+                <div class="psp-stat-card">
+                  <span class="psp-stat-icon">🏆</span>
+                  <span class="psp-stat-val" id="psp-highest-round">—</span>
+                  <span class="psp-stat-label">Highest Round</span>
+                </div>
+                <div class="psp-stat-card">
+                  <span class="psp-stat-icon">💀</span>
+                  <span class="psp-stat-val" id="psp-total-kills">—</span>
+                  <span class="psp-stat-label">Total Kills</span>
+                </div>
+                <div class="psp-stat-card psp-stat-card--wide">
+                  <span class="psp-stat-icon">🔫</span>
+                  <span class="psp-stat-val psp-stat-val--weapon" id="psp-fav-weapon">—</span>
+                  <span class="psp-stat-label">Favorite Weapon</span>
+                </div>
+                <div class="psp-stat-card">
+                  <span class="psp-stat-icon">💠</span>
+                  <span class="psp-stat-val" id="psp-souls">—</span>
+                  <span class="psp-stat-label">Souls</span>
+                </div>
+              </div>
+
+              <div class="psp-footer-hint">Stats update at end of each run</div>
+
+            </div><!-- /psp-drawer -->
+          </div><!-- /player-stats-panel -->
+
         </section>
 
         <section id="pause-screen" class="menu-screen" aria-hidden="true">

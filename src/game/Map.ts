@@ -200,7 +200,11 @@ export class Map {
 
   // --- Spawning: gate entities vs open-world ring around player ---
 
-  pickRandomActiveSpawnPosition(playerPosition: pc.Vec3, minDistance = 12): pc.Vec3 | null {
+  pickRandomActiveSpawnPosition(
+    playerPosition: pc.Vec3,
+    minDistance = 12,
+    options?: { requireMinDistance?: boolean }
+  ): pc.Vec3 | null {
     if (this.replacesArena) {
       const ring = MAP_CONFIG.importVisual.spawnRing;
       const ringMin = Math.max(minDistance, ring.min);
@@ -226,6 +230,16 @@ export class Map {
         gate.pulse();
         return gate.getSpawnPosition();
       }
+    }
+
+    if (options?.requireMinDistance) {
+      const theta = Math.random() * Math.PI * 2;
+      const r = minDistance + Math.random() * 6;
+      return new pc.Vec3(
+        playerPosition.x + Math.sin(theta) * r,
+        playerPosition.y,
+        playerPosition.z + Math.cos(theta) * r
+      );
     }
 
     const fallback = shuffled[0];
