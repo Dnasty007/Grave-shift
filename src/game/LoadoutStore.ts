@@ -264,7 +264,11 @@ export const LETHAL_PARAMS: Record<
 
 /* ── Persistence ─────────────────────────────────────────────────────────── */
 
-const STORAGE_KEY = "grave-shift-loadouts-v1";
+const STORAGE_KEY = "project-gehenna-loadouts-v1";
+const LEGACY_STORAGE_KEYS = [
+  "lazarus-protocol-loadouts-v1",
+  "grave-shift-loadouts-v1"
+] as const;
 
 const buildDefaultLoadouts = (): LoadoutData[] => [
   { id: 0, name: "Alpha",   specialAbility: null, mod: null, primary: "pistol",     lethal: null },
@@ -298,16 +302,37 @@ export class LoadoutStore {
 
   private load(): LoadoutData[] {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      let raw = localStorage.getItem(STORAGE_KEY);
+      let fromLegacy = false;
+      if (!raw) {
+        for (const key of LEGACY_STORAGE_KEYS) {
+          raw = localStorage.getItem(key);
+          if (raw) {
+            fromLegacy = true;
+            break;
+          }
+        }
+      }
       if (!raw) return buildDefaultLoadouts();
       const parsed = JSON.parse(raw) as LoadoutData[];
       if (!Array.isArray(parsed) || parsed.length < MAX_LOADOUTS) return buildDefaultLoadouts();
       const defaults = buildDefaultLoadouts();
-      return parsed.slice(0, MAX_LOADOUTS).map((slot, i) => ({
+      const merged = parsed.slice(0, MAX_LOADOUTS).map((slot, i) => ({
         ...defaults[i],
         ...slot,
         id: i
       }));
+      if (fromLegacy) {
+        try {
+          for (const key of LEGACY_STORAGE_KEYS) {
+            localStorage.removeItem(key);
+          }
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+        } catch {
+          /* ignore */
+        }
+      }
+      return merged;
     } catch {
       return buildDefaultLoadouts();
     }

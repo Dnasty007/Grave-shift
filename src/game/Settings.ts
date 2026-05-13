@@ -28,7 +28,11 @@ export type SettingsState = {
   aiAllyEnabled: boolean;
 };
 
-const STORAGE_KEY = "grave-shift.settings.v1";
+const STORAGE_KEY = "project-gehenna.settings.v1";
+const LEGACY_STORAGE_KEYS = [
+  "lazarus-protocol.settings.v1",
+  "grave-shift.settings.v1"
+] as const;
 
 export type SettingsListener = (state: SettingsState) => void;
 
@@ -94,12 +98,33 @@ export class Settings {
     const defaults = this.defaults();
 
     try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
+      let raw = window.localStorage.getItem(STORAGE_KEY);
+      let fromLegacy = false;
+      if (!raw) {
+        for (const key of LEGACY_STORAGE_KEYS) {
+          raw = window.localStorage.getItem(key);
+          if (raw) {
+            fromLegacy = true;
+            break;
+          }
+        }
+      }
       if (!raw) {
         return defaults;
       }
       const parsed = JSON.parse(raw) as Partial<SettingsState>;
-      return { ...defaults, ...parsed };
+      const merged = { ...defaults, ...parsed };
+      if (fromLegacy) {
+        try {
+          for (const key of LEGACY_STORAGE_KEYS) {
+            window.localStorage.removeItem(key);
+          }
+          window.localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+        } catch {
+          /* ignore */
+        }
+      }
+      return merged;
     } catch {
       return defaults;
     }

@@ -169,7 +169,7 @@ function buildCubemapTexture(
   const h = sources[0].height;
 
   const texture = new pc.Texture(app.graphicsDevice, {
-    name: "grave-shift-skybox",
+    name: "project-gehenna-skybox",
     cubemap: true,
     width: w,
     height: h,

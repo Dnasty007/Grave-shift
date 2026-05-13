@@ -7,7 +7,11 @@
 
 import { type ModId, MOD_SHOP_PRICES } from "./LoadoutStore";
 
-const STORAGE_KEY = "grave-shift-account-v1";
+const STORAGE_KEY = "project-gehenna-account-v1";
+const LEGACY_STORAGE_KEYS = [
+  "lazarus-protocol-account-v1",
+  "grave-shift-account-v1"
+] as const;
 
 /* ── XP level table ──────────────────────────────────────────────────────── */
 
@@ -235,21 +239,45 @@ export class PlayerAccount {
 
   private load(): AccountData {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      let raw = localStorage.getItem(STORAGE_KEY);
+      let fromLegacy = false;
+      if (!raw) {
+        for (const key of LEGACY_STORAGE_KEYS) {
+          raw = localStorage.getItem(key);
+          if (raw) {
+            fromLegacy = true;
+            break;
+          }
+        }
+      }
       if (!raw) return buildDefault();
       const parsed = JSON.parse(raw) as Partial<AccountData>;
       if (parsed.version !== 1) return buildDefault();
-      return {
+      const merged: AccountData = {
         version: 1,
         totalXp: typeof parsed.totalXp === "number" ? parsed.totalXp : 0,
         souls: typeof parsed.souls === "number" ? parsed.souls : 0,
         ownedMods: Array.isArray(parsed.ownedMods) ? (parsed.ownedMods as ModId[]) : [],
         highestRound: typeof parsed.highestRound === "number" ? parsed.highestRound : 0,
         totalKills: typeof parsed.totalKills === "number" ? parsed.totalKills : 0,
-        weaponKillCounts: (typeof parsed.weaponKillCounts === "object" && parsed.weaponKillCounts && !Array.isArray(parsed.weaponKillCounts))
-          ? parsed.weaponKillCounts as Partial<Record<string, number>>
-          : {}
+        weaponKillCounts:
+          typeof parsed.weaponKillCounts === "object" &&
+          parsed.weaponKillCounts &&
+          !Array.isArray(parsed.weaponKillCounts)
+            ? (parsed.weaponKillCounts as Partial<Record<string, number>>)
+            : {}
       };
+      if (fromLegacy) {
+        try {
+          for (const key of LEGACY_STORAGE_KEYS) {
+            localStorage.removeItem(key);
+          }
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+        } catch {
+          /* ignore */
+        }
+      }
+      return merged;
     } catch {
       return buildDefault();
     }

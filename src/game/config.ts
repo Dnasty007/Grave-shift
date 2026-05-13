@@ -1,5 +1,5 @@
 /**
- * Central tuning for Grave Shift.
+ * Central tuning for Project Gehenna.
  *
  * • **MAP_CONFIG** — Imported world (`Map.ts`, open-world branches elsewhere): GLB path/transform,
  *   spawn, zombie ring, CPU vertical terrain ray + cling + HUD “Drop to ground”.

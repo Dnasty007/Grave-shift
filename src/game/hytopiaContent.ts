@@ -4,7 +4,7 @@
  * **Upstream references** (clone paths are local; do not commit machine-specific dirs):
  *
  * 1. **`hytopia` SDK** (npm package / GitHub `hytopiagg/sdk`, e.g. local `sdk-main`) — server runtime,
- *    `server.d.ts`, `docs/`, and **`boilerplate/assets/map.json`** + `boilerplate/assets/ui/`. Grave Shift
+ *    `server.d.ts`, `docs/`, and **`boilerplate/assets/map.json`** + `boilerplate/assets/ui/`. Project Gehenna
  *    does not run this server in-browser; use it for API docs, versioning, and refreshing the small
  *    boilerplate map (`boilerplateMapJson` below). Last reviewed: SDK **0.15.1**.
  * 2. **`sdk-examples`** (e.g. `big-world`) — large worlds, sample `index.ts`, extra assets. Typical sync:

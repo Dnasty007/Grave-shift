@@ -1,6 +1,6 @@
-# Grave Shift
+# Project Gehenna
 
-**Grave Shift** is a **browser-first, first-person survival shooter** we are
+**Project Gehenna** is a **browser-first, first-person survival shooter** we are
 building in the spirit of **Call of Duty: World at War Zombies**—the slow push of
 rounds, the pressure to keep moving and aiming clean, points for kills, and
 that “one more wave” loop. We are **not** cloning maps or assets; we want the

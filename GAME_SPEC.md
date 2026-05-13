@@ -1,4 +1,4 @@
-# Grave Shift Spec
+# Project Gehenna — design spec
 
 ## Fantasy
 
