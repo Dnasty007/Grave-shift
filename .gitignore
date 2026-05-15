@@ -1,12 +1,17 @@
 node_modules/
 dist/
+index.mjs
+
+# Open-source browser client (clone via npm run play-local); large monorepo — not committed
+hytopia-client/
 
 # Local Cursor / review tooling (do not publish)
 .video-review/
 .claude/
+debug-agent*.log
 
-# Huge Mineways exports — add locally next to the OBJ, then npm run convert-map
-public/maps/*.obj
-public/maps/*.glb
-public/maps/*.mtl
-public/maps/*.png
+# Huge Mineways exports (legacy PlayCanvas tree)
+legacy-playcanvas-client/public/maps/*.obj
+legacy-playcanvas-client/public/maps/*.glb
+legacy-playcanvas-client/public/maps/*.mtl
+legacy-playcanvas-client/public/maps/*.png

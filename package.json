@@ -1,21 +1,31 @@
 {
   "name": "project-gehenna",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview",
-    "check": "tsc --noEmit",
-    "convert-map": "obj2gltf -i public/maps/world.obj -o public/maps/world.glb -b"
+    "build": "hytopia build",
+    "prestart": "node scripts/print-local-play-hint.mjs",
+    "start": "hytopia start",
+    "predev": "node scripts/print-local-play-hint.mjs",
+    "dev": "hytopia start",
+    "dev:8081": "node scripts/run-hytopia-dev.mjs 8081",
+    "dev:8082": "node scripts/run-hytopia-dev.mjs 8082",
+    "stop": "node scripts/stop-local-dev.mjs",
+    "play-local": "node scripts/play-local.mjs",
+    "check-server": "node scripts/check-game-server.mjs",
+    "run": "hytopia run",
+    "package": "hytopia package",
+    "upgrade-project": "hytopia upgrade-project",
+    "upgrade-assets-library": "hytopia upgrade-assets-library"
   },
   "dependencies": {
-    "playcanvas": "^2.18.0"
+    "hytopia": "^0.15.2"
   },
   "devDependencies": {
-    "obj2gltf": "^3.2.0",
-    "typescript": "^5.8.3",
-    "vite": "^6.3.5"
+    "typescript": "^5.8.3"
+  },
+  "optionalDependencies": {
+    "@hytopia.com/assets": "^0.4.11"
   }
 }
