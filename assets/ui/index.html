@@ -56,11 +56,13 @@
 
   /* Screens */
   var menuScreen, hudScreen;
+  var lethalHud, lethalNameEl, lethalChargesEl;
 
   /* HUD elements */
   var healthBar, healthVal, hostilesVal, scoreVal;
   var roundTracker, waveBannerText, waveBanner;
   var weaponName, ammoMag, ammoReserve, weaponCaliber, reloadBar;
+  var damageFlash;   // full-screen red hit flash + shake layer (COD feel)
 
   /* State */
   var waveBannerTimer = null;
@@ -71,6 +73,9 @@
   var _uiReadyPokes = 0;
   /** True while #pause-overlay is shown during gameplay (Esc). */
   var _pauseOpen = false;
+  /** Active screen shake RAF handle for cleanup */
+  var _shakeRaf = 0;
+  var _shakeUntil = 0;
 
   /* ── Sub-screen navigation ────────────────────────────── */
   /* Explicit list so we never rely on querySelectorAll or CSS cascade */
@@ -327,6 +332,21 @@
     }
   };
   document.addEventListener('keydown', window._pauseEscOld, true);
+
+  /* Lethal throw — re-bind on each UI script run (window flag survives innerHTML reload). */
+  if (window._gehLethalKeyOld) {
+    try { document.removeEventListener('keydown', window._gehLethalKeyOld, true); } catch(eL0) {}
+  }
+  window._gehLethalKeyOld = function _lethalKbd(e) {
+    if (e.repeat || e.code !== 'KeyG') return;
+    var hs = q('hud-screen');
+    if (!hs || hs.style.display === 'none') return;
+    var pause = q('pause-overlay');
+    if (pause && pause.style.display !== 'none') return;
+    e.preventDefault();
+    if (typeof hytopia !== 'undefined') hytopia.sendData({ type: 'gehennaUseLethal' });
+  };
+  document.addEventListener('keydown', window._gehLethalKeyOld, true);
 
   function initPauseSettingsSliders() {
     bindSlider('pause-setting-mouse-sens',  'pause-setting-mouse-sens-val',  'mouseSensitivity',       100, fmtMult);
@@ -596,6 +616,15 @@
   }
 
   function showDeathScreen(data) {
+    // Clear any in-progress hit reaction (flash/shake) the moment we die
+    if (damageFlash) {
+      damageFlash.style.transition = 'none';
+      damageFlash.style.opacity = '0';
+      damageFlash.style.transform = 'none';
+    }
+    if (_shakeRaf) { cancelAnimationFrame(_shakeRaf); _shakeRaf = 0; }
+    _shakeUntil = 0;
+
     var kills   = typeof data.kills           === 'number' ? data.kills           : 0;
     var wave    = typeof data.wave            === 'number' ? data.wave            : 0;
     var shots   = typeof data.shotsFired      === 'number' ? data.shotsFired      : 0;
@@ -722,7 +751,7 @@
 
   function buildDefaultLoadouts() {
     return [
-      { id:0, name:'Alpha',   specialAbility:null, mod:null, primary:'pistol',     lethal:null },
+      { id:0, name:'Alpha',   specialAbility:null, mod:null, primary:'pistol',     lethal:'frag' },
       { id:1, name:'Bravo',   specialAbility:null, mod:null, primary:'pistol',     lethal:null },
       { id:2, name:'Charlie', specialAbility:null, mod:null, primary:'autoPistol', lethal:null },
       { id:3, name:'Delta',   specialAbility:null, mod:null, primary:'pistol',     lethal:null },
@@ -991,6 +1020,7 @@
         updateHostiles(data.hostiles);
         updateScore(data.score);
         updateWeapon(data.weapon, data.magAmmo, data.reserveAmmo, data.caliber, data.reloadFraction);
+        updateLethal(data.lethalName, data.lethalCharges);
         return;
       }
 
@@ -998,6 +1028,11 @@
        * Gehenna run HP (zombie damage) and look like bogus "regen" when they overwrite the HUD. */
 
       if (data.type === 'runEnd') { showDeathScreen(data); return; }
+
+      if (data.type === 'playerHit') {
+        triggerPlayerHitFeedback(data.damage || 35, !!data.isDog);
+        return;
+      }
 
       if (data.type === 'souls' && typeof data.value === 'number') {
         try { localStorage.setItem(SOULS_KEY, String(data.value)); } catch(e) {}
@@ -1036,6 +1071,10 @@
     ammoReserve    = q('ammo-reserve');
     weaponCaliber  = q('weapon-caliber');
     reloadBar      = q('reload-bar-fill');
+    lethalHud      = q('lethal-hud');
+    lethalNameEl   = q('lethal-name');
+    lethalChargesEl = q('lethal-charges');
+    damageFlash    = q('damage-flash');
 
     installGehennaHytopiaDataRouter();
 
@@ -1255,22 +1294,18 @@
     if (menuScreen) menuScreen.style.display = (name === 'menu') ? 'flex' : 'none';
     if (hudScreen)  hudScreen.style.display  = (name === 'hud')  ? 'block' : 'none';
 
-    /* Show/hide first-person weapon visual */
-    var wpnWrap = q('weapon-visual-wrap');
-    if (wpnWrap) {
-      if (name === 'hud') {
-        wpnWrap.classList.remove('hidden');
-        _wpnPrevMag = -1;  /* reset so first hud packet doesn't trigger false fire */
-      } else {
-        wpnWrap.classList.add('hidden');
-        wpnWrap.classList.remove('firing', 'reloading');
-      }
-    }
-
     /* When returning to menu, always reset to the title sub-screen */
     if (name === 'menu') {
       showSubScreen('sub-title');
       startMenuMusic();
+      // Hard clear any active hit flash or shake when leaving the game
+      if (damageFlash) {
+        damageFlash.style.transition = 'none';
+        damageFlash.style.opacity = '0';
+        damageFlash.style.transform = 'none';
+      }
+      if (_shakeRaf) { cancelAnimationFrame(_shakeRaf); _shakeRaf = 0; }
+      _shakeUntil = 0;
     } else if (name === 'hud') {
       stopMenuMusic();
     }
@@ -1296,38 +1331,6 @@
     if (scoreVal) scoreVal.textContent = typeof n === 'number' ? n.toLocaleString() : '0';
   }
 
-  /* ── Weapon visual state ───────────────────────────────── */
-  var _wpnPrevMag = -1;         // -1 = uninitialised (never fire on first hud packet)
-  var _wpnFireTimer = null;
-  var _wpnReloadTimer = null;
-
-  function _wpnTriggerFire() {
-    var wrap  = q('weapon-visual-wrap');
-    var flash = q('muzzle-flash');
-    if (!wrap || !flash) return;
-    /* Recoil */
-    wrap.classList.remove('firing', 'reloading');
-    void wrap.offsetWidth;        // force reflow to restart animation
-    wrap.classList.add('firing');
-    clearTimeout(_wpnFireTimer);
-    _wpnFireTimer = setTimeout(function() { wrap.classList.remove('firing'); }, 320);
-    /* Muzzle flash */
-    flash.classList.remove('flash');
-    void flash.offsetWidth;
-    flash.classList.add('flash');
-    setTimeout(function() { flash.classList.remove('flash'); }, 120);
-  }
-
-  function _wpnTriggerReload(durationMs) {
-    var wrap = q('weapon-visual-wrap');
-    if (!wrap) return;
-    wrap.classList.remove('firing', 'reloading');
-    void wrap.offsetWidth;
-    wrap.classList.add('reloading');
-    clearTimeout(_wpnReloadTimer);
-    _wpnReloadTimer = setTimeout(function() { wrap.classList.remove('reloading'); }, durationMs || 1050);
-  }
-
   function updateWeapon(name, mag, reserve, caliber, reloadFrac) {
     if (weaponName)    weaponName.textContent    = name    || '—';
     if (ammoMag)       ammoMag.textContent        = typeof mag     === 'number' ? String(mag)     : '—';
@@ -1336,23 +1339,17 @@
 
     var rf = typeof reloadFrac === 'number' ? reloadFrac : 0;
     if (reloadBar) {
-      reloadBar.style.width = (Math.max(0, Math.min(1, rf)) * 100) + '%';
+      reloadBar.style.width = Math.round(Math.max(0, Math.min(1, rf)) * 100) + '%';
       reloadBar.style.opacity = rf > 0 ? '1' : '0';
     }
+  }
 
-    /* ── Weapon animations ─────────────────────────────── */
-    if (typeof mag === 'number') {
-      if (_wpnPrevMag >= 0 && mag < _wpnPrevMag && rf === 0) {
-        /* Mag decreased without a reload fraction → player fired */
-        _wpnTriggerFire();
-      }
-      /* Reload in progress: trigger once when rf first goes > 0 */
-      if (rf > 0 && _wpnPrevMag !== -999) {
-        _wpnTriggerReload(1050);
-        _wpnPrevMag = -999;  // sentinel: currently reloading, don't re-trigger
-      } else if (rf === 0) {
-        _wpnPrevMag = mag;
-      }
+  function updateLethal(name, charges) {
+    var hasLethal = (typeof charges === 'number' && charges > 0) || !!name;
+    if (lethalHud) lethalHud.classList.toggle('is-active', hasLethal);
+    if (lethalNameEl) lethalNameEl.textContent = name || '';
+    if (lethalChargesEl) {
+      lethalChargesEl.textContent = typeof charges === 'number' ? String(charges) : '0';
     }
   }
 
@@ -1380,6 +1377,154 @@
       waveBannerTimer = setTimeout(function () {
         if (waveBanner) waveBanner.classList.remove('is-visible');
       }, 3200);
+    }
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     COD-STYLE PLAYER HIT FEEDBACK (red flash + screen shake + sound)
+     Called when server sends { type: "playerHit", damage, isDog }
+  ═══════════════════════════════════════════════════════════ */
+
+  function triggerPlayerHitFeedback(damage, isDog) {
+    if (!damageFlash) return;
+
+    var vignetteOn = (cfg && cfg.damageVignette !== false);
+    var shakeOn    = (cfg && cfg.screenShake !== false);
+
+    // 1) RED SCREEN FLASH + VIGNETTE (the "you are taking damage" gut punch)
+    if (vignetteOn) {
+      var base = isDog ? 0.78 : 0.58;
+      var extra = Math.min(0.28, (damage || 35) / 140);
+      var peak = Math.min(0.92, base + extra);
+
+      // Kill any previous transition and slam to full intensity
+      damageFlash.style.transition = 'none';
+      damageFlash.style.opacity = String(peak);
+      damageFlash.style.background = isDog
+        ? 'radial-gradient(ellipse at 50% 46%, rgba(200,18,18,0.0) 28%, rgba(135,4,4,0.92) 76%)'
+        : 'radial-gradient(ellipse at 50% 48%, rgba(185,12,12,0.0) 32%, rgba(125,6,6,0.82) 78%)';
+
+      // Force style application then fade out
+      void damageFlash.offsetWidth;
+      damageFlash.style.transition = 'opacity 340ms cubic-bezier(.22,.02,.26,1)';
+      damageFlash.style.opacity = '0';
+    }
+
+    // 2) SCREEN SHAKE (strong for dogs, solid for regulars — feels like real hits)
+    if (shakeOn) {
+      var shakeStrength = isDog ? 1.0 : 0.72;
+      // Scale a little with damage but cap it
+      shakeStrength *= Math.min(1.15, 0.75 + ((damage || 35) / 90));
+      var dur = isDog ? 240 : 175;
+      applyScreenShake(shakeStrength, dur);
+    }
+
+    // 3) LOCAL 2D HIT SOUND (crisp body impact — server also plays a positional one)
+    // We do a tiny WebAudio "thump" here so it is always loud and immediate (2D).
+    // The server one adds world position feel.
+    playHitThump(isDog ? 0.95 : 0.72, isDog);
+  }
+
+  function applyScreenShake(strength, durationMs) {
+    if (!damageFlash) return;
+    if (_shakeRaf) { cancelAnimationFrame(_shakeRaf); _shakeRaf = 0; }
+
+    var start = performance.now();
+    _shakeUntil = start + (durationMs || 180);
+
+    function shakeStep(now) {
+      if (now > _shakeUntil || !damageFlash) {
+        if (damageFlash) damageFlash.style.transform = 'none';
+        _shakeRaf = 0;
+        return;
+      }
+      var t = (now - start) / (durationMs || 180);
+      var decay = Math.max(0, 1 - t * 1.08);
+      var s = strength * decay;
+
+      // Small random translation + tiny rotation (very COD-like on a red layer)
+      var tx = (Math.random() - 0.5) * s * 11;
+      var ty = (Math.random() - 0.5) * s * 8.5;
+      var rot = (Math.random() - 0.5) * s * 1.6;
+
+      damageFlash.style.transform = 'translate(' + tx.toFixed(1) + 'px,' + ty.toFixed(1) + 'px) rotate(' + rot.toFixed(2) + 'deg)';
+
+      _shakeRaf = requestAnimationFrame(shakeStep);
+    }
+    _shakeRaf = requestAnimationFrame(shakeStep);
+
+    // Safety cleanup in case RAF is slow
+    setTimeout(function () {
+      if (damageFlash && performance.now() > _shakeUntil) {
+        damageFlash.style.transform = 'none';
+      }
+    }, (durationMs || 180) + 60);
+  }
+
+  function playHitThump(volume, isDog) {
+    // Tiny synthesized body-hit sound (no asset dependency, always instant)
+    // Low sine + short noise = meaty "thwack" or "armor hit" feel
+    try {
+      var AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      var ctx = new AudioCtx();
+      var t0 = ctx.currentTime;
+
+      // Low sine "body" thump
+      var osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = isDog ? 46 : 58;
+
+      var gain = ctx.createGain();
+      gain.gain.value = (volume || 0.7) * 0.9;
+
+      // Quick envelope
+      var env = ctx.createGain();
+      env.gain.value = 1.0;
+
+      // Short noise layer for "flesh/slap" texture
+      var noise = ctx.createBufferSource();
+      var buffer = ctx.createBuffer(1, ctx.sampleRate * 0.09, ctx.sampleRate);
+      var data = buffer.getChannelData(0);
+      for (var i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      noise.buffer = buffer;
+
+      var noiseFilter = ctx.createBiquadFilter();
+      noiseFilter.type = 'bandpass';
+      noiseFilter.frequency.value = isDog ? 720 : 920;
+      noiseFilter.Q.value = 1.6;
+
+      var noiseGain = ctx.createGain();
+      noiseGain.gain.value = (volume || 0.7) * (isDog ? 0.55 : 0.42);
+
+      // Routing
+      var masterGain = ctx.createGain();
+      masterGain.gain.value = 0.85;
+
+      osc.connect(env);
+      env.connect(gain);
+      gain.connect(masterGain);
+
+      noise.connect(noiseFilter);
+      noiseFilter.connect(noiseGain);
+      noiseGain.connect(masterGain);
+
+      masterGain.connect(ctx.destination);
+
+      // Envelopes
+      var dur = isDog ? 0.18 : 0.135;
+      env.gain.setValueAtTime(1.0, t0);
+      env.gain.linearRampToValueAtTime(0.0001, t0 + dur);
+
+      noiseGain.gain.setValueAtTime(noiseGain.gain.value, t0);
+      noiseGain.gain.linearRampToValueAtTime(0.0001, t0 + dur * 0.9);
+
+      osc.start(t0);
+      noise.start(t0);
+      osc.stop(t0 + dur + 0.02);
+      noise.stop(t0 + dur + 0.02);
+    } catch (e) {
+      // Silent fail — audio is a nice-to-have
     }
   }
 })();
@@ -1756,6 +1901,7 @@
               <li><span class="controls-keys"><kbd>LMB</kbd></span><span>Fire</span></li>
               <li><span class="controls-keys"><kbd>RMB</kbd></span><span>Aim Down Sights</span></li>
               <li><span class="controls-keys"><kbd>R</kbd></span><span>Reload</span></li>
+              <li><span class="controls-keys"><kbd>G</kbd></span><span>Throw Lethal</span></li>
               <li><span class="controls-keys"><kbd>E</kbd> / <kbd>F</kbd></span><span>Interact / Buy</span></li>
               <li><span class="controls-keys"><kbd>Q</kbd> / <kbd>Tab</kbd></span><span>Cycle Weapons</span></li>
               <li><span class="controls-keys"><kbd>1</kbd>–<kbd>5</kbd></span><span>Equip Weapon Slot</span></li>
@@ -2083,40 +2229,6 @@
     <span class="round-value" id="round-tracker">0</span>
   </div>
 
-  <!-- FPS WEAPON VISUAL — lower-right corner, rendered in screen space -->
-  <div id="weapon-visual-wrap" class="weapon-visual-wrap" aria-hidden="true">
-    <!-- Muzzle flash: brief white burst at barrel tip -->
-    <div id="muzzle-flash" class="muzzle-flash" aria-hidden="true"></div>
-    <!-- SVG weapon silhouette (AK/AR style) -->
-    <svg id="weapon-svg" class="weapon-svg" viewBox="0 0 320 120" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <!-- Stock -->
-      <rect x="255" y="52" width="62" height="14" rx="4" fill="#1a1a1a"/>
-      <rect x="268" y="66" width="46" height="8" rx="2" fill="#111"/>
-      <!-- Receiver / body -->
-      <rect x="140" y="44" width="120" height="20" rx="3" fill="#1e1e1e"/>
-      <!-- Top rail -->
-      <rect x="138" y="40" width="118" height="6" rx="2" fill="#161616"/>
-      <!-- Pistol grip -->
-      <polygon points="215,64 228,64 224,88 210,88" fill="#1a1a1a"/>
-      <!-- Trigger guard -->
-      <path d="M200 66 Q205 80 215 80 L215 68" fill="none" stroke="#333" stroke-width="2"/>
-      <!-- Barrel -->
-      <rect x="2" y="52" width="142" height="8" rx="2" fill="#222"/>
-      <!-- Gas tube / top-rail extension -->
-      <rect x="60" y="48" width="80" height="4" rx="1" fill="#1c1c1c"/>
-      <!-- Handguard -->
-      <rect x="60" y="56" width="80" height="12" rx="2" fill="#1c1c1c"/>
-      <!-- Magazine -->
-      <polygon points="185,64 200,64 196,104 182,104" fill="#252525"/>
-      <!-- Front sight -->
-      <rect x="24" y="44" width="4" height="10" rx="1" fill="#333"/>
-      <!-- Muzzle device -->
-      <rect x="2" y="49" width="18" height="14" rx="2" fill="#1a1a1a"/>
-      <!-- Barrel hole highlight -->
-      <circle cx="4" cy="56" r="3" fill="#0a0a0a"/>
-    </svg>
-  </div>
-
   <!-- BOTTOM RIGHT: Ammo panel -->
   <div class="ammo-panel">
     <div class="ammo-weapon-name" id="weapon-name">—</div>
@@ -2129,6 +2241,15 @@
     <div class="ammo-reload-track">
       <div class="ammo-reload-fill" id="reload-bar-fill" style="opacity:0"></div>
     </div>
+  </div>
+
+  <!-- Lethal indicator (above ammo panel) -->
+  <div id="lethal-hud" aria-hidden="true">
+    <span class="lethal-icon">◎</span>
+    <span class="lethal-body">
+      <span class="lethal-name" id="lethal-name">FRAG</span>
+      <span class="lethal-charges" id="lethal-charges">0</span>
+    </span>
   </div>
 
   <!-- MOBILE CONTROLS (only visible on touch devices) -->
@@ -2334,6 +2455,15 @@
       </div>
     </div>
   </div><!-- /#quit-confirm-overlay -->
+
+  <!-- ═══════════════════════════════════════════════════════════
+       DAMAGE HIT FEEDBACK OVERLAY (red flash + vignette + shake layer)
+       Triggered by server "playerHit" when zombies land melee attacks.
+       Respects Settings > Damage Vignette and Screen Shake.
+  ═══════════════════════════════════════════════════════════ -->
+  <div id="damage-flash"
+       style="position:fixed;inset:0;pointer-events:none;z-index:9997;opacity:0;background:radial-gradient(ellipse at 50% 48%, rgba(185,12,12,0.0) 32%, rgba(125,6,6,0.82) 78%);mix-blend-mode:screen;"
+       aria-hidden="true"></div>
 
 </div>
 
@@ -3307,86 +3437,48 @@
   box-shadow: 0 0 6px rgba(204,68,0,0.5);
 }
 
-/* ══════════════════════════════════════════════════════════
-   FPS WEAPON VISUAL
-══════════════════════════════════════════════════════════ */
-
-/* Wrapper — anchored bottom-right, slightly inset from ammo panel */
-.weapon-visual-wrap {
+/* ── Lethal HUD (bottom-right, above ammo) ───────────────── */
+#lethal-hud {
   position: absolute;
-  right: -20px;                         /* bleed off-screen for realism */
-  bottom: -12px;
-  width: 380px;
-  height: 160px;
-  pointer-events: none;
-  z-index: 12;
-  /* Idle sway */
-  animation: wpn-idle 4s ease-in-out infinite;
-  transform-origin: 90% 90%;
-}
-
-/* Gentle idle bob */
-@keyframes wpn-idle {
-  0%   { transform: translateY(0px) rotate(0deg); }
-  25%  { transform: translateY(-2px) rotate(-0.4deg); }
-  50%  { transform: translateY(-3px) rotate(0deg); }
-  75%  { transform: translateY(-1px) rotate(0.3deg); }
-  100% { transform: translateY(0px) rotate(0deg); }
-}
-
-/* Fire recoil: added via JS by toggling class */
-.weapon-visual-wrap.firing {
-  animation: wpn-fire 0.18s ease-out forwards, wpn-idle 4s ease-in-out 0.18s infinite;
-}
-@keyframes wpn-fire {
-  0%   { transform: translateY(0)  translateX(0)  rotate(0deg); }
-  30%  { transform: translateY(-14px) translateX(4px) rotate(-3deg); }
-  100% { transform: translateY(0)  translateX(0)  rotate(0deg); }
-}
-
-/* Reload: weapon tilts down */
-.weapon-visual-wrap.reloading {
-  animation: wpn-reload 1s ease-in-out forwards;
-}
-@keyframes wpn-reload {
-  0%   { transform: translateY(0)   rotate(0deg); }
-  25%  { transform: translateY(40px) rotate(8deg); }
-  75%  { transform: translateY(40px) rotate(8deg); }
-  100% { transform: translateY(0)   rotate(0deg); }
-}
-
-/* Hidden when menu is showing (toggled by setScreen) */
-.weapon-visual-wrap.hidden { display: none !important; }
-
-/* SVG weapon */
-.weapon-svg {
-  width: 100%;
-  height: 100%;
-  filter: drop-shadow(0 4px 12px rgba(0,0,0,0.85)) drop-shadow(0 0 3px rgba(0,0,0,0.6));
-  opacity: 0.92;
-}
-
-/* Muzzle flash */
-.muzzle-flash {
-  position: absolute;
-  left: 8px;
-  top: 14px;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: radial-gradient(circle, #fff 0%, #ffd040 40%, rgba(255,160,0,0) 75%);
+  right: calc(18px + env(safe-area-inset-right, 0px));
+  bottom: calc(118px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 10px;
+  border-top: 1px solid rgba(153, 0, 0, 0.45);
+  border-right: 1px solid rgba(153, 0, 0, 0.2);
+  border-bottom: 1px solid rgba(153, 0, 0, 0.2);
+  border-left: 2px solid rgba(153, 0, 0, 0.55);
+  background: rgba(8, 8, 12, 0.82);
   pointer-events: none;
   opacity: 0;
-  transform: scale(0.3);
-  z-index: 13;
+  transition: opacity 220ms ease;
 }
-.muzzle-flash.flash {
-  animation: muzzle-burst 0.1s ease-out forwards;
+#lethal-hud.is-active { opacity: 1; }
+.lethal-icon {
+  font-size: 1.1rem;
+  color: rgba(153, 0, 0, 0.7);
+  line-height: 1;
 }
-@keyframes muzzle-burst {
-  0%   { opacity: 1;   transform: scale(0.6); }
-  40%  { opacity: 0.9; transform: scale(1.2); }
-  100% { opacity: 0;   transform: scale(0.5); }
+.lethal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.lethal-name {
+  font-size: 0.52rem;
+  letter-spacing: 0.35em;
+  text-transform: uppercase;
+  color: rgba(229, 229, 229, 0.55);
+}
+.lethal-charges {
+  font-size: 1.4rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  color: #e5e5e5;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Mobile controls ─────────────────────────────────────── */

@@ -8,27 +8,29 @@ import base from "./vite.config.js";
 /** host:port for ?join= (no scheme); must match PLAY_LOCAL_JOIN in play-local.mjs */
 const joinHost = process.env.PLAY_LOCAL_JOIN ?? "localhost:8080";
 
-/** Re-print the full client URL after Vite’s own startup lines (easy to miss the pre-spawn logs). */
-function playLocalUrlBanner() {
+function playLocalClientUrl(server) {
+  const addr = server.httpServer?.address();
+  const port =
+    typeof addr === "object" && addr && "port" in addr
+      ? addr.port
+      : server.config.server.port ?? 5174;
+  let host = server.config.server.host;
+  if (host === true || host === "0.0.0.0" || host === "::") host = "127.0.0.1";
+  if (!host || host === false) host = "127.0.0.1";
+  return `http://${host}:${port}/?join=${joinHost}`;
+}
+
+/** Replace Vite's bare Local URL so terminal links include ?join=. */
+function playLocalJoinPrintUrls() {
   return {
-    name: "play-local-url-banner",
+    name: "play-local-join-print-urls",
     configureServer(server) {
-      const httpServer = server.httpServer;
-      if (!httpServer) return;
-      httpServer.once("listening", () => {
-        const addr = httpServer.address();
-        const port =
-          typeof addr === "object" && addr && "port" in addr
-            ? addr.port
-            : server.config.server.port ?? 5174;
-        let host = server.config.server.host;
-        if (host === true || host === "0.0.0.0" || host === "::") host = "127.0.0.1";
-        if (!host || host === false) host = "127.0.0.1";
-        const url = `http://${host}:${port}/?join=${joinHost}`;
+      server.printUrls = () => {
+        const url = playLocalClientUrl(server);
+        server.config.logger.info(`  ➜  Local:   ${url}`);
         console.log("\n--- Project Gehenna (local client) ---");
-        console.log(`Open in browser:  ${url}`);
-        console.log("(Vite’s “Local:” line omits ?join= — use the line above.)\n");
-      });
+        console.log(`Open in browser:  ${url}\n`);
+      };
     },
   };
 }
@@ -61,5 +63,5 @@ function playLocalJoinRedirect() {
 }
 
 export default mergeConfig(base, {
-  plugins: [playLocalJoinRedirect(), playLocalUrlBanner()],
+  plugins: [playLocalJoinRedirect(), playLocalJoinPrintUrls()],
 });

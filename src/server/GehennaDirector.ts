@@ -1,4 +1,5 @@
 import {
+  Audio,
   ColliderShape,
   Entity,
   EntityModelAnimationLoopMode,
@@ -18,6 +19,20 @@ import {
   MAP_SPAWN,
   normalizeMapId
 } from "./mapConfig";
+import {
+  consumeLethalCharge,
+  hasLethalCharges,
+  LETHAL_BLAST,
+  LETHAL_HUD_LABEL,
+  parseDeployLoadout,
+  startingLethalCharges,
+  type DeployLoadout,
+  type LethalId
+} from "./loadoutConfig";
+
+import { VFX } from "./VFX";
+import { WeaponManager } from "./WeaponManager";
+import { LethalSystem } from "./lethals/LethalSystem";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants (mirrors legacy GAME_CONFIG — see legacy-playcanvas-client/src/game/config.ts)
@@ -29,7 +44,7 @@ const Z_HEALTH_PER_WAVE    = 16;
 const Z_BASE_SPEED         = 1.35;
 const Z_SPEED_PER_WAVE     = 0.09;
 const Z_ATTACK_RANGE       = 1.35;   // metres
-const Z_ATTACK_DAMAGE      = 7;      // HP per melee hit
+const Z_ATTACK_DAMAGE      = 35;     // HP per melee hit (3 hits = death without Jug, like classic COD Zombies). Triggers heavy red flash + shake + hit sound.
 const Z_ATTACK_COOLDOWN_S  = 1.1;   // seconds between zombie melee swings
 
 // Wave director
@@ -70,8 +85,21 @@ const HEAD_RADIUS   =  0.24;
 // Eye position relative to `PlayerEntity.position` (capsule centre in HYTOPIA).
 // Y=0.5 is the value used in the official HYTOPIA zombies-fps SDK example.
 // Forward=0.5 matches the official shoot-origin nudge (prevents self-intersection).
-const PLAYER_EYE_Y_OFFSET        = 0.5;
+/** Eye height above capsule center (official SDK uses 0.5; slight bump reduces in-head clipping). */
+const PLAYER_EYE_Y_OFFSET        = 0.58;
 const PLAYER_EYE_FORWARD_OFFSET  = 0.5;
+/** Third-person orbit behind the player (+Z is back in Hytopia). */
+const THIRD_PERSON_CAMERA_OFFSET: Vector3Like = { x: 0, y: 0.4, z: 2.5 };
+// First-person camera base position tuned for proper held weapon feel (COD Zombies style).
+// These values position the weapon viewmodel naturally in the player's hands.
+const FIRST_PERSON_CAMERA_BASE_OFFSET: Vector3Like = {
+  x: 0.0,
+  y: 0.52,   // eye height
+  z: 0.28,   // forward position — brings the held gun into view
+};
+
+// Base forward offset for first person.
+const FIRST_PERSON_FORWARD_OFFSET = 0.12;
 const RAY_MAX_RANGE = 100;
 
 // Hitscan sphere geometry — zombie dog (capsule halfHeight=0.18 radius=0.22 → centre 0.40m above feet)
@@ -88,7 +116,7 @@ const DOG_BASE_HEALTH    = 45;
 const DOG_HEALTH_PER_WAVE = 8;
 const DOG_SPEED          = 3.2;  // faster than zombies
 const DOG_ATTACK_RANGE   = 1.1;
-const DOG_ATTACK_DAMAGE  = 10;
+const DOG_ATTACK_DAMAGE  = 50;   // Much scarier than regular zombies (2 hits can kill) — triggers heavier red flash + shake + lower-pitched hit sound
 const DOG_ATTACK_COOLDOWN_S = 0.75;
 
 // Economy (legacy GAME_CONFIG.pointsPerHit/Kill/Headshot)
@@ -110,6 +138,30 @@ const MYSTERY_COOLDOWN_MS = 30_000;
 const INTERACT_RADIUS              = 3.2;
 const PROP_PAP_POS: Vector3Like    = { x: -12, y: 3.8, z: -8 };
 const PROP_MYSTERY_POS: Vector3Like = { x: -30, y: 3.8, z: 4  };
+
+// Test Map decorations
+const TEDDY_POSITIONS: Vector3Like[] = [
+  { x: -8,  y: 1.2, z: 20 },
+  { x: -12, y: 1.2, z: 22 },
+  { x: -6,  y: 1.2, z: 17 },
+];
+
+// Explosion safety: Never destroy blocks at or below this Y to protect the main floor of the map.
+const WORLD_FLOOR_PROTECTION_Y = 1;
+
+// C4 Jump perk (fun rocket jump when standing on your own C4)
+const C4_JUMP_RADIUS = 3.8;
+const C4_JUMP_FORCE = 32;        // very strong upward when right on top
+const C4_JUMP_HORIZONTAL = 7;    // allows some creative movement (directional jumps)
+
+// Lethal Testing Pickups (physical objects on Test Map)
+// Spread out and away from the teddy bears for easy access.
+const LETHAL_PICKUP_XZ: { x: number; z: number; lethalId: LethalId; label: string; model: string; scale: number }[] = [
+  { x: -18, z: 12, lethalId: "frag",    label: "Frag Grenade",   model: "models/particles/green-sphere.glb", scale: 1.1 },
+  { x: -20, z: 8,  lethalId: "n74st",   label: "N 74 ST (Sticky)", model: "models/particles/sticky-bomb.glb",  scale: 1.0 },
+  { x: -16, z: 5,  lethalId: "satchel", label: "C4 Satchel",     model: "models/particles/c4-block.glb",     scale: 1.25 },
+  { x: -22, z: 10, lethalId: "smine44", label: "S-Mine 44",      model: "models/particles/smine.glb",        scale: 1.15 },
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UI payload types
@@ -137,6 +189,8 @@ export type GehennaHudPayload = {
   caliber?: string;
   reloadFraction?: number;
   wave?: number;
+  lethalCharges?: number;
+  lethalName?: string;
 };
 
 export type GehennaRunEndPayload = {
@@ -152,11 +206,18 @@ export type GehennaRunEndPayload = {
   headshots: number;
 };
 
+export type GehennaPlayerHitPayload = {
+  type: "playerHit";
+  damage: number;
+  isDog?: boolean;
+};
+
 export type GehennaUiPayload =
   | GehennaScreenPayload
   | GehennaRoundPayload
   | GehennaHudPayload
-  | GehennaRunEndPayload;
+  | GehennaRunEndPayload
+  | GehennaPlayerHitPayload;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal types
@@ -171,6 +232,9 @@ type ZombieRow = {
 };
 
 type MysteryWeaponDef = { id: string; name: string; mag: number; reserve: number };
+
+// Legacy PendingLethalBlast removed — now using real LethalSystem with physics Entities
+// (frag bounces, sticky sticks, C4 plants + hold det, smine44 proximity pop + shrapnel)
 
 const MYSTERY_POOL: MysteryWeaponDef[] = [
   { id: "pistol",  name: "M1911",       mag: 12, reserve:  60 },
@@ -220,6 +284,14 @@ export class GehennaDirector {
   // Identity
   private _hostPlayer: Player | null = null;
   private _currentMapId: GehennaMapId = DEFAULT_MAP_ID;
+  private _deployLoadout: DeployLoadout = { lethal: null };
+
+  // Lethal (from deploy loadout)
+  private _activeLethal: LethalId | null = null;
+  private _lethalCharges   = 0;
+
+  /** Real physics-based lethal throwables (replaces the old static PendingLethalBlast timer hack) */
+  private _lethalSystem!: LethalSystem; // assigned in applyLoadoutLethals during resetRunState
 
   // Zombie horde
   private _zombies: ZombieRow[] = [];
@@ -227,6 +299,14 @@ export class GehennaDirector {
   // Props
   private _papEntity: Entity | null = null;
   private _mysteryEntity: Entity | null = null;
+  private _teddyEntities: Entity[] = [];
+  private _launchedTeddies: { entity: Entity; despawnAt: number }[] = [];
+  private _lethalPickupEntities: { entity: Entity; lethalId: LethalId; label: string }[] = [];
+  private _teddyVictorySongPlayed = false; // Only play "The Piston Stops" once per run when all 3 teddies are shot
+  private _teddyVictorySong: any = null; // Store the Audio instance so we can stop it on menu / new game
+
+  // For Test Map: track blocks we destroyed this run so we can restore them on restart
+  private _destroyedBlocksThisRun: { pos: Vector3Like; originalBlockId: number }[] = [];
 
   // ── Wave director state ──────────────────────────────────────────────────────
   private _round             = 0;
@@ -267,6 +347,14 @@ export class GehennaDirector {
   private _prevMl = false;
   private _prevF  = false;
   private _prevR  = false;
+  private _prevC  = false;
+  /** Edge detect for lethal throw (wire key **n**; local client maps **G** → n). */
+  private _prevN  = false;
+  /** Timestamp of the last accepted lethal-use — used to debounce the double-fire from UI + input poll. */
+  private _lethalUsedAtMs = 0;
+
+  /** Desktop: press C to toggle first / third person during a run. */
+  private _thirdPersonActive = false;
 
   // ── Mystery chest ────────────────────────────────────────────────────────────
   private _mysteryBusyUntilMs     = 0;
@@ -312,12 +400,16 @@ export class GehennaDirector {
   }
 
   detach(): void {
+    // Restore Test Map before we lose the world reference
+    this.restoreAndClearTestMapBlocks();
+
     if (this._world) {
       this._world.loop.off(WorldLoopEvent.TICK_START, this._onTick);
       this._world = null;
     }
     this.clearZombies();
     this.destroyPropEntities();
+    if (this._lethalSystem) this._lethalSystem.reset();
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -335,9 +427,15 @@ export class GehennaDirector {
     }
   }
 
-  handleStartGame(world: World, player: Player, mapIdRaw?: unknown): void {
+  handleStartGame(
+    world: World,
+    player: Player,
+    mapIdRaw?: unknown,
+    loadoutRaw?: unknown
+  ): void {
     const mapId = normalizeMapId(mapIdRaw);
     this._currentMapId = mapId;
+    this._deployLoadout = parseDeployLoadout(loadoutRaw);
 
     if (this._sessionStarted && this.isSessionHost(player)) {
       // Already running — just re-sync (e.g. player clicked Deploy twice)
@@ -350,15 +448,24 @@ export class GehennaDirector {
     this._sessionStarted = true;
     this._hostPlayer = player;
 
+    this.stopTeddyVictorySong(); // Stop any victory song when starting a fresh game
     this.resetRunState();
     this.teleportHostToMapSpawn(world, player, mapId);
     this.spawnWorldProps(world);
     this.pushScreenToPlayer(player, "hud");
     this.syncHud(player);
 
+    if (this._activeLethal && this._lethalCharges > 0) {
+      world.chatManager.sendPlayerMessage(
+        player,
+        `Lethal ready: ${LETHAL_HUD_LABEL[this._activeLethal]} ×${this._lethalCharges} — press G to throw`,
+        "CCAAFF"
+      );
+    }
+
     const tip = mapId === "test_zone"
-      ? "Test Zone active. Wave 1 inbound. LMB fire · R reload · F at machines."
-      : "Wave 1 inbound. Hold position. LMB fire · R reload · F at machines.";
+      ? "Test Zone active — 999 lethals, press G to throw. LMB fire · R reload · F interact · C camera."
+      : "Wave 1 inbound. LMB fire · R reload · G lethal · F interact · C toggle 1st/3rd person.";
     world.chatManager.sendPlayerMessage(player, tip, "00FFAA");
   }
 
@@ -370,8 +477,26 @@ export class GehennaDirector {
       this.clearZombies();
       this.destroyPropEntities();
       this.resetWaveDirector();
+      if (this._lethalSystem) this._lethalSystem.reset();
+
+      // Restore Test Map blocks if the host left mid-run (prevents permanently destroyed trees for the next session)
+      this.restoreAndClearTestMapBlocks();
     }
+    WeaponManager.onPlayerLeft(player);
     void world;
+  }
+
+  /**
+   * Public helper for reconnects / late joins during an active run.
+   * Ensures the weapon entity is attached to the hand anchor again.
+   */
+  public reattachWeaponForPlayer(player: Player): void {
+    const pe = this._world ? this.getHostPlayerEntity(this._world, player) : undefined;
+    if (pe && this._world) {
+      // On HUD push we ensure the weapon is attached (in case it wasn't already from spawn).
+      // This is now mostly a safety net since we attach at spawn time.
+      WeaponManager.ensureWeaponAttached(player, pe, this._world);
+    }
   }
 
   resyncScreenForUiMount(player: Player): void {
@@ -426,6 +551,13 @@ export class GehennaDirector {
     this.clearZombies();
     this.destroyPropEntities();
     this.resetWaveDirector();
+    this.stopTeddyVictorySong(); // Stop victory song when returning to main menu
+
+    // IMPORTANT: actually put the blocks back before we forget which ones we deleted.
+    // This fixes the bug where "destroy trees → die → Main Menu → New Game on Test Map"
+    // left the trees permanently gone (the tracking list was discarded without restoring).
+    this.restoreAndClearTestMapBlocks();
+
     this._sessionStarted = false;
     this._round = 0;
 
@@ -465,6 +597,8 @@ export class GehennaDirector {
     const mapId = this._currentMapId;
     this._sessionStarted = true;
     this._round = 0;
+
+    this.stopTeddyVictorySong(); // Stop victory song on restart / new game
     this.resetRunState();
     this.teleportHostToMapSpawn(world, player, mapId);
     this.spawnWorldProps(world);
@@ -483,16 +617,62 @@ export class GehennaDirector {
     player.ui.sendData({ type: "screen", value: screen } satisfies GehennaScreenPayload);
     player.ui.lockPointer(screen === "hud");
     if (screen === "hud") {
-      // Exact camera setup from official HYTOPIA zombies-fps SDK example.
-      // setViewModelHiddenNodes hides those nodes on the first-person view model only.
-      // No setForwardOffset / setFilmOffset — those are NOT in the SDK example and break the camera.
-      player.camera.setMode(PlayerCameraMode.FIRST_PERSON);
-      player.camera.setOffset({ x: 0, y: PLAYER_EYE_Y_OFFSET, z: 0 });
-      player.camera.setViewModelHiddenNodes(["head", "neck", "torso", "leg_right", "leg_left"]);
+      this.applyGameplayCamera(player);
     } else {
+      // Menu state - force third person with full player model visible
+      this._thirdPersonActive = false;
+      const pe = this._world ? this.getHostPlayerEntity(this._world, player) : undefined;
+
       player.camera.setMode(PlayerCameraMode.THIRD_PERSON);
       player.camera.setOffset({ x: 0, y: 0, z: 0 });
+
+      if (pe && this._world) {
+        WeaponManager.equipThirdPerson(player, pe, this._world);
+      }
     }
+  }
+
+  /** First- or third-person camera while in a run (HUD). */
+  private applyGameplayCamera(player: Player): void {
+    const pe = this._world ? this.getHostPlayerEntity(this._world, player) : undefined;
+
+    if (this._thirdPersonActive) {
+      // Third person: show full player model + weapon attached to hand
+      player.camera.setMode(PlayerCameraMode.THIRD_PERSON);
+      player.camera.setOffset(THIRD_PERSON_CAMERA_OFFSET);
+
+      if (pe && this._world) {
+        WeaponManager.equipThirdPerson(player, pe, this._world);
+      }
+      return;
+    }
+
+    // First person
+    player.camera.setMode(PlayerCameraMode.FIRST_PERSON);
+    player.camera.setOffset(FIRST_PERSON_CAMERA_BASE_OFFSET);
+    player.camera.setForwardOffset(FIRST_PERSON_FORWARD_OFFSET);
+
+    if (pe && this._world) {
+      // Ensure weapon is attached, then hide body so only arms + weapon are visible
+      WeaponManager.ensureWeaponAttached(player, pe, this._world);
+      WeaponManager.equipFirstPerson(player, pe);
+    }
+  }
+
+  private tickCameraToggle(host: Player, world: World): void {
+    const c     = !!(host.input as { c?: boolean }).c;
+    const cRise = c && !this._prevC;
+    this._prevC = c;
+
+    if (!cRise) return;
+
+    this._thirdPersonActive = !this._thirdPersonActive;
+    this.applyGameplayCamera(host);
+    world.chatManager.sendPlayerMessage(
+      host,
+      this._thirdPersonActive ? "Third-person camera" : "First-person camera",
+      "AAAAAA"
+    );
   }
 
   pushRoundToPlayer(player: Player): void {
@@ -522,6 +702,10 @@ export class GehennaDirector {
       caliber:        this._packTier > 0 ? `PaP ×${this._packTier}` : "9×19mm",
       reloadFraction: Math.max(0, Math.min(1, reloadFrac)),
       wave:           this._round,
+      lethalCharges:  this._activeLethal ? this._lethalCharges : undefined,
+      lethalName:     this._activeLethal
+        ? LETHAL_HUD_LABEL[this._activeLethal]
+        : undefined,
       ...overrides
     };
     player.ui.sendData(payload);
@@ -548,7 +732,26 @@ export class GehennaDirector {
     // endRun() inside tickZombies sets _sessionStarted = false — bail if so
     if (!this._sessionStarted) return;
 
+    this.tickCameraToggle(host, w);
+    if (!this._thirdPersonActive && host.camera.mode === PlayerCameraMode.FIRST_PERSON) {
+      const attachedWeapon = WeaponManager.getAttachedWeapon(host);
+      const baseWeaponPos = WeaponManager.getWeaponBaseLocalPosition(host) ?? { x: 0, y: 0, z: 0 };
+
+      WeaponManager.tickFirstPersonSway(
+        host,
+        pe,
+        dtS,
+        FIRST_PERSON_CAMERA_BASE_OFFSET,
+        FIRST_PERSON_FORWARD_OFFSET,
+        attachedWeapon,
+        baseWeaponPos
+      );
+    }
     this.tickGun(host, pe, w);
+    this.tickLethalInput(host, w, dtS);
+    this.tickLethalBlasts(w, host, pe, dtS);
+    this.tickTeddyBears(w);
+    this.tickLethalPickups(w, pe);
     this.tickInteract(host, pe, w);
     this.maybeThrottleHud(host, 80);
   }
@@ -645,10 +848,16 @@ export class GehennaDirector {
     const ang  = Math.random() * Math.PI * 2;
     const dist = SPAWN_RING_MIN + Math.random() * (SPAWN_RING_MAX - SPAWN_RING_MIN);
 
+    const targetX = base.x + Math.sin(ang) * dist;
+    const targetZ = base.z + Math.cos(ang) * dist;
+
+    // Find actual ground level so zombies don't spawn floating in the air
+    const groundY = this.findGroundY(world, targetX, targetZ);
+
     const spawnPos: Vector3Like = {
-      x: base.x + Math.sin(ang) * dist,
-      y: base.y,
-      z: base.z + Math.cos(ang) * dist
+      x: targetX,
+      y: groundY + 0.1, // small extra offset for the capsule collider + model
+      z: targetZ
     };
 
     const zEnt = new Entity({
@@ -777,7 +986,7 @@ export class GehennaDirector {
       const len = Math.hypot(dx, dz);
 
       const attackRange  = row.isDog ? DOG_ATTACK_RANGE   : Z_ATTACK_RANGE;
-      const attackDmg    = row.isDog ? DOG_ATTACK_DAMAGE   : Z_ATTACK_DAMAGE;
+      const attackDmg    = row.isDog ? DOG_ATTACK_DAMAGE   : Z_ATTACK_DAMAGE; // 35 / 50 dmg → very punishing without Jug perk
       const attackCooldown = row.isDog ? DOG_ATTACK_COOLDOWN_S : Z_ATTACK_COOLDOWN_S;
 
       if (len <= attackRange) {
@@ -788,6 +997,30 @@ export class GehennaDirector {
           row.attackCooldownS = attackCooldown;
           this._health = Math.max(0, this._health - attackDmg);
           hudDirty = true;
+
+          // COD-style hit feedback — "getting hit Hurts HARD"
+          // Send to client for red flash + screen shake (respects user settings)
+          try {
+            host.ui.sendData({
+              type: "playerHit",
+              damage: attackDmg,
+              isDog: row.isDog,
+            } satisfies GehennaPlayerHitPayload);
+          } catch {}
+
+          // Positional hit sound (meaty punch using existing short clip pitched down)
+          try {
+            const pe = this.getHostPlayerEntity(world, host);
+            const hitVol = row.isDog ? 0.95 : 0.78;
+            const hitRate = row.isDog ? 0.52 : 0.62;
+            const hitSnd = new Audio({
+              uri: "audio/ui/ui-click.mp3",
+              volume: hitVol,
+              playbackRate: hitRate,
+              position: pe ? pe.position : undefined,
+            });
+            hitSnd.play(world);
+          } catch {}
 
           if (this._health <= 0) {
             this.endRun(world, host);
@@ -806,9 +1039,8 @@ export class GehennaDirector {
             z: dz * inv * row.speed
           });
 
-          // Rotate the entity to face the player on the XZ plane.
-          // atan2(dx, dz) gives the Y-axis angle from +Z toward the player.
-          const angle = Math.atan2(dx, dz);
+          // Hytopia identity faces -Z; atan2(dx, dz) aligns +Z toward the player, so add π.
+          const angle = Math.atan2(dx, dz) + Math.PI;
           const hs = Math.sin(angle / 2);
           const hc = Math.cos(angle / 2);
           row.entity.setRotation({ x: 0, y: hs, z: 0, w: hc });
@@ -817,6 +1049,319 @@ export class GehennaDirector {
     }
 
     if (hudDirty) this.syncHud(host);
+  }
+
+  /** Poll Hytopia player input for lethal (G → n). Tap = throw/place. Hold (for C4) = detonate all. */
+  private tickLethalInput(host: Player, world: World, dtS: number): void {
+    const nPress = !!(host.input as { n?: boolean }).n;
+    const nRise  = nPress && !this._prevN;
+    this._prevN  = nPress;
+
+    if (nRise) {
+      this.handleUseLethal(world, host);
+    }
+
+    // C4 hold-to-detonate.
+    // Skip the very first frame of a press (nRise frame) so the throw from handleUseLethal
+    // above isn't immediately treated as the start of a hold → detonation on the same tick.
+    if (this._lethalSystem && this._activeLethal === "satchel" && !nRise) {
+      this._lethalSystem.tickC4Hold(dtS, world, host);
+    }
+  }
+
+  /** Throw / plant the equipped lethal. Real Entity physics now live in LethalSystem. */
+  handleUseLethal(world: World, player: Player): void {
+    if (!this._sessionStarted || !this.isSessionHost(player)) return;
+
+    // 200 ms debounce — prevents the double-throw that happens when BOTH the
+    // server input-poll (tickLethalInput) AND a UI keydown message both fire on
+    // the same G press.
+    const now = performance.now();
+    if (now - this._lethalUsedAtMs < 200) return;
+    this._lethalUsedAtMs = now;
+
+    const pe = this.getHostPlayerEntity(world, player);
+    if (!pe || !this._activeLethal) return;
+
+    if (!hasLethalCharges(this._currentMapId, this._lethalCharges)) {
+      world.chatManager.sendPlayerMessage(player, "No lethal charges left.", "FF6666");
+      return;
+    }
+
+    // Compute a good throw origin (camera eye + forward). The system will add arc.
+    const origin = this.getShotOrigin(player, pe);
+    const dir    = this.getShotDirection(player);
+
+    // NOTE: C4 tap-to-detonate is intentionally removed.
+    // Real C4 is a plant-then-hold device: tap G to THROW the brick, HOLD G to detonate.
+    // Detonation is handled exclusively by tickC4Hold (0.65 s hold threshold).
+
+    const res = this._lethalSystem.useLethal(world, player, pe, this._activeLethal, origin, dir);
+    if (!res.ok) {
+      if (res.reason) world.chatManager.sendPlayerMessage(player, res.reason, "FFAA66");
+      return;
+    }
+
+    // Spend the charge (server authority)
+    this._lethalCharges = consumeLethalCharge(this._currentMapId, this._lethalCharges);
+
+    const label = LETHAL_HUD_LABEL[this._activeLethal];
+    const spec = LETHAL_BLAST[this._activeLethal];
+    if (this._activeLethal !== "satchel" && this._activeLethal !== "smine44") {
+      world.chatManager.sendPlayerMessage(
+        player,
+        `${label} thrown — ${spec.fuseSeconds.toFixed(1)}s fuse`,
+        "CCAAFF"
+      );
+    } else if (this._activeLethal === "smine44") {
+      world.chatManager.sendPlayerMessage(player, `${label} planted — arming...`, "AACCFF");
+    } else {
+      world.chatManager.sendPlayerMessage(player, `${label} placed (${this._lethalSystem.getActiveC4Count()}/4). Hold G to detonate.`, "FFCC88");
+    }
+
+    this.syncHud(player);
+  }
+
+  /** Delegate to real LethalSystem (bouncing nades, sticky, C4, smines + shrapnel) */
+  private tickLethalBlasts(world: World, host: Player, pe: PlayerEntity | undefined, dtS = 1 / 60): void {
+    if (!this._lethalSystem) return;
+    // Gather live zombie positions so S-Mine proximity check triggers on enemies, not the player.
+    const zombiePositions = this._zombies
+      .filter(z => z.entity.isSpawned)
+      .map(z => z.entity.position);
+    this._lethalSystem.tick(dtS, world, host, pe?.position, zombiePositions);
+  }
+
+  /** Updates any teddy bears that have been shot and are flying away. */
+  private tickTeddyBears(world: World): void {
+    if (this._launchedTeddies.length === 0) return;
+
+    const now = performance.now();
+    const remaining: { entity: Entity; despawnAt: number }[] = [];
+
+    for (const item of this._launchedTeddies) {
+      if (now >= item.despawnAt) {
+        if (item.entity.isSpawned) item.entity.despawn();
+      } else {
+        remaining.push(item);
+      }
+    }
+
+    this._launchedTeddies = remaining;
+  }
+
+  /** Auto-equip lethal pickups when the player runs into them (Test Map only) */
+  private tickLethalPickups(world: World, pe: PlayerEntity): void {
+    if (this._currentMapId !== "test_zone" || this._lethalPickupEntities.length === 0) return;
+
+    const p = pe.position;
+    const PICKUP_RADIUS = 1.6; // how close you need to get
+
+    for (let i = this._lethalPickupEntities.length - 1; i >= 0; i--) {
+      const pickup = this._lethalPickupEntities[i];
+      if (!pickup.entity?.isSpawned) {
+        this._lethalPickupEntities.splice(i, 1);
+        continue;
+      }
+
+      const dist = this.distXZ(p, pickup.entity.position);
+      if (dist < PICKUP_RADIUS) {
+        // Auto equip (only notify if it actually changed)
+        const changed = this._activeLethal !== pickup.lethalId;
+        this._activeLethal = pickup.lethalId;
+        this._lethalCharges = 999;
+
+        if (changed) {
+          world.chatManager.sendPlayerMessage(
+            this._hostPlayer!,
+            `Equipped: ${pickup.label} (999 charges)`,
+            "00FFAA"
+          );
+          this.syncHud(this._hostPlayer!);
+        }
+
+        // Do NOT remove the pickup — they stay forever on the test map for repeated testing
+        break; // only process one per frame
+      }
+    }
+  }
+
+  /** Launches a teddy bear into the sky with spin when shot. */
+  private launchTeddyBear(teddy: Entity, world: World): void {
+    // Remove from alive list
+    this._teddyEntities = this._teddyEntities.filter(t => t !== teddy);
+
+    // Play a nice "ding/ring" sound at the teddy's position
+    try {
+      const ding = new Audio({
+        uri: "audio/ui/ui-click.mp3",
+        volume: 0.95,
+        playbackRate: 1.75, // makes the click sound higher and more "ding"-like
+        position: teddy.position,
+      });
+      ding.play(world);
+    } catch (err) {
+      // Audio is optional — don't break the feature if it fails
+    }
+
+    try {
+      // Allow physics to take over
+      teddy.setType(RigidBodyType.DYNAMIC);
+
+      // Strong upward launch + some randomness
+      const up = 16 + Math.random() * 5;
+      const sideways = (Math.random() - 0.5) * 3;
+      teddy.setLinearVelocity({
+        x: sideways,
+        y: up,
+        z: (Math.random() - 0.5) * 3,
+      });
+
+      // Wild spinning
+      teddy.setAngularVelocity({
+        x: (Math.random() - 0.5) * 14,
+        y: (Math.random() - 0.5) * 22,
+        z: (Math.random() - 0.5) * 14,
+      });
+    } catch (e) {
+      // Fallback: just despawn if something goes wrong with rigidbody
+      if (teddy.isSpawned) teddy.despawn();
+      return;
+    }
+
+    // === VICTORY SONG TRIGGER ===
+    // If this was the last teddy, play "The Piston Stops" once this run
+    if (this._teddyEntities.length === 0 && !this._teddyVictorySongPlayed) {
+      this._teddyVictorySongPlayed = true;
+      this.playTeddyVictorySong(world);
+    }
+
+    // Schedule cleanup
+    this._launchedTeddies.push({
+      entity: teddy,
+      despawnAt: performance.now() + 1600,
+    });
+  }
+
+  /** Plays the special victory song once when all 3 teddy bears have been shot on the test map. */
+  private playTeddyVictorySong(world: World): void {
+    try {
+      const song = new Audio({
+        uri: "audio/easter/the-piston-stops.mp3",
+        volume: 0.9,
+        loop: false,
+      });
+      song.play(world);
+      this._teddyVictorySong = song; // Store reference so we can stop it later
+      console.log("[Teddy Victory] Playing The Piston Stops.mp3");
+    } catch (err) {
+      console.warn("[Teddy Victory] Failed to play victory song:", err);
+    }
+  }
+
+  /** Stops the teddy victory song (used when going to menu or starting a new game) */
+  private stopTeddyVictorySong(): void {
+    if (this._teddyVictorySong) {
+      try {
+        this._teddyVictorySong.pause();
+      } catch (e) {}
+      this._teddyVictorySong = null;
+    }
+  }
+
+  /** Public so the server entrypoint can re-apply the correct sky/lighting profile when the player chooses or restarts on a specific map (e.g. test_zone). */
+  getCurrentMapId(): GehennaMapId {
+    return this._currentMapId;
+  }
+
+  private applyExplosionDamage(
+    world: World,
+    host: Player,
+    center: Vector3Like,
+    blastRadius: number,
+    damageMultiplier: number
+  ): void {
+    // VFX is handled by LethalSystem._detonate before calling this fn — don't duplicate it here.
+    const baseDamage = 300 * damageMultiplier;
+    let hudDirty     = false;
+
+    for (const row of [...this._zombies]) {
+      if (!row.entity.isSpawned) continue;
+
+      const zp   = row.entity.position;
+      const bodyY = zp.y + (row.isDog ? DOG_BODY_CENTER_Y : BODY_CENTER_Y);
+      const dist  = Math.hypot(zp.x - center.x, bodyY - center.y, zp.z - center.z);
+      if (dist > blastRadius) continue;
+
+      const falloff = Math.max(0.25, 1 - dist / blastRadius);
+      const dmg     = baseDamage * falloff;
+      row.hp       -= dmg;
+      hudDirty      = true;
+
+      if (row.hp <= 0) {
+        const deathPos: Vector3Like = { x: zp.x, y: bodyY, z: zp.z };
+        VFX.deathExplosion(world, deathPos);
+        if (row.entity.isSpawned) row.entity.despawn();
+        this._zombies = this._zombies.filter((z) => z !== row);
+        this._kills += 1;
+        this._points += PTS_KILL;
+      } else {
+        this._points += PTS_HIT;
+      }
+    }
+
+    if (hudDirty) this.syncHud(host);
+
+    // === Block Destruction & Physics Debris ===
+    // Scale destruction based on explosive power so C4 feels devastating
+    // while normal grenades do light environmental damage.
+    const isHeavyExplosion = damageMultiplier >= 1.5 || blastRadius >= 12;
+
+    if (blastRadius >= 5) {  // even smaller explosives can do *some* light damage
+      let destructionRadius = blastRadius * (isHeavyExplosion ? 0.7 : 0.4);
+      let debrisDensity = isHeavyExplosion ? 0.82 : 0.22;   // Most blocks become flying pieces on C4, few on normal nades
+
+      const safeMinY = Math.max(WORLD_FLOOR_PROTECTION_Y, Math.floor(center.y - blastRadius * 0.5));
+
+      this.destroyBlocksInRadius(world, center, destructionRadius, safeMinY, debrisDensity);
+    }
+
+    // === C4 Jump Perk ===
+    // If the player is standing right on their own C4 when it detonates, launch them high.
+    // This enables fun rocket-jump style movement and creative play.
+    if (damageMultiplier >= 1.4 && this._hostPlayer) {
+      const playerEntity = this.getHostPlayerEntity(world, host);
+      if (playerEntity?.isSpawned) {
+        const playerPos = playerEntity.position;
+        const dist = Math.hypot(
+          playerPos.x - center.x,
+          playerPos.y - center.y,
+          playerPos.z - center.z
+        );
+
+        if (dist < C4_JUMP_RADIUS) {
+          const closeness = 1 - (dist / C4_JUMP_RADIUS);
+          const upForce = C4_JUMP_FORCE * closeness;
+          const horizontalForce = C4_JUMP_HORIZONTAL * closeness;
+
+          // Direction away from the explosion center for creative movement
+          let dx = playerPos.x - center.x;
+          let dz = playerPos.z - center.z;
+          const hLen = Math.hypot(dx, dz) || 1;
+          dx /= hLen;
+          dz /= hLen;
+
+          playerEntity.setLinearVelocity({
+            x: dx * horizontalForce,
+            y: upForce,
+            z: dz * horizontalForce,
+          });
+
+          // Fun feedback
+          world.chatManager.sendPlayerMessage(host, "C4 Jump!", "FFAA00");
+        }
+      }
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -851,15 +1396,24 @@ export class GehennaDirector {
     // Blocked while reloading
     if (now < this._reloadUntilMs) return;
 
-    // Only process fresh trigger-pull
-    if (!mlRise) return;
+    // Full-auto: fire every tick LMB is held (rate limiter controls cadence)
+    if (!ml) return;
 
     // Rate limit
     if (now < this._nextFireAllowedMs) return;
 
-    // Dry fire
+    // Auto-reload on empty mag
     if (this._mag <= 0) {
-      world.chatManager.sendPlayerMessage(host, "Dry — press R to reload.", "CCCCCC");
+      if (this._reserve > 0) {
+        const need = this._magMax - this._mag;
+        const take = Math.min(need, this._reserve);
+        this._mag     += take;
+        this._reserve -= take;
+        this._reloadUntilMs = now + RELOAD_DURATION_MS;
+        this.syncHud(host);
+      } else {
+        world.chatManager.sendPlayerMessage(host, "Out of ammo!", "FF4444");
+      }
       return;
     }
 
@@ -868,13 +1422,88 @@ export class GehennaDirector {
     this._nextFireAllowedMs = now + FIRE_INTERVAL_MS;
     this._shotsFired += 1;
 
+    const eye = this.getShotOrigin(host, pe);
     const hit = this.sphereHitscan(host, pe);
+
+    // Play shoot animation + muzzle flash on the actual weapon entity
+    WeaponManager.triggerShootAnimation(pe);
+
+    const attachedWeapon = WeaponManager.getAttachedWeapon(host);
+    const def = WeaponManager.getCurrentWeaponDef();
+    const muzzleFlashOffset = def?.muzzleOffset ?? { x: 0, y: 0.05, z: -0.6 };
+
+    if (attachedWeapon) {
+      VFX.muzzleFlash(world, eye, attachedWeapon, muzzleFlashOffset);
+    } else {
+      VFX.muzzleFlash(world, eye);
+    }
+
     if (hit) {
       this._shotsHit += 1;
-      this.applyHitToZombie(hit.row, hit.headshot, world, host);
+      const impact: Vector3Like = {
+        x: eye.x + hit.dir.x * hit.t,
+        y: eye.y + hit.dir.y * hit.t,
+        z: eye.z + hit.dir.z * hit.t,
+      };
+      this.applyHitToZombie(hit.row, hit.headshot, world, host, impact);
+    }
+
+    // === Teddy bear shooting (Test Map fun feature) ===
+    if (this._currentMapId === "test_zone" && this._teddyEntities.length > 0) {
+      const dir = this.getShotDirection(host);
+      const TEDDY_HIT_RADIUS = 0.75;
+
+      for (let i = this._teddyEntities.length - 1; i >= 0; i--) {
+        const teddy = this._teddyEntities[i];
+        if (!teddy || !teddy.isSpawned) {
+          this._teddyEntities.splice(i, 1);
+          continue;
+        }
+
+        const tp = teddy.position;
+        // Simple closest-point distance from ray to teddy center
+        const ox = eye.x - tp.x;
+        const oy = eye.y - tp.y;
+        const oz = eye.z - tp.z;
+
+        const t = -(ox * dir.x + oy * dir.y + oz * dir.z);
+        const closestX = ox + dir.x * t;
+        const closestY = oy + dir.y * t;
+        const closestZ = oz + dir.z * t;
+
+        const distSq = closestX * closestX + closestY * closestY + closestZ * closestZ;
+
+        if (distSq < TEDDY_HIT_RADIUS * TEDDY_HIT_RADIUS) {
+          this.launchTeddyBear(teddy, world);
+          break; // only hit one per shot
+        }
+      }
     }
 
     this.syncHud(host);
+  }
+
+  private getShotOrigin(host: Player, pe: PlayerEntity): Vector3Like {
+    // Keep gameplay hitscan on the stable camera/eye origin while the attached
+    // weapon transform is still being tuned. Using the floating gun muzzle here
+    // makes bullets miss even when the crosshair is aimed correctly.
+    const { yaw } = host.camera.orientation;
+    const f = PLAYER_EYE_FORWARD_OFFSET;
+    return {
+      x: pe.position.x - Math.sin(yaw) * f,
+      y: pe.position.y + PLAYER_EYE_Y_OFFSET,
+      z: pe.position.z - Math.cos(yaw) * f,
+    };
+  }
+
+  private getShotDirection(host: Player): Vector3Like {
+    const { pitch, yaw } = host.camera.orientation;
+    const cp   = Math.cos(pitch);
+    const rawX = -Math.sin(yaw) * cp;
+    const rawY =  Math.sin(pitch);
+    const rawZ = -Math.cos(yaw) * cp;
+    const dlen = Math.hypot(rawX, rawY, rawZ) || 1;
+    return { x: rawX / dlen, y: rawY / dlen, z: rawZ / dlen };
   }
 
   /**
@@ -884,24 +1513,12 @@ export class GehennaDirector {
   private sphereHitscan(
     host: Player,
     pe: PlayerEntity
-  ): { row: ZombieRow; headshot: boolean } | null {
-    const { pitch, yaw } = host.camera.orientation;
-    const f = PLAYER_EYE_FORWARD_OFFSET;
-    const ox =
-      pe.position.x - Math.sin(yaw) * f;
-    const oy = pe.position.y + PLAYER_EYE_Y_OFFSET;
-    const oz =
-      pe.position.z - Math.cos(yaw) * f;
-
-    // Direction from camera pitch/yaw (already used in legacy codebase)
-    const cp   = Math.cos(pitch);
-    const rawX = -Math.sin(yaw) * cp;
-    const rawY =  Math.sin(pitch);
-    const rawZ = -Math.cos(yaw) * cp;
-    const dlen = Math.hypot(rawX, rawY, rawZ) || 1;
-    const dx   = rawX / dlen;
-    const dy   = rawY / dlen;
-    const dz   = rawZ / dlen;
+  ): { row: ZombieRow; headshot: boolean; t: number; dir: Vector3Like } | null {
+    const eye = this.getShotOrigin(host, pe);
+    const ox = eye.x;
+    const oy = eye.y;
+    const oz = eye.z;
+    const { x: dx, y: dy, z: dz } = this.getShotDirection(host);
 
     let bestT    = RAY_MAX_RANGE;
     let bestRow: ZombieRow | null = null;
@@ -943,23 +1560,35 @@ export class GehennaDirector {
       }
     }
 
-    return bestRow ? { row: bestRow, headshot: bestHead } : null;
+    return bestRow
+      ? { row: bestRow, headshot: bestHead, t: bestT, dir: { x: dx, y: dy, z: dz } }
+      : null;
   }
 
   private applyHitToZombie(
     row: ZombieRow,
     headshot: boolean,
     world: World,
-    host: Player
+    host: Player,
+    impact: Vector3Like
   ): void {
     const tierMul = Math.pow(PAP_DAMAGE_FACTOR, this._packTier);
     const baseDmg = Math.round(this._weaponDamage * tierMul);
     const dmg     = headshot ? Math.round(baseDmg * HEADSHOT_MULTIPLIER) : baseDmg;
 
     row.hp -= dmg;
+    VFX.bloodHit(world, impact, headshot);
 
     if (row.hp <= 0) {
       // ── Kill ──
+      const zp = row.entity.position;
+      const deathPos: Vector3Like = {
+        x: zp.x,
+        y: zp.y + (row.isDog ? DOG_BODY_CENTER_Y : BODY_CENTER_Y),
+        z: zp.z,
+      };
+      VFX.deathExplosion(world, deathPos);
+
       if (row.entity.isSpawned) row.entity.despawn();
       this._zombies = this._zombies.filter((z) => z !== row);
       this._kills += 1;
@@ -1015,6 +1644,7 @@ export class GehennaDirector {
     this.clearZombies();
     this.destroyPropEntities();
     this.resetWaveDirector();
+    if (this._lethalSystem) this._lethalSystem.reset();
 
     /* Stay on HUD until the client dismisses the death overlay: MAIN MENU (quit) or DEPLOY AGAIN (restart). */
     world.chatManager.sendPlayerMessage(host, "You went down. Run ended.", "FF4444");
@@ -1126,6 +1756,9 @@ export class GehennaDirector {
     this.destroyPropEntities();
     this.resetWaveDirector();
 
+    // Restore any blocks we destroyed on the Test Map so it resets fresh for the next run
+    this.restoreAndClearTestMapBlocks();
+
     this._health     = PLAYER_MAX_HEALTH;
     this._points     = 0;
     this._runStartMs = performance.now();
@@ -1149,13 +1782,40 @@ export class GehennaDirector {
     this._prevMl = false;
     this._prevF  = false;
     this._prevR  = false;
+    this._prevC  = false;
+    this._prevN  = false;
+    this._lethalUsedAtMs  = 0;
+    this._thirdPersonActive = false;
 
     this._mysteryBusyUntilMs     = 0;
     this._mysteryCooldownUntilMs = 0;
     this._pendingMysteryWeapon   = null;
 
+    this.applyLoadoutLethals();
+    if (this._lethalSystem) this._lethalSystem.reset();
+
+    // Reset teddy bear victory song so it can play again on next run
+    this._teddyVictorySongPlayed = false;
+
     // Wave 1 fires after 1.8 s
     this._intermissionTimer = WAVE_FIRST_INTERMISSION_S;
+  }
+
+  /** Grant starting lethal charges from the deploy loadout (all maps). */
+  private applyLoadoutLethals(): void {
+    this._activeLethal   = this._deployLoadout.lethal;
+
+    // On the Test Map, give the player EVERY lethal with 999 charges so they can freely test all of them
+    if (this._currentMapId === "test_zone") {
+      this._lethalCharges = 999; // They can switch lethals in the loadout and always have full charges
+    } else {
+      this._lethalCharges = startingLethalCharges(this._currentMapId, this._activeLethal);
+    }
+
+    // (Re)create lethal system bound to our explosion damage logic
+    this._lethalSystem = new LethalSystem(
+      (world, host, center, radius, mul) => this.applyExplosionDamage(world, host, center, radius, mul)
+    );
   }
 
   private resetWaveDirector(): void {
@@ -1193,11 +1853,86 @@ export class GehennaDirector {
       rigidBodyOptions: { type: RigidBodyType.FIXED }
     });
     this._mysteryEntity.spawn(world, PROP_MYSTERY_POS);
+
+    // Spawn Test Map specific decorations and testing tools
+    if (this._currentMapId === "test_zone") {
+      this.spawnTeddyBears(world);
+      this.spawnLethalPickups(world);
+    }
+  }
+
+  private spawnTeddyBears(world: World): void {
+    this._teddyEntities = [];
+
+    TEDDY_POSITIONS.forEach((pos, index) => {
+      const teddy = new Entity({
+        name:       `TeddyBear-${index + 1}`,
+        tag:        "gehenna-decoration",
+        modelUri:   "models/teddy_bear.glb",
+        modelScale: 1.0,
+        rigidBodyOptions: { type: RigidBodyType.FIXED }
+      });
+      teddy.spawn(world, pos);
+      this._teddyEntities.push(teddy);
+    });
+  }
+
+  /** Spawns physical lethal pickups around the Test Map for easy testing of all 4 lethals */
+  private spawnLethalPickups(world: World): void {
+    this._lethalPickupEntities = [];
+
+    LETHAL_PICKUP_XZ.forEach((data) => {
+      const groundY = this.findGroundY(world, data.x, data.z);
+      // Nice floating height above the actual floor
+      const spawnPos: Vector3Like = { x: data.x, y: groundY + 0.9, z: data.z };
+
+      const pickup = new Entity({
+        name:       `LethalPickup-${data.lethalId}`,
+        tag:        "gehenna-lethal-pickup",
+        modelUri:   data.model,
+        modelScale: data.scale,
+        rigidBodyOptions: { type: RigidBodyType.FIXED }
+      });
+      pickup.spawn(world, spawnPos);
+
+      this._lethalPickupEntities.push({
+        entity: pickup,
+        lethalId: data.lethalId,
+        label: data.label,
+      });
+    });
+
+    console.log("[Test Map] Spawned 4 floating lethal pickups");
+
+    // Send a message to the player
+    if (this._hostPlayer) {
+      world.chatManager.sendPlayerMessage(
+        this._hostPlayer,
+        "Test Map: 4 Lethal Pickups spawned (Frag / Sticky / C4 / S-Mine). Run into them to equip with 999 charges. They stay for repeated testing!",
+        "00FFAA"
+      );
+    }
   }
 
   private destroyPropEntities(): void {
     if (this._papEntity?.isSpawned)     this._papEntity.despawn();
     if (this._mysteryEntity?.isSpawned) this._mysteryEntity.despawn();
+
+    this._teddyEntities.forEach(t => {
+      if (t?.isSpawned) t.despawn();
+    });
+    this._teddyEntities = [];
+
+    this._launchedTeddies.forEach(item => {
+      if (item.entity?.isSpawned) item.entity.despawn();
+    });
+    this._launchedTeddies = [];
+
+    this._lethalPickupEntities.forEach(item => {
+      if (item.entity?.isSpawned) item.entity.despawn();
+    });
+    this._lethalPickupEntities = [];
+
     this._papEntity     = null;
     this._mysteryEntity = null;
   }
@@ -1280,5 +2015,168 @@ export class GehennaDirector {
         })
       }
     ).catch(() => {});
+  }
+
+  /**
+   * Finds the highest solid block at the given X/Z coordinates and returns
+   * a Y value so the zombie's feet sit on the ground instead of spawning in the air.
+   */
+  private findGroundY(world: World, x: number, z: number, startY = 50): number {
+    const cx = Math.floor(x);
+    const cz = Math.floor(z);
+
+    for (let y = startY; y >= -2; y--) {
+      try {
+        const blockId = world.chunkLattice.getBlockId({ x: cx, y, z: cz });
+        if (blockId !== 0) {
+          // Return a safe height above the block top.
+          // The zombie capsule + model needs a bit of extra clearance.
+          return y + 1.35;
+        }
+      } catch {
+        // Chunk may not be loaded yet — continue searching
+      }
+    }
+
+    return 1.0; // safe fallback
+  }
+
+  /**
+   * Destroys blocks in a radius around a point (used for C4/tree destruction etc.).
+   * This makes trees and other block structures destructible by big explosions.
+   */
+  private destroyBlocksInRadius(
+    world: World,
+    center: Vector3Like,
+    radius: number,
+    minY: number = WORLD_FLOOR_PROTECTION_Y,
+    debrisDensity: number = 0.33
+  ) {
+    const r = Math.ceil(radius);
+    let destroyed = 0;
+
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dz = -r; dz <= r; dz++) {
+          if (dx * dx + dy * dy + dz * dz > radius * radius) continue;
+
+          const pos = {
+            x: Math.floor(center.x + dx),
+            y: Math.floor(center.y + dy),
+            z: Math.floor(center.z + dz),
+          };
+
+          if (pos.y < minY) continue; // Protect the main floor so players don't fall through the map
+
+          try {
+            const blockId = world.chunkLattice.getBlockId(pos);
+            if (blockId !== 0) {
+              // Record destroyed blocks so we can restore them on Test Map restart
+              if (this._currentMapId === "test_zone") {
+                this._destroyedBlocksThisRun.push({
+                  pos: { ...pos },
+                  originalBlockId: blockId,
+                });
+              }
+
+              world.chunkLattice.setBlock(pos, 0); // 0 = air / remove block
+              destroyed++;
+
+              // Spawn physics debris based on the density for this explosion type
+              if (Math.random() < debrisDensity) {
+                this.spawnPhysicsDebris(world, pos, center);
+              }
+            }
+          } catch {
+            // Ignore out of bounds or unloaded chunks
+          }
+        }
+      }
+    }
+
+    if (destroyed > 0) {
+      console.log(`[Explosion] Destroyed ${destroyed} blocks in radius ${radius} (debris density: ${debrisDensity})`);
+    }
+  }
+
+  /**
+   * Spawns a small dynamic entity that behaves like a flying block chunk with real physics.
+   * This gives explosions that satisfying "blocks flying everywhere" feel.
+   */
+  private spawnPhysicsDebris(world: World, position: Vector3Like, explosionCenter: Vector3Like) {
+    const debris = new Entity({
+      name: "PhysicsDebris",
+      modelUri: "models/projectiles/fireball.gltf",
+      modelScale: 0.1 + Math.random() * 0.22,
+      rigidBodyOptions: {
+        type: RigidBodyType.DYNAMIC,
+      }
+    });
+
+    debris.spawn(world, position);
+
+    // Calculate explosion force direction
+    let dx = position.x - explosionCenter.x;
+    let dy = position.y - explosionCenter.y;
+    let dz = position.z - explosionCenter.z;
+
+    const len = Math.hypot(dx, dy, dz) || 1;
+    dx /= len;
+    dy /= len;
+    dz /= len;
+
+    const power = 7 + Math.random() * 9;
+    const upward = 4 + Math.random() * 5;
+
+    debris.setLinearVelocity({
+      x: dx * power + (Math.random() - 0.5) * 3,
+      y: dy * power * 0.5 + upward,
+      z: dz * power + (Math.random() - 0.5) * 3,
+    });
+
+    // Give it nice tumbling
+    debris.setAngularVelocity({
+      x: (Math.random() - 0.5) * 22,
+      y: (Math.random() - 0.5) * 28,
+      z: (Math.random() - 0.5) * 22,
+    });
+
+    // Auto cleanup after a few seconds
+    setTimeout(() => {
+      try {
+        if (debris.isSpawned) debris.despawn();
+      } catch {}
+    }, 2800 + Math.random() * 2200);
+  }
+
+  /**
+   * Ensures any blocks destroyed on the Test Map this run are put back, then clears the tracking list.
+   * Safe to call on full run-end paths (quit to menu, host leaves, fresh start).
+   * Intentionally NOT called from endRun() — the death screen still needs the list so that
+   * "Restart" / Deploy Again can restore the world for the new attempt.
+   */
+  private restoreAndClearTestMapBlocks(): void {
+    if (this._currentMapId === "test_zone" && this._world) {
+      this.restoreTestMapBlocks(this._world);
+    }
+    this._destroyedBlocksThisRun = [];
+  }
+
+  /**
+   * Restores blocks that were destroyed during this run on the Test Map.
+   * This makes the Test Map reset cleanly when the player dies and restarts.
+   */
+  private restoreTestMapBlocks(world: World): void {
+    if (this._destroyedBlocksThisRun.length === 0) return;
+
+    let restored = 0;
+    for (const entry of this._destroyedBlocksThisRun) {
+      try {
+        world.chunkLattice.setBlock(entry.pos, entry.originalBlockId);
+        restored++;
+      } catch {}
+    }
+
+    console.log(`[Test Map] Restored ${restored} blocks after run reset`);
   }
 }

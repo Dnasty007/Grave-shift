@@ -54,14 +54,14 @@ copyFileSync(
   join(clientDir, "play-local-vite.config.mjs")
 );
 
+run("node", [join(root, "scripts", "patch-hytopia-client-lethal.mjs")], root, "lethal input patch");
+
 const openUrl = `http://127.0.0.1:${clientPort}/?join=${joinHost}`;
 
 console.log("\n--- HYTOPIA local client ---");
 console.log(`URL:  http://127.0.0.1:${clientPort}/?join=${joinHost}`);
 console.log(`Game: run npm run dev in grave-shift (target server: ${joinHost}).`);
-console.log(
-  `Tip: Vite's "Local:" line omits ?join= — this script adds a redirect on / so that link still works. Prefer: ${openUrl}`
-);
+console.log(`Tip: Use the "Local:" line or this URL (both include ?join=): ${openUrl}`);
 console.log(
   `\n*** HTTPS cert (once per browser): open ${certUrl}, accept the self-signed cert, see JSON, then use the client URL. See docs/LOCAL_CLIENT_PREVIEW.md.\n`
 );

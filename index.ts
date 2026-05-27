@@ -20,7 +20,13 @@ import {
 } from "hytopia";
 import worldMap from "./assets/map.json";
 import { GehennaDirector } from "./src/server/GehennaDirector";
-import { DEFAULT_MAP_ID, MAP_SPAWN } from "./src/server/mapConfig";
+import {
+  DEFAULT_MAP_ID,
+  MAP_SPAWN,
+  normalizeMapId,
+  type GehennaMapId
+} from "./src/server/mapConfig";
+import { WeaponManager } from "./src/server/WeaponManager";
 
 /** Co-located with bundled `index.mjs` so writes work in Hytopia/local runs. */
 const AGENT_DEBUG_LOG = path.join(
@@ -49,33 +55,40 @@ const PLAYER_SPAWN = MAP_SPAWN[DEFAULT_MAP_ID];
  * The npm package `@hytopia.com/assets` only vendors `partly-cloudy`, but the
  * HYTOPIA client resolves `skyboxes/*` against the platform CDN at runtime —
  * official SDK samples (e.g. Frontiers) use `skyboxes/black` for night / void.
- *
- * Toggle {@link GEHENNA_SKY_PROFILE} between `"night"` and `"day"`.
  */
 const SKYBOX_DAY = "skyboxes/partly-cloudy";
 const SKYBOX_NIGHT = "skyboxes/black";
 
-/** `"night"` = industrial-yard mood; `"day"` = previous partly-cloudy look */
-const GEHENNA_SKY_PROFILE = "night" as const;
-
-function applyGehennaSky(world: World): void {
-  if (GEHENNA_SKY_PROFILE === "night") {
-    world.setSkyboxUri(SKYBOX_NIGHT);
-    world.setSkyboxIntensity(0.42);
-    world.setAmbientLightColor({ r: 32, g: 40, b: 64 });
-    world.setAmbientLightIntensity(1.15);
-    world.setDirectionalLightColor({ r: 140, g: 168, b: 255 });
-    world.setDirectionalLightIntensity(0.38);
-    world.setDirectionalLightPosition({ x: 55, y: 95, z: -40 });
-    world.setFogColor({ r: 10, g: 12, b: 22 });
-    world.setFogNear(70);
-    world.setFogFar(240);
+/**
+ * Per-map sky/lighting profiles.
+ * - "industrial_yard": moody night look (main game)
+ * - "test_zone": bright clear day for mechanics QA and visibility during testing
+ */
+function applyGehennaSky(world: World, mapId: GehennaMapId = DEFAULT_MAP_ID): void {
+  if (mapId === "test_zone") {
+    // Bright, clear test sky — maximum visibility for debugging lethals, weapons, zombies etc.
+    world.setSkyboxUri(SKYBOX_DAY);
+    world.setSkyboxIntensity(1.0);
+    world.setAmbientLightColor({ r: 255, g: 255, b: 255 });
+    world.setAmbientLightIntensity(0.85);
+    world.setDirectionalLightColor({ r: 255, g: 250, b: 240 });
+    world.setDirectionalLightIntensity(1.1);
+    world.setDirectionalLightPosition({ x: 40, y: 120, z: -30 });
+    world.setFogColor(undefined); // No heavy fog on test map
     return;
   }
 
-  world.setSkyboxUri(SKYBOX_DAY);
-  world.setSkyboxIntensity(1);
-  world.setFogColor(undefined);
+  // Default moody night profile for industrial_yard
+  world.setSkyboxUri(SKYBOX_NIGHT);
+  world.setSkyboxIntensity(0.42);
+  world.setAmbientLightColor({ r: 32, g: 40, b: 64 });
+  world.setAmbientLightIntensity(1.15);
+  world.setDirectionalLightColor({ r: 140, g: 168, b: 255 });
+  world.setDirectionalLightIntensity(0.38);
+  world.setDirectionalLightPosition({ x: 55, y: 95, z: -40 });
+  world.setFogColor({ r: 10, g: 12, b: 22 });
+  world.setFogNear(70);
+  world.setFogFar(240);
 }
 
 startServer((world) => {
@@ -167,16 +180,23 @@ startServer((world) => {
         if (!w) return;
 
         if (t === "startGame") {
-          gehennaDirector.handleStartGame(w, player, payload.map);
+          const mapId = normalizeMapId(payload.map);
+          gehennaDirector.handleStartGame(w, player, payload.map, payload.loadout);
+          applyGehennaSky(w, mapId); // Apply correct sky/lighting for the chosen map (especially test_zone)
           return;
         }
+        // NOTE: "useLethal" / "gehennaUseLethal" UI messages are intentionally NOT handled here.
+        // Lethal input is polled authoritatively via host.input.n (G key) in tickLethalInput.
+        // Having both paths caused double-throws on every G press; server-side polling wins.
         if (t === "uiReady") {
           gehennaDirector.resyncScreenForUiMount(player);
           return;
         }
         /* Single-field types (like uiReady) — some runtimes strip unknown sibling keys on UI packets. */
         if (t === "gehennaRestart") {
+          const mapId = gehennaDirector.getCurrentMapId();
           gehennaDirector.restartRun(w, player);
+          applyGehennaSky(w, mapId);
           return;
         }
         if (t === "gehennaQuit") {
@@ -188,7 +208,9 @@ startServer((world) => {
           return;
         }
         if (action === "restartRun") {
+          const mapId = gehennaDirector.getCurrentMapId();
           gehennaDirector.restartRun(w, player);
+          applyGehennaSky(w, mapId);
           return;
         }
       };
@@ -199,7 +221,7 @@ startServer((world) => {
   }
 
   world.loadMap(worldMap as WorldMap);
-  applyGehennaSky(world);
+  applyGehennaSky(world, DEFAULT_MAP_ID); // Start with main map profile
   gehennaDirector.attach(world);
 
   world.on(WorldEvent.STOP, () => {
@@ -212,21 +234,22 @@ startServer((world) => {
     // menu overlay hides the world until the player clicks DEPLOY.
     const playerEntity = new DefaultPlayerEntity({
       player,
-      name: "Player"
+      name: "Player",
+      modelUri: "models/players/soldier-player.gltf",   // Official Hytopia FPS rig
+      modelScale: 0.5,                                  // Matches the official zombies-fps example so zombies feel the right size
     });
     playerEntity.spawn(world, PLAYER_SPAWN);
+    player.camera.setAttachedToEntity(playerEntity);
 
-    // Wire full animations for the default player.gltf model.
-    // Animation names use hyphens (idle-lower, walk-lower, etc.) — SDK soldier model uses underscores.
-    // Lower-body only for idle/walk/run keeps the upper body free for future gun animations.
-    const ctrl = playerEntity.controller as DefaultPlayerEntityController;
-    ctrl.idleLoopedAnimations          = ["idle-lower"];
-    ctrl.walkLoopedAnimations          = ["walk-lower"];
-    ctrl.runLoopedAnimations           = ["run-lower"];
-    ctrl.jumpOneshotAnimations         = ["jump-pre"];
-    ctrl.jumpLandLightOneshotAnimations = ["jump-post-light"];
-    ctrl.jumpLandHeavyOneshotAnimations = ["jump-post-heavy"];
-    ctrl.interactOneshotAnimations     = [];
+    // === Equip starting weapon immediately on spawn ===
+    // This creates the actual weapon Entity attached to the hand anchor right away.
+    // Previously it was only attached after clicking DEPLOY, which is why you saw "nothing" on spawn.
+    WeaponManager.equipWeapon(player, "m4a4");
+    WeaponManager.ensureWeaponAttached(player, playerEntity, world);
+
+    // TEMP DIAGNOSTIC: keep normal leg movement while isolating gun-specific arm poses.
+    WeaponManager.setNormalMovementAnimations(playerEntity);
+    // WeaponManager.setEquippedIdleAnimations(playerEntity);
 
     // Load the client UI, then wire the client→server data channel.
     player.ui.load("ui/index.html");
@@ -261,5 +284,9 @@ startServer((world) => {
     player.ui.lockPointer(false);
     bindPlayerUiDataListener(player);
     gehennaDirector.handlePlayerJoined(world, player);
+
+    // On reconnect during an active game, explicitly re-attach the weapon entity
+    // to the player's hand anchor. Critical for the attached-entity weapon system.
+    gehennaDirector.reattachWeaponForPlayer(player);
   });
 });

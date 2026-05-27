@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "hytopia build",
+    "check-assets": "node scripts/check-model-uris.mjs",
     "prestart": "node scripts/print-local-play-hint.mjs",
     "start": "hytopia start",
     "predev": "node scripts/print-local-play-hint.mjs",
