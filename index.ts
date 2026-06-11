@@ -26,7 +26,6 @@ import {
   normalizeMapId,
   type GehennaMapId
 } from "./src/server/mapConfig";
-import { WeaponManager } from "./src/server/WeaponManager";
 
 /** Co-located with bundled `index.mjs` so writes work in Hytopia/local runs. */
 const AGENT_DEBUG_LOG = path.join(
@@ -232,24 +231,34 @@ startServer((world) => {
     // HYTOPIA requires a player entity to exist immediately or it drops the
     // connection.  Spawn the DefaultPlayerEntity right away; the fullscreen
     // menu overlay hides the world until the player clicks DEPLOY.
+    //
+    // OFFICIAL zombies-fps player setup: soldier-player.gltf @ 0.5. This is THE
+    // rig every official FPS value is tuned for — gun hand-anchor transform,
+    // underscore animations (idle_gun_both etc), FP hidden nodes, camera offset.
+    // Zombies are scaled 0.5–0.7 (also official) so proportions match.
     const playerEntity = new DefaultPlayerEntity({
       player,
       name: "Player",
-      modelUri: "models/players/soldier-player.gltf",   // Official Hytopia FPS rig
-      modelScale: 0.5,                                  // Matches the official zombies-fps example so zombies feel the right size
+      modelUri: "models/players/soldier-player.gltf",
+      modelScale: 0.5,
     });
     playerEntity.spawn(world, PLAYER_SPAWN);
     player.camera.setAttachedToEntity(playerEntity);
 
-    // === Equip starting weapon immediately on spawn ===
-    // This creates the actual weapon Entity attached to the hand anchor right away.
-    // Previously it was only attached after clicking DEPLOY, which is why you saw "nothing" on spawn.
-    WeaponManager.equipWeapon(player, "m4a4");
-    WeaponManager.ensureWeaponAttached(player, playerEntity, world);
+    // Official controller flags for FPS gunplay:
+    //  - autoCancelMouseLeftClick=false → full-auto fire works while LMB is held
+    //  - applyDirectionalMovementRotations=false → model faces camera, not move dir
+    const ctrl = playerEntity.controller as any;
+    if (ctrl) {
+      ctrl.autoCancelMouseLeftClick = false;
+      ctrl.applyDirectionalMovementRotations = false;
+      ctrl.idleLoopedAnimations = ["idle_lower"];
+      ctrl.walkLoopedAnimations = ["walk_lower"];
+      ctrl.runLoopedAnimations  = ["run_lower"];
+    }
 
-    // TEMP DIAGNOSTIC: keep normal leg movement while isolating gun-specific arm poses.
-    WeaponManager.setNormalMovementAnimations(playerEntity);
-    // WeaponManager.setEquippedIdleAnimations(playerEntity);
+    // NOTE: the gun itself is equipped by GehennaDirector on DEPLOY — it's a
+    // GunEntity child of the hand anchor (official zombies-fps pattern).
 
     // Load the client UI, then wire the client→server data channel.
     player.ui.load("ui/index.html");

@@ -33,6 +33,8 @@ import {
 import { VFX } from "./VFX";
 import { WeaponManager } from "./WeaponManager";
 import { LethalSystem } from "./lethals/LethalSystem";
+import { createGun, GUN_DISPLAY_NAME, isGunId, type GunEntity, type GunId } from "./guns";
+import { Quaternion } from "hytopia";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants (mirrors legacy GAME_CONFIG — see legacy-playcanvas-client/src/game/config.ts)
@@ -60,54 +62,26 @@ const SPAWN_RING_MAX            = 24;   // max spawn distance from player (m)
 // Player
 const PLAYER_MAX_HEALTH = 100;
 
-// Weapon (Assault Rifle default)
-const WEAPON_DAMAGE       = 34;
+// Weapon damage tuning. Guns now live in src/server/guns/ (faithful port of the
+// official zombies-fps gun system) — each GunEntity carries its own damage,
+// fire rate, clip, reserve, audio, and muzzle flash.
 const HEADSHOT_MULTIPLIER = 2.2;
-const FIRE_INTERVAL_MS    = 180;
-const MAG_SIZE            = 24;
-const RESERVE_START       = 105;
-const RELOAD_DURATION_MS  = 1_000;
 
-// Hitscan sphere geometry — regular zombie (scale 1.0, capsule halfHeight=0.45 radius=0.28)
-//
-// HYTOPIA entity.position = capsule CENTRE (confirmed: Player Y == Camera Y w/ zero offset).
-// Legacy values were measured from FEET at modelScale 2.0.
-//   Convert: value_from_feet = legacy / 2  →  offset_from_centre = from_feet - (halfHeight+radius)
-//   Zombie capsule centre is 0.73 m above feet.
-//     body:  0.92/2 = 0.46 from feet  → 0.46 − 0.73 = −0.27 (torso, below centre)
-//     head:  2.45/2 = 1.225 from feet → 1.225 − 0.73 = +0.50 (head, above centre)
-//     head radius: 0.40/2 = 0.20 (+ small forgiveness bump → 0.24)
-const BODY_CENTER_Y = -0.27;  // offset from zombie capsule centre → mid-torso
-const BODY_RADIUS   =  0.36;
-const HEAD_CENTER_Y =  0.50;  // offset from zombie capsule centre → head
-const HEAD_RADIUS   =  0.24;
+// Headshot detection for raycast hits: a hit counts as a headshot when the bullet's
+// impact point is higher than this fraction above the zombie's capsule centre,
+// scaled by the zombie's per-row model scale. (Official zombies are 0.5–0.7 scale.)
+const HEADSHOT_Y_THRESHOLD = 0.3; // × row.scale, above entity.position.y
 
-// Eye position relative to `PlayerEntity.position` (capsule centre in HYTOPIA).
-// Y=0.5 is the value used in the official HYTOPIA zombies-fps SDK example.
-// Forward=0.5 matches the official shoot-origin nudge (prevents self-intersection).
-/** Eye height above capsule center (official SDK uses 0.5; slight bump reduces in-head clipping). */
-const PLAYER_EYE_Y_OFFSET        = 0.58;
-const PLAYER_EYE_FORWARD_OFFSET  = 0.5;
+// Zombie body-centre offset for explosion distance checks, per 1.0 of model scale.
+const BODY_CENTER_Y = -0.27;  // × row.scale — offset from capsule centre → mid-torso
+
 /** Third-person orbit behind the player (+Z is back in Hytopia). */
 const THIRD_PERSON_CAMERA_OFFSET: Vector3Like = { x: 0, y: 0.4, z: 2.5 };
-// First-person camera base position tuned for proper held weapon feel (COD Zombies style).
-// These values position the weapon viewmodel naturally in the player's hands.
-const FIRST_PERSON_CAMERA_BASE_OFFSET: Vector3Like = {
-  x: 0.0,
-  y: 0.52,   // eye height
-  z: 0.28,   // forward position — brings the held gun into view
-};
+// First-person camera: the OFFICIAL zombies-fps value — a single y offset, nothing else.
+const FIRST_PERSON_CAMERA_OFFSET: Vector3Like = { x: 0, y: 0.5, z: 0 };
 
-// Base forward offset for first person.
-const FIRST_PERSON_FORWARD_OFFSET = 0.12;
-const RAY_MAX_RANGE = 100;
-
-// Hitscan sphere geometry — zombie dog (capsule halfHeight=0.18 radius=0.22 → centre 0.40m above feet)
-// Dog model is low-slung; body sits near capsule centre, head slightly above.
+// Dog explosion body offset (per 1.0 scale, same convention as BODY_CENTER_Y)
 const DOG_BODY_CENTER_Y = -0.05;
-const DOG_BODY_RADIUS   =  0.28;
-const DOG_HEAD_CENTER_Y =  0.18;
-const DOG_HEAD_RADIUS   =  0.18;
 
 // Dog wave tuning
 const DOG_WAVE_INTERVAL  = 5;    // every Nth wave is a dog wave
@@ -161,6 +135,18 @@ const LETHAL_PICKUP_XZ: { x: number; z: number; lethalId: LethalId; label: strin
   { x: -20, z: 8,  lethalId: "n74st",   label: "N 74 ST (Sticky)", model: "models/particles/sticky-bomb.glb",  scale: 1.0 },
   { x: -16, z: 5,  lethalId: "satchel", label: "C4 Satchel",     model: "models/particles/c4-block.glb",     scale: 1.25 },
   { x: -22, z: 10, lethalId: "smine44", label: "S-Mine 44",      model: "models/particles/smine.glb",        scale: 1.15 },
+];
+
+// Weapons Testing Range (Test Map): ALL six official zombies-fps guns laid out on
+// the floor. Run into one to equip it — verifies every gun sits correctly in the
+// player's hands. Mirrors the lethal pickup pattern.
+const WEAPON_PICKUP_XZ: { x: number; z: number; weaponKey: GunId; label: string; model: string; scale: number }[] = [
+  { x: -6, z: 12, weaponKey: "pistol",       label: "Pistol",       model: "models/items/pistol.glb",       scale: 0.8 },
+  { x: -3, z: 12, weaponKey: "auto-pistol",  label: "Auto Pistol",  model: "models/items/auto-pistol.glb",  scale: 0.8 },
+  { x:  0, z: 12, weaponKey: "shotgun",      label: "Shotgun",      model: "models/items/shotgun.glb",      scale: 0.8 },
+  { x:  3, z: 12, weaponKey: "auto-shotgun", label: "Auto Shotgun", model: "models/items/auto-shotgun.glb", scale: 0.8 },
+  { x:  6, z: 12, weaponKey: "ar15",         label: "AR-15",        model: "models/items/ar-15.glb",        scale: 0.8 },
+  { x:  9, z: 12, weaponKey: "ak47",         label: "AK-47",        model: "models/items/ak-47.glb",        scale: 0.8 },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -229,49 +215,11 @@ type ZombieRow = {
   speed:           number;
   attackCooldownS: number; // seconds until next melee hit allowed
   isDog:           boolean;
+  scale:           number; // per-zombie modelScale (official: 0.5 + rand*0.2) — used for headshot height + explosion offsets
 };
 
-type MysteryWeaponDef = { id: string; name: string; mag: number; reserve: number };
-
-// Legacy PendingLethalBlast removed — now using real LethalSystem with physics Entities
-// (frag bounces, sticky sticks, C4 plants + hold det, smine44 proximity pop + shrapnel)
-
-const MYSTERY_POOL: MysteryWeaponDef[] = [
-  { id: "pistol",  name: "M1911",       mag: 12, reserve:  60 },
-  { id: "smg",     name: "Vector SMG",  mag: 32, reserve: 128 },
-  { id: "ar",      name: "M4 Carbine",  mag: 30, reserve: 120 },
-  { id: "shotgun", name: "Breacher 12", mag:  8, reserve:  48 },
-  { id: "lmg",     name: "RPK",         mag: 75, reserve: 150 }
-];
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Ray-sphere intersection
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Returns the smallest non-negative t along the ray that intersects the sphere,
- * or -1 on miss. Ray direction must be unit length.
- */
-function raySphere(
-  ox: number, oy: number, oz: number,  // ray origin
-  dx: number, dy: number, dz: number,  // ray direction (normalised)
-  cx: number, cy: number, cz: number,  // sphere centre
-  r: number                             // sphere radius
-): number {
-  const fx = ox - cx;
-  const fy = oy - cy;
-  const fz = oz - cz;
-  const b  = 2 * (fx * dx + fy * dy + fz * dz);
-  const c  = fx * fx + fy * fy + fz * fz - r * r;
-  const disc = b * b - 4 * c;          // a = dot(dir,dir) = 1
-  if (disc < 0) return -1;
-  const sq = Math.sqrt(disc);
-  const t1 = (-b - sq) * 0.5;
-  const t2 = (-b + sq) * 0.5;
-  if (t1 >= 0) return t1;
-  if (t2 >= 0) return t2;
-  return -1;
-}
+// Mystery box rolls among the official zombies-fps guns (minus whatever you're holding).
+const MYSTERY_POOL: GunId[] = ["pistol", "auto-pistol", "shotgun", "auto-shotgun", "ar15", "ak47"];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GehennaDirector
@@ -302,6 +250,7 @@ export class GehennaDirector {
   private _teddyEntities: Entity[] = [];
   private _launchedTeddies: { entity: Entity; despawnAt: number }[] = [];
   private _lethalPickupEntities: { entity: Entity; lethalId: LethalId; label: string }[] = [];
+  private _weaponPickupEntities: { entity: Entity; weaponKey: GunId; label: string }[] = [];
   private _teddyVictorySongPlayed = false; // Only play "The Piston Stops" once per run when all 3 teddies are shot
   private _teddyVictorySong: any = null; // Store the Audio instance so we can stop it on menu / new game
 
@@ -333,18 +282,14 @@ export class GehennaDirector {
   private _downs      = 0;
   private _revives    = 0;
 
-  // ── Weapon ───────────────────────────────────────────────────────────────────
-  private _weaponName   = "Assault Rifle";
-  private _weaponDamage = WEAPON_DAMAGE;
-  private _mag          = MAG_SIZE;
-  private _magMax       = MAG_SIZE;
-  private _reserve      = RESERVE_START;
-  private _packTier     = 0;
+  // ── Weapon (official zombies-fps GunEntity system) ──────────────────────────
+  /** The currently equipped gun — a child entity of the player's hand anchor. */
+  private _gun: GunEntity | null = null;
+  private _gunId: GunId = "ar15";   // start with the rifle (Assault Rifle feel)
+  private _packTier = 0;
+  private _outOfAmmoMsgAtMs = 0;    // throttle for "Out of ammo!" chat
 
   // ── Input / fire timing ──────────────────────────────────────────────────────
-  private _reloadUntilMs      = 0;
-  private _nextFireAllowedMs  = 0;
-  private _prevMl = false;
   private _prevF  = false;
   private _prevR  = false;
   private _prevC  = false;
@@ -359,7 +304,7 @@ export class GehennaDirector {
   // ── Mystery chest ────────────────────────────────────────────────────────────
   private _mysteryBusyUntilMs     = 0;
   private _mysteryCooldownUntilMs = 0;
-  private _pendingMysteryWeapon: MysteryWeaponDef | null = null;
+  private _pendingMysteryWeapon: GunId | null = null;
 
   // ── HUD throttle ─────────────────────────────────────────────────────────────
   private _lastHudPushMs = 0;
@@ -452,6 +397,11 @@ export class GehennaDirector {
     this.resetRunState();
     this.teleportHostToMapSpawn(world, player, mapId);
     this.spawnWorldProps(world);
+
+    // Equip the starting rifle (official GunEntity — parented to the hand anchor)
+    const peStart = this.getHostPlayerEntity(world, player);
+    if (peStart) this.equipGun(world, peStart, this._gunId);
+
     this.pushScreenToPlayer(player, "hud");
     this.syncHud(player);
 
@@ -474,6 +424,7 @@ export class GehennaDirector {
       this._hostPlayer = null;
       this._sessionStarted = false;
       this._round = 0;
+      this.despawnGun();
       this.clearZombies();
       this.destroyPropEntities();
       this.resetWaveDirector();
@@ -482,21 +433,18 @@ export class GehennaDirector {
       // Restore Test Map blocks if the host left mid-run (prevents permanently destroyed trees for the next session)
       this.restoreAndClearTestMapBlocks();
     }
-    WeaponManager.onPlayerLeft(player);
     void world;
   }
 
   /**
    * Public helper for reconnects / late joins during an active run.
-   * Ensures the weapon entity is attached to the hand anchor again.
+   * Re-equips the current gun (a fresh GunEntity parented to the new player entity).
    */
   public reattachWeaponForPlayer(player: Player): void {
-    const pe = this._world ? this.getHostPlayerEntity(this._world, player) : undefined;
-    if (pe && this._world) {
-      // On HUD push we ensure the weapon is attached (in case it wasn't already from spawn).
-      // This is now mostly a safety net since we attach at spawn time.
-      WeaponManager.ensureWeaponAttached(player, pe, this._world);
-    }
+    if (!this._world || !this._sessionStarted) return;
+    if (!this.isSessionHost(player)) return;
+    const pe = this.getHostPlayerEntity(this._world, player);
+    if (pe) this.equipGun(this._world, pe, this._gunId);
   }
 
   resyncScreenForUiMount(player: Player): void {
@@ -548,6 +496,7 @@ export class GehennaDirector {
       } satisfies GehennaRunEndPayload);
     }
 
+    this.despawnGun();
     this.clearZombies();
     this.destroyPropEntities();
     this.resetWaveDirector();
@@ -602,6 +551,11 @@ export class GehennaDirector {
     this.resetRunState();
     this.teleportHostToMapSpawn(world, player, mapId);
     this.spawnWorldProps(world);
+
+    // Equip the starting rifle for the new run
+    const peRestart = this.getHostPlayerEntity(world, player);
+    if (peRestart) this.equipGun(world, peRestart, this._gunId);
+
     this.pushScreenToPlayer(player, "hud");
     this.syncHud(player);
     world.chatManager.sendPlayerMessage(player, "Run restarted — horde re-staged.", "88FFCC");
@@ -621,42 +575,27 @@ export class GehennaDirector {
     } else {
       // Menu state - force third person with full player model visible
       this._thirdPersonActive = false;
-      const pe = this._world ? this.getHostPlayerEntity(this._world, player) : undefined;
-
       player.camera.setMode(PlayerCameraMode.THIRD_PERSON);
       player.camera.setOffset({ x: 0, y: 0, z: 0 });
-
-      if (pe && this._world) {
-        WeaponManager.equipThirdPerson(player, pe, this._world);
-      }
+      WeaponManager.equipThirdPerson(player);
     }
   }
 
   /** First- or third-person camera while in a run (HUD). */
   private applyGameplayCamera(player: Player): void {
-    const pe = this._world ? this.getHostPlayerEntity(this._world, player) : undefined;
-
     if (this._thirdPersonActive) {
-      // Third person: show full player model + weapon attached to hand
+      // Third person: show full player model + gun in hand
       player.camera.setMode(PlayerCameraMode.THIRD_PERSON);
       player.camera.setOffset(THIRD_PERSON_CAMERA_OFFSET);
-
-      if (pe && this._world) {
-        WeaponManager.equipThirdPerson(player, pe, this._world);
-      }
+      WeaponManager.equipThirdPerson(player);
       return;
     }
 
-    // First person
+    // First person — the OFFICIAL zombies-fps camera setup: FP mode, y offset 0.5,
+    // hide head/neck/torso/legs so only arms + the held gun render.
     player.camera.setMode(PlayerCameraMode.FIRST_PERSON);
-    player.camera.setOffset(FIRST_PERSON_CAMERA_BASE_OFFSET);
-    player.camera.setForwardOffset(FIRST_PERSON_FORWARD_OFFSET);
-
-    if (pe && this._world) {
-      // Ensure weapon is attached, then hide body so only arms + weapon are visible
-      WeaponManager.ensureWeaponAttached(player, pe, this._world);
-      WeaponManager.equipFirstPerson(player, pe);
-    }
+    player.camera.setOffset(FIRST_PERSON_CAMERA_OFFSET);
+    WeaponManager.equipFirstPerson(player);
   }
 
   private tickCameraToggle(host: Player, world: World): void {
@@ -684,11 +623,8 @@ export class GehennaDirector {
     player: Player,
     overrides: Partial<GehennaHudPayload> = {}
   ): void {
-    const now = performance.now();
-    const reloading  = now < this._reloadUntilMs;
-    const reloadFrac = reloading
-      ? 1 - (this._reloadUntilMs - now) / RELOAD_DURATION_MS
-      : 0;
+    // Ammo / reload state now lives on the equipped GunEntity (official pattern).
+    const gun = this._gun;
 
     const payload: GehennaHudPayload = {
       type:           "gehennaHud",
@@ -697,10 +633,10 @@ export class GehennaDirector {
       hostiles:       this._zombies.length,
       score:          this._points,
       weapon:         this.weaponDisplayName(),
-      magAmmo:        this._mag,
-      reserveAmmo:    this._reserve,
+      magAmmo:        gun?.ammo ?? 0,
+      reserveAmmo:    gun?.reserveAmmo ?? 0,
       caliber:        this._packTier > 0 ? `PaP ×${this._packTier}` : "9×19mm",
-      reloadFraction: Math.max(0, Math.min(1, reloadFrac)),
+      reloadFraction: gun?.isReloading ? gun.reloadProgress : 0,
       wave:           this._round,
       lethalCharges:  this._activeLethal ? this._lethalCharges : undefined,
       lethalName:     this._activeLethal
@@ -733,25 +669,13 @@ export class GehennaDirector {
     if (!this._sessionStarted) return;
 
     this.tickCameraToggle(host, w);
-    if (!this._thirdPersonActive && host.camera.mode === PlayerCameraMode.FIRST_PERSON) {
-      const attachedWeapon = WeaponManager.getAttachedWeapon(host);
-      const baseWeaponPos = WeaponManager.getWeaponBaseLocalPosition(host) ?? { x: 0, y: 0, z: 0 };
-
-      WeaponManager.tickFirstPersonSway(
-        host,
-        pe,
-        dtS,
-        FIRST_PERSON_CAMERA_BASE_OFFSET,
-        FIRST_PERSON_FORWARD_OFFSET,
-        attachedWeapon,
-        baseWeaponPos
-      );
-    }
     this.tickGun(host, pe, w);
+    this.tickAds(host, dtS);
     this.tickLethalInput(host, w, dtS);
     this.tickLethalBlasts(w, host, pe, dtS);
     this.tickTeddyBears(w);
     this.tickLethalPickups(w, pe);
+    this.tickWeaponPickups(w, pe);
     this.tickInteract(host, pe, w);
     this.maybeThrottleHud(host, 80);
   }
@@ -860,18 +784,24 @@ export class GehennaDirector {
       z: targetZ
     };
 
+    // Official zombies-fps zombie scale: 0.5 + rand*0.2 — matches the soldier-player
+    // rig @ 0.5 so player and horde are correctly proportioned. Slight per-zombie
+    // variation also makes the horde look more organic.
+    const zScale = 0.5 + Math.random() * 0.2;
+
     const zEnt = new Entity({
       name:       `Zombie-W${this._round}-${(Date.now() % 100_000)}`,
       tag:        "gehenna-zombie",
       modelUri:   "models/enemies/zombie.gltf",
-      modelScale: 1.0,
+      modelScale: zScale,
       rigidBodyOptions: {
         type: RigidBodyType.KINEMATIC_VELOCITY,
         colliders: [
           {
+            // Capsule scaled to match the model (base values were tuned at scale 1.0)
             shape:      ColliderShape.CAPSULE,
-            halfHeight: 0.45,
-            radius:     0.28,
+            halfHeight: 0.45 * zScale,
+            radius:     0.28 * zScale,
             tag:        "body"
           }
         ]
@@ -907,7 +837,8 @@ export class GehennaDirector {
       hp:              this._waveZombieHealth,
       speed:           this._waveZombieSpeed,
       attackCooldownS: 0,
-      isDog:           false
+      isDog:           false,
+      scale:           zScale
     });
   }
 
@@ -922,18 +853,21 @@ export class GehennaDirector {
       z: base.z + Math.cos(ang) * dist
     };
 
+    // Scaled to fit the official world proportions (player 0.5, zombies 0.5–0.7)
+    const dogScale = 0.6;
+
     const dEnt = new Entity({
       name:       `HellHound-W${this._round}-${(Date.now() % 100_000)}`,
       tag:        "gehenna-zombie",
       modelUri:   "models/npcs/animals/dog-german-shepherd.gltf",
-      modelScale: 1.0,
+      modelScale: dogScale,
       rigidBodyOptions: {
         type: RigidBodyType.KINEMATIC_VELOCITY,
         colliders: [
           {
             shape:      ColliderShape.CAPSULE,
-            halfHeight: 0.18,
-            radius:     0.22,
+            halfHeight: 0.18 * dogScale,
+            radius:     0.22 * dogScale,
             tag:        "body"
           }
         ]
@@ -955,7 +889,8 @@ export class GehennaDirector {
       hp:              dogHp,
       speed:           DOG_SPEED,
       attackCooldownS: 0,
-      isDog:           true
+      isDog:           true,
+      scale:           dogScale
     });
   }
 
@@ -1186,6 +1121,44 @@ export class GehennaDirector {
     }
   }
 
+  /** ADS: hold right-mouse to zoom. Delegated to WeaponManager (pure FOV lerp). */
+  private tickAds(host: Player, dtS: number): void {
+    // Only aim in first person; third-person ADS would just zoom the orbit cam awkwardly.
+    const aiming = !this._thirdPersonActive
+      && host.camera.mode === PlayerCameraMode.FIRST_PERSON
+      && !!(host.input as { mr?: boolean }).mr;
+    WeaponManager.tickAds(host, dtS, aiming);
+  }
+
+  /** Auto-equip weapon pickups when the player runs into them (Test Map only). */
+  private tickWeaponPickups(world: World, pe: PlayerEntity): void {
+    if (this._currentMapId !== "test_zone" || this._weaponPickupEntities.length === 0) return;
+    if (!this._hostPlayer) return;
+
+    const p = pe.position;
+    const PICKUP_RADIUS = 1.6;
+
+    for (const pickup of this._weaponPickupEntities) {
+      if (!pickup.entity?.isSpawned) continue;
+      if (this.distXZ(p, pickup.entity.position) >= PICKUP_RADIUS) continue;
+
+      // Already holding this weapon? do nothing.
+      if (this._gunId === pickup.weaponKey && this._gun) break;
+
+      this.equipGun(world, pe, pickup.weaponKey as GunId);
+      world.chatManager.sendPlayerMessage(
+        this._hostPlayer,
+        `Equipped: ${GUN_DISPLAY_NAME[pickup.weaponKey as GunId]}`,
+        "FFD700"
+      );
+      break; // one per frame
+    }
+  }
+
+  // NOTE: the old I/J/K/L/U/O live hand-calibration is gone — and that's the point.
+  // The official gun models are authored to fit the hand anchor with ONE fixed
+  // transform ({0,0,-0.2} + Euler(-90,0,0)). There is nothing left to calibrate.
+
   /** Launches a teddy bear into the sky with spin when shot. */
   private launchTeddyBear(teddy: Entity, world: World): void {
     // Remove from alive list
@@ -1289,7 +1262,7 @@ export class GehennaDirector {
       if (!row.entity.isSpawned) continue;
 
       const zp   = row.entity.position;
-      const bodyY = zp.y + (row.isDog ? DOG_BODY_CENTER_Y : BODY_CENTER_Y);
+      const bodyY = zp.y + (row.isDog ? DOG_BODY_CENTER_Y : BODY_CENTER_Y) * row.scale;
       const dist  = Math.hypot(zp.x - center.x, bodyY - center.y, zp.z - center.z);
       if (dist > blastRadius) continue;
 
@@ -1365,133 +1338,111 @@ export class GehennaDirector {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Hitscan gun tick
+  // Gun system (official zombies-fps GunEntity pattern)
   // ─────────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Equip a gun by id. The gun is constructed already PARENTED to the player's
+   * hand anchor, then spawned with the ONE universal local transform from the
+   * official example: pos {0,0,-0.2}, Euler(-90,0,0). The official gun models
+   * are authored to fit the soldier rig's hand with exactly this transform.
+   */
+  equipGun(world: World, pe: PlayerEntity, gunId: GunId): void {
+    if (this._gun) {
+      try { if (this._gun.isSpawned) this._gun.despawn(); } catch {}
+      this._gun = null;
+    }
+
+    this._gunId = gunId;
+    const gun = createGun(gunId, pe, {
+      onShoot: () => { this._shotsFired += 1; },
+      onHit: (hitEntity, hitPoint, baseDamage) => this.onGunHit(hitEntity, hitPoint, baseDamage),
+      onAmmoChanged: () => { if (this._hostPlayer) this.syncHud(this._hostPlayer); },
+    });
+    gun.spawn(world, { x: 0, y: 0, z: -0.2 }, Quaternion.fromEuler(-90, 0, 0));
+    this._gun = gun;
+
+    if (this._hostPlayer) this.syncHud(this._hostPlayer);
+  }
+
+  /** Despawn the equipped gun (run teardown / quit to menu). */
+  private despawnGun(): void {
+    if (this._gun) {
+      try { if (this._gun.isSpawned) this._gun.despawn(); } catch {}
+      this._gun = null;
+    }
+  }
+
+  /**
+   * Per-tick gun input (official pattern): LMB → gun.shoot() — the gun itself
+   * gates fire rate + ammo and handles audio/anim/muzzle flash/raycast.
+   * Semi-auto guns clear input.ml after each shot; full-auto guns keep it held.
+   */
   private tickGun(host: Player, pe: PlayerEntity, world: World): void {
-    const now = performance.now();
+    const gun = this._gun;
+    if (!gun || !gun.isSpawned) return;
+
     const inp = host.input;
 
-    // Left-mouse edge detection
-    const ml      = !!(inp as { ml?: boolean }).ml;
-    const mlRise  = ml && !this._prevMl;
-    this._prevMl  = ml;
+    // R = reload (consume the edge so it doesn't repeat)
+    if ((inp as { r?: boolean }).r) {
+      gun.reload();
+      (inp as { r?: boolean }).r = false;
 
-    // R key edge detection
-    const rPress = !!(inp as { r?: boolean }).r;
-    const rRise  = rPress && !this._prevR;
-    this._prevR  = rPress;
-
-    // Reload
-    if (now >= this._reloadUntilMs && rRise && this._mag < this._magMax && this._reserve > 0) {
-      const need = this._magMax - this._mag;
-      const take = Math.min(need, this._reserve);
-      this._mag     += take;
-      this._reserve -= take;
-      this._reloadUntilMs = now + RELOAD_DURATION_MS;
-      this.syncHud(host);
-      return;
+      if (gun.ammo <= 0 && gun.reserveAmmo <= 0) {
+        this.notifyOutOfAmmo(host, world);
+      }
     }
 
-    // Blocked while reloading
-    if (now < this._reloadUntilMs) return;
-
-    // Full-auto: fire every tick LMB is held (rate limiter controls cadence)
-    if (!ml) return;
-
-    // Rate limit
-    if (now < this._nextFireAllowedMs) return;
-
-    // Auto-reload on empty mag
-    if (this._mag <= 0) {
-      if (this._reserve > 0) {
-        const need = this._magMax - this._mag;
-        const take = Math.min(need, this._reserve);
-        this._mag     += take;
-        this._reserve -= take;
-        this._reloadUntilMs = now + RELOAD_DURATION_MS;
-        this.syncHud(host);
+    // LMB = fire
+    if ((inp as { ml?: boolean }).ml) {
+      if (gun.ammo <= 0 && gun.reserveAmmo <= 0) {
+        this.notifyOutOfAmmo(host, world);
       } else {
-        world.chatManager.sendPlayerMessage(host, "Out of ammo!", "FF4444");
+        gun.shoot();
       }
+    }
+  }
+
+  /** Raycast hit resolution — zombies (damage/points/headshots) and teddies (test map). */
+  private onGunHit(hitEntity: Entity, hitPoint: Vector3Like, baseDamage: number): void {
+    const world = this._world;
+    const host  = this._hostPlayer;
+    if (!world || !host) return;
+
+    // Test-map teddy bears launch when shot
+    if (this._teddyEntities.includes(hitEntity)) {
+      this.launchTeddyBear(hitEntity, world);
       return;
     }
 
-    // Fire!
-    this._mag -= 1;
-    this._nextFireAllowedMs = now + FIRE_INTERVAL_MS;
-    this._shotsFired += 1;
+    const row = this._zombies.find((z) => z.entity === hitEntity);
+    if (!row || !row.entity.isSpawned) return;
 
-    const eye = this.getShotOrigin(host, pe);
-    const hit = this.sphereHitscan(host, pe);
+    this._shotsHit += 1;
 
-    // Play shoot animation + muzzle flash on the actual weapon entity
-    WeaponManager.triggerShootAnimation(pe);
+    // Headshot: impact point high on the zombie relative to its per-row scale
+    const headshot = hitPoint.y > row.entity.position.y + HEADSHOT_Y_THRESHOLD * row.scale;
 
-    const attachedWeapon = WeaponManager.getAttachedWeapon(host);
-    const def = WeaponManager.getCurrentWeaponDef();
-    const muzzleFlashOffset = def?.muzzleOffset ?? { x: 0, y: 0.05, z: -0.6 };
-
-    if (attachedWeapon) {
-      VFX.muzzleFlash(world, eye, attachedWeapon, muzzleFlashOffset);
-    } else {
-      VFX.muzzleFlash(world, eye);
-    }
-
-    if (hit) {
-      this._shotsHit += 1;
-      const impact: Vector3Like = {
-        x: eye.x + hit.dir.x * hit.t,
-        y: eye.y + hit.dir.y * hit.t,
-        z: eye.z + hit.dir.z * hit.t,
-      };
-      this.applyHitToZombie(hit.row, hit.headshot, world, host, impact);
-    }
-
-    // === Teddy bear shooting (Test Map fun feature) ===
-    if (this._currentMapId === "test_zone" && this._teddyEntities.length > 0) {
-      const dir = this.getShotDirection(host);
-      const TEDDY_HIT_RADIUS = 0.75;
-
-      for (let i = this._teddyEntities.length - 1; i >= 0; i--) {
-        const teddy = this._teddyEntities[i];
-        if (!teddy || !teddy.isSpawned) {
-          this._teddyEntities.splice(i, 1);
-          continue;
-        }
-
-        const tp = teddy.position;
-        // Simple closest-point distance from ray to teddy center
-        const ox = eye.x - tp.x;
-        const oy = eye.y - tp.y;
-        const oz = eye.z - tp.z;
-
-        const t = -(ox * dir.x + oy * dir.y + oz * dir.z);
-        const closestX = ox + dir.x * t;
-        const closestY = oy + dir.y * t;
-        const closestZ = oz + dir.z * t;
-
-        const distSq = closestX * closestX + closestY * closestY + closestZ * closestZ;
-
-        if (distSq < TEDDY_HIT_RADIUS * TEDDY_HIT_RADIUS) {
-          this.launchTeddyBear(teddy, world);
-          break; // only hit one per shot
-        }
-      }
-    }
-
+    this.applyHitToZombie(row, headshot, world, host, hitPoint, baseDamage);
     this.syncHud(host);
   }
 
+  private notifyOutOfAmmo(host: Player, world: World): void {
+    const now = performance.now();
+    if (now - this._outOfAmmoMsgAtMs < 1500) return;
+    this._outOfAmmoMsgAtMs = now;
+    world.chatManager.sendPlayerMessage(host, "Out of ammo! Hit the Mystery Chest or Pack-a-Punch.", "FF4444");
+  }
+
+  /** Eye-level origin for lethal throws (official pattern: position + camera y offset, nudged forward). */
   private getShotOrigin(host: Player, pe: PlayerEntity): Vector3Like {
-    // Keep gameplay hitscan on the stable camera/eye origin while the attached
-    // weapon transform is still being tuned. Using the floating gun muzzle here
-    // makes bullets miss even when the crosshair is aimed correctly.
     const { yaw } = host.camera.orientation;
-    const f = PLAYER_EYE_FORWARD_OFFSET;
+    const f = 0.5; // forward nudge so throws clear the player's own collider
+    const camY = host.camera.offset?.y ?? FIRST_PERSON_CAMERA_OFFSET.y;
     return {
       x: pe.position.x - Math.sin(yaw) * f,
-      y: pe.position.y + PLAYER_EYE_Y_OFFSET,
+      y: pe.position.y + camY,
       z: pe.position.z - Math.cos(yaw) * f,
     };
   }
@@ -1506,74 +1457,17 @@ export class GehennaDirector {
     return { x: rawX / dlen, y: rawY / dlen, z: rawZ / dlen };
   }
 
-  /**
-   * Cast a ray from the player's eye through all live zombie body and head spheres.
-   * Returns the closest hit (head sphere wins ties), or null.
-   */
-  private sphereHitscan(
-    host: Player,
-    pe: PlayerEntity
-  ): { row: ZombieRow; headshot: boolean; t: number; dir: Vector3Like } | null {
-    const eye = this.getShotOrigin(host, pe);
-    const ox = eye.x;
-    const oy = eye.y;
-    const oz = eye.z;
-    const { x: dx, y: dy, z: dz } = this.getShotDirection(host);
-
-    let bestT    = RAY_MAX_RANGE;
-    let bestRow: ZombieRow | null = null;
-    let bestHead = false;
-
-    for (const row of this._zombies) {
-      if (!row.entity.isSpawned) continue;
-      const zp = row.entity.position;
-
-      const headCy = row.isDog ? DOG_HEAD_CENTER_Y : HEAD_CENTER_Y;
-      const headR  = row.isDog ? DOG_HEAD_RADIUS   : HEAD_RADIUS;
-      const bodyCy = row.isDog ? DOG_BODY_CENTER_Y : BODY_CENTER_Y;
-      const bodyR  = row.isDog ? DOG_BODY_RADIUS   : BODY_RADIUS;
-
-      // Test head sphere first — headshot wins a tie with body sphere
-      const ht = raySphere(
-        ox, oy, oz,
-        dx, dy, dz,
-        zp.x, zp.y + headCy, zp.z,
-        headR
-      );
-      if (ht >= 0 && ht < bestT) {
-        bestT    = ht;
-        bestRow  = row;
-        bestHead = true;
-      }
-
-      // Test body sphere
-      const bt = raySphere(
-        ox, oy, oz,
-        dx, dy, dz,
-        zp.x, zp.y + bodyCy, zp.z,
-        bodyR
-      );
-      if (bt >= 0 && bt < bestT) {
-        bestT    = bt;
-        bestRow  = row;
-        bestHead = false;
-      }
-    }
-
-    return bestRow
-      ? { row: bestRow, headshot: bestHead, t: bestT, dir: { x: dx, y: dy, z: dz } }
-      : null;
-  }
-
   private applyHitToZombie(
     row: ZombieRow,
     headshot: boolean,
     world: World,
     host: Player,
-    impact: Vector3Like
+    impact: Vector3Like,
+    baseDamage: number
   ): void {
+    // Damage = gun's base damage × Pack-a-Punch tier × headshot multiplier
     const tierMul = Math.pow(PAP_DAMAGE_FACTOR, this._packTier);
-    const baseDmg = Math.round(this._weaponDamage * tierMul);
+    const baseDmg = Math.round(baseDamage * tierMul);
     const dmg     = headshot ? Math.round(baseDmg * HEADSHOT_MULTIPLIER) : baseDmg;
 
     row.hp -= dmg;
@@ -1584,7 +1478,7 @@ export class GehennaDirector {
       const zp = row.entity.position;
       const deathPos: Vector3Like = {
         x: zp.x,
-        y: zp.y + (row.isDog ? DOG_BODY_CENTER_Y : BODY_CENTER_Y),
+        y: zp.y + (row.isDog ? DOG_BODY_CENTER_Y : BODY_CENTER_Y) * row.scale,
         z: zp.z,
       };
       VFX.deathExplosion(world, deathPos);
@@ -1641,6 +1535,7 @@ export class GehennaDirector {
     // Tear down active session
     this._sessionStarted = false;
     this._round = 0;
+    this.despawnGun();
     this.clearZombies();
     this.destroyPropEntities();
     this.resetWaveDirector();
@@ -1660,12 +1555,13 @@ export class GehennaDirector {
 
     const pick = this._pendingMysteryWeapon;
     this._pendingMysteryWeapon   = null;
-    this._weaponName             = pick.name;
-    this._magMax                 = pick.mag;
-    this._mag                    = pick.mag;
-    this._reserve                = pick.reserve;
     this._mysteryCooldownUntilMs = now + MYSTERY_COOLDOWN_MS;
-    world.chatManager.sendPlayerMessage(host, `Mystery weapon: ${pick.name}`, "FFD700");
+
+    // Equip the rolled gun — fresh GunEntity with full clip + reserve
+    const pe = this.getHostPlayerEntity(world, host);
+    if (pe) this.equipGun(world, pe, pick);
+
+    world.chatManager.sendPlayerMessage(host, `Mystery weapon: ${GUN_DISPLAY_NAME[pick]}`, "FFD700");
     this.syncHud(host);
   }
 
@@ -1679,7 +1575,7 @@ export class GehennaDirector {
     const fRise = f && !this._prevF;
     this._prevF = f;
     if (!fRise) return;
-    if (performance.now() < this._reloadUntilMs) return;
+    if (this._gun?.isReloading) return;
 
     const p      = pe.position;
     const nearPap = this._papEntity?.isSpawned
@@ -1692,9 +1588,9 @@ export class GehennaDirector {
     const now = performance.now();
 
     if (nearPap) {
+      const gun = this._gun;
       if (this._packTier >= PAP_MAX_TIER) {
-        this._mag     = this._magMax;
-        this._reserve = Math.max(this._reserve, RESERVE_START);
+        gun?.refillReserve();
         world.chatManager.sendPlayerMessage(
           host,
           "Pack-a-Punch: max tier — ammo refilled.",
@@ -1709,8 +1605,7 @@ export class GehennaDirector {
       } else {
         this._points  -= PAP_COST;
         this._packTier += 1;
-        this._mag      = this._magMax;
-        this._reserve  = Math.max(this._reserve, RESERVE_START);
+        gun?.refillReserve();
         world.chatManager.sendPlayerMessage(
           host,
           `Pack-a-Punch tier ${this._packTier}! Damage up, ammo refilled.`,
@@ -1739,7 +1634,9 @@ export class GehennaDirector {
         return;
       }
       this._points -= MYSTERY_COST;
-      const pick = MYSTERY_POOL[Math.floor(Math.random() * MYSTERY_POOL.length)]!;
+      // Roll among guns you're NOT already holding — always a new toy
+      const pool = MYSTERY_POOL.filter((id) => id !== this._gunId);
+      const pick = pool[Math.floor(Math.random() * pool.length)]!;
       this._pendingMysteryWeapon = pick;
       this._mysteryBusyUntilMs  = now + MYSTERY_SPIN_MS;
       world.chatManager.sendPlayerMessage(host, "Mystery Chest — rolling…", "FFD700");
@@ -1770,16 +1667,12 @@ export class GehennaDirector {
     this._downs      = 0;
     this._revives    = 0;
 
-    this._weaponName   = "Assault Rifle";
-    this._weaponDamage = WEAPON_DAMAGE;
-    this._mag          = MAG_SIZE;
-    this._magMax       = MAG_SIZE;
-    this._reserve      = RESERVE_START;
-    this._packTier     = 0;
+    // Gun state lives on the GunEntity — a fresh one is equipped on deploy.
+    this.despawnGun();
+    this._gunId    = "ar15";
+    this._packTier = 0;
+    this._outOfAmmoMsgAtMs = 0;
 
-    this._reloadUntilMs     = 0;
-    this._nextFireAllowedMs = 0;
-    this._prevMl = false;
     this._prevF  = false;
     this._prevR  = false;
     this._prevC  = false;
@@ -1858,6 +1751,7 @@ export class GehennaDirector {
     if (this._currentMapId === "test_zone") {
       this.spawnTeddyBears(world);
       this.spawnLethalPickups(world);
+      this.spawnWeaponPickups(world);
     }
   }
 
@@ -1914,6 +1808,41 @@ export class GehennaDirector {
     }
   }
 
+  /** Spawns physical weapon pickups (the weapons test range) on the Test Map. */
+  private spawnWeaponPickups(world: World): void {
+    this._weaponPickupEntities = [];
+
+    WEAPON_PICKUP_XZ.forEach((data) => {
+      const groundY = this.findGroundY(world, data.x, data.z);
+      const spawnPos: Vector3Like = { x: data.x, y: groundY + 1.0, z: data.z };
+
+      const pickup = new Entity({
+        name:       `WeaponPickup-${data.weaponKey}`,
+        tag:        "gehenna-weapon-pickup",
+        modelUri:   data.model,
+        modelScale: data.scale,
+        rigidBodyOptions: { type: RigidBodyType.FIXED },
+      });
+      pickup.spawn(world, spawnPos);
+
+      this._weaponPickupEntities.push({
+        entity: pickup,
+        weaponKey: data.weaponKey,
+        label: data.label,
+      });
+    });
+
+    console.log(`[Test Map] Spawned ${WEAPON_PICKUP_XZ.length} weapon pickups`);
+
+    if (this._hostPlayer) {
+      world.chatManager.sendPlayerMessage(
+        this._hostPlayer,
+        `Weapons Range: all ${WEAPON_PICKUP_XZ.length} guns on the floor — walk into one to hold it. LMB fire · R reload · RMB aim.`,
+        "FFD700"
+      );
+    }
+  }
+
   private destroyPropEntities(): void {
     if (this._papEntity?.isSpawned)     this._papEntity.despawn();
     if (this._mysteryEntity?.isSpawned) this._mysteryEntity.despawn();
@@ -1932,6 +1861,11 @@ export class GehennaDirector {
       if (item.entity?.isSpawned) item.entity.despawn();
     });
     this._lethalPickupEntities = [];
+
+    this._weaponPickupEntities.forEach(item => {
+      if (item.entity?.isSpawned) item.entity.despawn();
+    });
+    this._weaponPickupEntities = [];
 
     this._papEntity     = null;
     this._mysteryEntity = null;
@@ -1980,7 +1914,8 @@ export class GehennaDirector {
 
   private weaponDisplayName(): string {
     const pap = this._packTier > 0 ? ` [PaP×${this._packTier}]` : "";
-    return `${this._weaponName}${pap}`;
+    const name = this._gun?.name || GUN_DISPLAY_NAME[this._gunId];
+    return `${name}${pap}`;
   }
 
   private distXZ(a: Vector3Like, b: Vector3Like): number {

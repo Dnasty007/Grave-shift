@@ -1,4 +1,4 @@
-import { MAP_DEV_FLAGS, type GehennaMapId } from "./mapConfig.ts";
+import { MAP_DEV_FLAGS, type GehennaMapId } from "./mapConfig";
 
 /** Lethal equipment ids — must match `assets/ui/index.html` loadout grid. */
 export type LethalId = "frag" | "n74st" | "satchel" | "smine44";

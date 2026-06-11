@@ -6,7 +6,7 @@ import {
   type Vector3Like,
 } from "hytopia";
 import { VFX } from "../VFX";
-import type { LethalId } from "../loadoutConfig.ts";
+import type { LethalId } from "../loadoutConfig";
 
 // Visual model paths
 const FIREBALL      = "models/projectiles/fireball.gltf";
