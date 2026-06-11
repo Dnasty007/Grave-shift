@@ -1,6 +1,8 @@
 import {
   Audio,
   ColliderShape,
+  CollisionGroup,
+  CollisionGroupsBuilder,
   Entity,
   EntityModelAnimationLoopMode,
   GameServer,
@@ -11,11 +13,16 @@ import {
   World,
   WorldLoopEvent,
   type Vector3Like,
-  type WorldLoopEventPayloads
+  type WorldLoopEventPayloads,
+  type WorldMap
 } from "hytopia";
+import worldMap from "../../assets/map.json";
+import testMap from "../../assets/test-map.json";
 import {
   DEFAULT_MAP_ID,
   type GehennaMapId,
+  isSpawnInMapBounds,
+  MAP_BOUNDS,
   MAP_SPAWN,
   normalizeMapId
 } from "./mapConfig";
@@ -34,6 +41,7 @@ import { VFX } from "./VFX";
 import { WeaponManager } from "./WeaponManager";
 import { LethalSystem } from "./lethals/LethalSystem";
 import { createGun, GUN_DISPLAY_NAME, isGunId, type GunEntity, type GunId } from "./guns";
+import { IceDragonBoss } from "./bosses/IceDragonBoss";
 import { Quaternion } from "hytopia";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,8 +77,15 @@ const HEADSHOT_MULTIPLIER = 2.2;
 
 // Headshot detection for raycast hits: a hit counts as a headshot when the bullet's
 // impact point is higher than this fraction above the zombie's capsule centre,
-// scaled by the zombie's per-row model scale. (Official zombies are 0.5–0.7 scale.)
+// scaled by the zombie's per-row model scale.
 const HEADSHOT_Y_THRESHOLD = 0.3; // × row.scale, above entity.position.y
+
+/** Player uses soldier-player.gltf @ 0.5. Zombies use a shorter mesh — scale 1.0 matches player height. */
+const ZOMBIE_MODEL_SCALE = 1.0;
+const DOG_MODEL_SCALE    = 0.85;
+
+/** Block type ids treated as foliage — never used as a zombie spawn floor. */
+const FOLIAGE_BLOCK_IDS = new Set([2]); // birch-leaves
 
 // Zombie body-centre offset for explosion distance checks, per 1.0 of model scale.
 const BODY_CENTER_Y = -0.27;  // × row.scale — offset from capsule centre → mid-torso
@@ -82,6 +97,14 @@ const FIRST_PERSON_CAMERA_OFFSET: Vector3Like = { x: 0, y: 0.5, z: 0 };
 
 // Dog explosion body offset (per 1.0 scale, same convention as BODY_CENTER_Y)
 const DOG_BODY_CENTER_Y = -0.05;
+
+// Ice Dragon boss waves — the dragon descends INSTEAD of a horde on these waves.
+// Test Map: every 2nd wave so the fight is quick to reach while tuning.
+const DRAGON_WAVE_INTERVAL      = 10;
+const DRAGON_WAVE_INTERVAL_TEST = 2;
+const DRAGON_KILL_POINTS        = 2000;
+const DRAGON_HP_PER_KILL        = 2000;  // each slain dragon makes the next one tougher
+const DRAGON_SPAWN_DISTANCE     = 16;    // metres from the player
 
 // Dog wave tuning
 const DOG_WAVE_INTERVAL  = 5;    // every Nth wave is a dog wave
@@ -109,15 +132,21 @@ const MYSTERY_SPIN_MS     = 2_800;
 const MYSTERY_COOLDOWN_MS = 30_000;
 
 // Props
-const INTERACT_RADIUS              = 3.2;
-const PROP_PAP_POS: Vector3Like    = { x: -12, y: 3.8, z: -8 };
-const PROP_MYSTERY_POS: Vector3Like = { x: -30, y: 3.8, z: 4  };
+const INTERACT_RADIUS = 3.2;
+const PROP_PAP_POS: Record<GehennaMapId, Vector3Like> = {
+  industrial_yard: { x: -12, y: 3.8, z: -8 },
+  test_zone:       { x: -14, y: 1.0, z: -14 },
+};
+const PROP_MYSTERY_POS: Record<GehennaMapId, Vector3Like> = {
+  industrial_yard: { x: -30, y: 3.8, z: 4 },
+  test_zone:       { x:  14, y: 1.0, z: -14 },
+};
 
-// Test Map decorations
+// Test Map decorations (flat arena — assets/test-map.json)
 const TEDDY_POSITIONS: Vector3Like[] = [
-  { x: -8,  y: 1.2, z: 20 },
-  { x: -12, y: 1.2, z: 22 },
-  { x: -6,  y: 1.2, z: 17 },
+  { x: -8,  y: 1.2, z: 10 },
+  { x: -12, y: 1.2, z: 12 },
+  { x: -6,  y: 1.2, z: 8  },
 ];
 
 // Explosion safety: Never destroy blocks at or below this Y to protect the main floor of the map.
@@ -131,22 +160,20 @@ const C4_JUMP_HORIZONTAL = 7;    // allows some creative movement (directional j
 // Lethal Testing Pickups (physical objects on Test Map)
 // Spread out and away from the teddy bears for easy access.
 const LETHAL_PICKUP_XZ: { x: number; z: number; lethalId: LethalId; label: string; model: string; scale: number }[] = [
-  { x: -18, z: 12, lethalId: "frag",    label: "Frag Grenade",   model: "models/particles/green-sphere.glb", scale: 1.1 },
-  { x: -20, z: 8,  lethalId: "n74st",   label: "N 74 ST (Sticky)", model: "models/particles/sticky-bomb.glb",  scale: 1.0 },
-  { x: -16, z: 5,  lethalId: "satchel", label: "C4 Satchel",     model: "models/particles/c4-block.glb",     scale: 1.25 },
-  { x: -22, z: 10, lethalId: "smine44", label: "S-Mine 44",      model: "models/particles/smine.glb",        scale: 1.15 },
+  { x: -18, z: -12, lethalId: "frag",    label: "Frag Grenade",     model: "models/particles/green-sphere.glb", scale: 1.1 },
+  { x: -20, z: -8,  lethalId: "n74st",   label: "N 74 ST (Sticky)", model: "models/particles/sticky-bomb.glb",  scale: 1.0 },
+  { x: -16, z: -5,  lethalId: "satchel", label: "C4 Satchel",       model: "models/particles/c4-block.glb",     scale: 1.25 },
+  { x: -22, z: -10, lethalId: "smine44", label: "S-Mine 44",        model: "models/particles/smine.glb",        scale: 1.15 },
 ];
 
-// Weapons Testing Range (Test Map): ALL six official zombies-fps guns laid out on
-// the floor. Run into one to equip it — verifies every gun sits correctly in the
-// player's hands. Mirrors the lethal pickup pattern.
+// Weapons Testing Range (Test Map): all six guns on the north lane of the flat arena.
 const WEAPON_PICKUP_XZ: { x: number; z: number; weaponKey: GunId; label: string; model: string; scale: number }[] = [
-  { x: -6, z: 12, weaponKey: "pistol",       label: "Pistol",       model: "models/items/pistol.glb",       scale: 0.8 },
-  { x: -3, z: 12, weaponKey: "auto-pistol",  label: "Auto Pistol",  model: "models/items/auto-pistol.glb",  scale: 0.8 },
-  { x:  0, z: 12, weaponKey: "shotgun",      label: "Shotgun",      model: "models/items/shotgun.glb",      scale: 0.8 },
-  { x:  3, z: 12, weaponKey: "auto-shotgun", label: "Auto Shotgun", model: "models/items/auto-shotgun.glb", scale: 0.8 },
-  { x:  6, z: 12, weaponKey: "ar15",         label: "AR-15",        model: "models/items/ar-15.glb",        scale: 0.8 },
-  { x:  9, z: 12, weaponKey: "ak47",         label: "AK-47",        model: "models/items/ak-47.glb",        scale: 0.8 },
+  { x: -15, z: 18, weaponKey: "pistol",       label: "Pistol",       model: "models/items/pistol.glb",       scale: 0.8 },
+  { x: -9,  z: 18, weaponKey: "auto-pistol",  label: "Auto Pistol",  model: "models/items/auto-pistol.glb",  scale: 0.8 },
+  { x: -3,  z: 18, weaponKey: "shotgun",      label: "Shotgun",      model: "models/items/shotgun.glb",      scale: 0.8 },
+  { x:  3,  z: 18, weaponKey: "auto-shotgun", label: "Auto Shotgun", model: "models/items/auto-shotgun.glb", scale: 0.8 },
+  { x:  9,  z: 18, weaponKey: "ar15",         label: "AR-15",        model: "models/items/ar-15.glb",        scale: 0.8 },
+  { x: 15,  z: 18, weaponKey: "ak47",         label: "AK-47",        model: "models/items/ak-47.glb",        scale: 0.8 },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -215,7 +242,7 @@ type ZombieRow = {
   speed:           number;
   attackCooldownS: number; // seconds until next melee hit allowed
   isDog:           boolean;
-  scale:           number; // per-zombie modelScale (official: 0.5 + rand*0.2) — used for headshot height + explosion offsets
+  scale:           number; // per-zombie modelScale — used for headshot height + explosion offsets
 };
 
 // Mystery box rolls among the official zombies-fps guns (minus whatever you're holding).
@@ -227,6 +254,7 @@ const MYSTERY_POOL: GunId[] = ["pistol", "auto-pistol", "shotgun", "auto-shotgun
 
 export class GehennaDirector {
   private _world: World | null = null;
+  private _loadedMapId: GehennaMapId | null = null;
   private _sessionStarted = false;
 
   // Identity
@@ -243,6 +271,11 @@ export class GehennaDirector {
 
   // Zombie horde
   private _zombies: ZombieRow[] = [];
+
+  // Ice Dragon boss (dragon waves)
+  private _boss: IceDragonBoss | null = null;
+  private _dragonsSlain = 0;
+  private _isDragonWave = false;
 
   // Props
   private _papEntity: Entity | null = null;
@@ -341,6 +374,7 @@ export class GehennaDirector {
     if (this._world === world) return;
     this.detach();
     this._world = world;
+    this._loadedMapId = DEFAULT_MAP_ID; // index.ts already loaded assets/map.json
     world.loop.on(WorldLoopEvent.TICK_START, this._onTick);
   }
 
@@ -395,6 +429,7 @@ export class GehennaDirector {
 
     this.stopTeddyVictorySong(); // Stop any victory song when starting a fresh game
     this.resetRunState();
+    this.ensureMapLoaded(world, mapId);
     this.teleportHostToMapSpawn(world, player, mapId);
     this.spawnWorldProps(world);
 
@@ -414,7 +449,7 @@ export class GehennaDirector {
     }
 
     const tip = mapId === "test_zone"
-      ? "Test Zone active — 999 lethals, press G to throw. LMB fire · R reload · F interact · C camera."
+      ? "Test Zone — flat arena loaded. 999 lethals, all guns on the north lane, PaP/Mystery on the south. LMB fire · R reload · G lethal · F interact."
       : "Wave 1 inbound. LMB fire · R reload · G lethal · F interact · C toggle 1st/3rd person.";
     world.chatManager.sendPlayerMessage(player, tip, "00FFAA");
   }
@@ -549,6 +584,7 @@ export class GehennaDirector {
 
     this.stopTeddyVictorySong(); // Stop victory song on restart / new game
     this.resetRunState();
+    this.ensureMapLoaded(world, mapId);
     this.teleportHostToMapSpawn(world, player, mapId);
     this.spawnWorldProps(world);
 
@@ -630,7 +666,7 @@ export class GehennaDirector {
       type:           "gehennaHud",
       health:         this._health,
       maxHealth:      PLAYER_MAX_HEALTH,
-      hostiles:       this._zombies.length,
+      hostiles:       this._zombies.length + (this._boss?.isAlive ? 1 : 0),
       score:          this._points,
       weapon:         this.weaponDisplayName(),
       magAmmo:        gun?.ammo ?? 0,
@@ -666,6 +702,10 @@ export class GehennaDirector {
     this.tickZombies(dtS, pe, host, w);
 
     // endRun() inside tickZombies sets _sessionStarted = false — bail if so
+    if (!this._sessionStarted) return;
+
+    // Ice Dragon boss AI (dragon waves). Its attacks can also end the run.
+    this._boss?.tick(dtS);
     if (!this._sessionStarted) return;
 
     this.tickCameraToggle(host, w);
@@ -718,8 +758,8 @@ export class GehennaDirector {
       }
     }
 
-    // Wave-cleared detection: all queued spawns done AND no zombies alive
-    if (this._waveActive && this._queuedSpawns === 0 && this._zombies.length === 0) {
+    // Wave-cleared detection: all queued spawns done, no zombies alive, AND no boss
+    if (this._waveActive && this._queuedSpawns === 0 && this._zombies.length === 0 && !this._boss) {
       this._waveActive = false;
       world.chatManager.sendPlayerMessage(
         host,
@@ -734,14 +774,20 @@ export class GehennaDirector {
     this._round += 1;
     const w = this._round;
 
-    // Every DOG_WAVE_INTERVAL rounds spawn a dog wave instead of zombies.
-    this._isDogWave = (w % DOG_WAVE_INTERVAL === 0);
+    // Dragon wave takes precedence, then dog waves, then regular hordes.
+    const dragonEvery = this._currentMapId === "test_zone"
+      ? DRAGON_WAVE_INTERVAL_TEST
+      : DRAGON_WAVE_INTERVAL;
+    this._isDragonWave = (w % dragonEvery === 0);
+    this._isDogWave    = !this._isDragonWave && (w % DOG_WAVE_INTERVAL === 0);
 
     // Scale zombie health / speed with wave number (exact legacy formulas).
     this._waveZombieHealth = Z_BASE_HEALTH + (w - 1) * Z_HEALTH_PER_WAVE;
     this._waveZombieSpeed  = Z_BASE_SPEED  + (w - 1) * Z_SPEED_PER_WAVE;
 
-    if (this._isDogWave) {
+    if (this._isDragonWave) {
+      this._queuedSpawns = 0; // the dragon IS the wave
+    } else if (this._isDogWave) {
       this._queuedSpawns = DOG_WAVE_COUNT;
     } else {
       this._queuedSpawns = WAVE_STARTING_COUNT + (w - 1) * WAVE_ADDITIONAL_PER_WAVE;
@@ -751,7 +797,15 @@ export class GehennaDirector {
     this._waveActive     = true;
 
     this.pushRoundToPlayer(host);
-    if (this._isDogWave) {
+    if (this._isDragonWave) {
+      const pe = this.getHostPlayerEntity(world, host);
+      if (pe) this.spawnIceDragon(world, pe);
+      world.chatManager.sendPlayerMessage(
+        host,
+        `WAVE ${w} — THE ICE DRAGON DESCENDS! Bring it down!`,
+        "66CCFF"
+      );
+    } else if (this._isDogWave) {
       world.chatManager.sendPlayerMessage(
         host,
         `WAVE ${w} — HELLHOUND PACK! ${this._queuedSpawns} dogs inbound!`,
@@ -767,131 +821,237 @@ export class GehennaDirector {
     this.syncHud(host);
   }
 
-  private spawnOneZombie(world: World, pe: PlayerEntity): void {
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Ice Dragon boss (dragon waves)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  private spawnIceDragon(world: World, pe: PlayerEntity): void {
+    this.clearBoss();
+
+    // Spawn on the ground at a ring distance from the player, inside map bounds
     const base = pe.position;
-    const ang  = Math.random() * Math.PI * 2;
-    const dist = SPAWN_RING_MIN + Math.random() * (SPAWN_RING_MAX - SPAWN_RING_MIN);
-
-    const targetX = base.x + Math.sin(ang) * dist;
-    const targetZ = base.z + Math.cos(ang) * dist;
-
-    // Find actual ground level so zombies don't spawn floating in the air
-    const groundY = this.findGroundY(world, targetX, targetZ);
-
-    const spawnPos: Vector3Like = {
-      x: targetX,
-      y: groundY + 0.1, // small extra offset for the capsule collider + model
-      z: targetZ
-    };
-
-    // Official zombies-fps zombie scale: 0.5 + rand*0.2 — matches the soldier-player
-    // rig @ 0.5 so player and horde are correctly proportioned. Slight per-zombie
-    // variation also makes the horde look more organic.
-    const zScale = 0.5 + Math.random() * 0.2;
-
-    const zEnt = new Entity({
-      name:       `Zombie-W${this._round}-${(Date.now() % 100_000)}`,
-      tag:        "gehenna-zombie",
-      modelUri:   "models/enemies/zombie.gltf",
-      modelScale: zScale,
-      rigidBodyOptions: {
-        type: RigidBodyType.KINEMATIC_VELOCITY,
-        colliders: [
-          {
-            // Capsule scaled to match the model (base values were tuned at scale 1.0)
-            shape:      ColliderShape.CAPSULE,
-            halfHeight: 0.45 * zScale,
-            radius:     0.28 * zScale,
-            tag:        "body"
-          }
-        ]
-      }
-    });
-    zEnt.spawn(world, spawnPos);
-
-    // Wave-scaled animation: walk (slow traumatic shamble) → run as speed increases.
-    // Wave 1 starts at 0.5× playback (dragging lurch), ramps to 1.0 by wave 5,
-    // then switches to the "run" clip from wave 6 onward (speed > RUN_THRESHOLD).
-    const RUN_THRESHOLD = Z_BASE_SPEED + 5 * Z_SPEED_PER_WAVE; // ≈ 1.80 m/s, wave 6
-    if (this._waveZombieSpeed >= RUN_THRESHOLD) {
-      const runAnim = zEnt.getModelAnimation("run");
-      if (runAnim) {
-        runAnim.setLoopMode(EntityModelAnimationLoopMode.LOOP);
-        runAnim.setPlaybackRate(Math.min(this._waveZombieSpeed / RUN_THRESHOLD, 1.5));
-        runAnim.play();
-      }
-    } else {
-      const walkAnim = zEnt.getModelAnimation("walk");
-      if (walkAnim) {
-        walkAnim.setLoopMode(EntityModelAnimationLoopMode.LOOP);
-        // Speed range Z_BASE_SPEED → RUN_THRESHOLD maps to rate 0.50 → 1.0.
-        // Wave 1 = 0.50× (traumatic slow shamble), wave 5 ≈ 1.0× (normal trudge).
-        const t = (this._waveZombieSpeed - Z_BASE_SPEED) / (RUN_THRESHOLD - Z_BASE_SPEED);
-        walkAnim.setPlaybackRate(0.5 + t * 0.5);
-        walkAnim.play();
-      }
+    let spawnPos: Vector3Like = { x: base.x + DRAGON_SPAWN_DISTANCE, y: base.y + 1.2, z: base.z };
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const ang = Math.random() * Math.PI * 2;
+      const x = base.x + Math.sin(ang) * DRAGON_SPAWN_DISTANCE;
+      const z = base.z + Math.cos(ang) * DRAGON_SPAWN_DISTANCE;
+      if (!isSpawnInMapBounds({ x, y: 0, z }, this._currentMapId)) continue;
+      const groundTop = this.findGroundTop(world, x, z);
+      if (groundTop === null || groundTop > 4) continue;
+      spawnPos = { x, y: groundTop + 1.2, z };
+      break;
     }
 
-    this._zombies.push({
-      entity:          zEnt,
-      hp:              this._waveZombieHealth,
-      speed:           this._waveZombieSpeed,
-      attackCooldownS: 0,
-      isDog:           false,
-      scale:           zScale
-    });
+    this._boss = new IceDragonBoss(
+      world,
+      spawnPos,
+      {
+        getPlayerPos: () => {
+          if (!this._world || !this._hostPlayer) return null;
+          const hostPe = this.getHostPlayerEntity(this._world, this._hostPlayer);
+          return hostPe?.position ?? null;
+        },
+        damagePlayer: (amount, isHeavy) => this.damageHost(amount, isHeavy),
+        knockbackPlayer: (fromPos, horizontal, vertical) => {
+          if (!this._world || !this._hostPlayer) return;
+          const hostPe = this.getHostPlayerEntity(this._world, this._hostPlayer);
+          if (!hostPe) return;
+          const pp = hostPe.position;
+          let dx = pp.x - fromPos.x, dz = pp.z - fromPos.z;
+          const len = Math.hypot(dx, dz) || 1;
+          dx /= len; dz /= len;
+          try {
+            hostPe.setLinearVelocity({ x: dx * horizontal, y: vertical, z: dz * horizontal });
+          } catch {}
+        },
+        onDeath: () => {
+          this._boss = null;
+          this._dragonsSlain += 1;
+          this._kills += 1;
+          this._points += DRAGON_KILL_POINTS;
+          if (this._world && this._hostPlayer) {
+            this._world.chatManager.sendPlayerMessage(
+              this._hostPlayer,
+              `ICE DRAGON SLAIN!  +${DRAGON_KILL_POINTS} pts`,
+              "FFD700"
+            );
+            this.syncHud(this._hostPlayer);
+          }
+        },
+        announce: (msg, color) => {
+          if (this._world && this._hostPlayer) {
+            this._world.chatManager.sendPlayerMessage(this._hostPlayer, msg, color ?? "66CCFF");
+          }
+        },
+      },
+      this._dragonsSlain * DRAGON_HP_PER_KILL
+    );
+  }
+
+  /** Damage the host player (boss attacks). Mirrors the zombie melee feedback path. */
+  private damageHost(amount: number, isHeavy: boolean): void {
+    const world = this._world;
+    const host  = this._hostPlayer;
+    if (!world || !host || !this._sessionStarted) return;
+
+    this._health = Math.max(0, this._health - amount);
+
+    // Red flash + screen shake on the client (same payload the zombie melee uses;
+    // isDog=true triggers the heavier feedback — fitting for dragon hits)
+    try {
+      host.ui.sendData({
+        type: "playerHit",
+        damage: amount,
+        isDog: isHeavy,
+      } satisfies GehennaPlayerHitPayload);
+    } catch {}
+
+    this.syncHud(host);
+
+    if (this._health <= 0) {
+      this.endRun(world, host);
+    }
+  }
+
+  private clearBoss(): void {
+    if (this._boss) {
+      this._boss.destroy();
+      this._boss = null;
+    }
+  }
+
+  private spawnOneZombie(world: World, pe: PlayerEntity): void {
+    const base = pe.position;
+    const zScale = ZOMBIE_MODEL_SCALE;
+    const capHalf = 0.45 * zScale;
+    const capRad  = 0.28 * zScale;
+
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const ang  = Math.random() * Math.PI * 2;
+      const dist = SPAWN_RING_MIN + Math.random() * (SPAWN_RING_MAX - SPAWN_RING_MIN);
+      const targetX = base.x + Math.sin(ang) * dist;
+      const targetZ = base.z + Math.cos(ang) * dist;
+
+      if (!isSpawnInMapBounds({ x: targetX, y: 0, z: targetZ }, this._currentMapId)) continue;
+
+      const groundTop = this.findGroundTop(world, targetX, targetZ);
+      if (groundTop === null || groundTop > 4) continue;
+
+      const spawnPos: Vector3Like = {
+        x: targetX,
+        y: groundTop + capHalf + capRad,
+        z: targetZ,
+      };
+
+      const zEnt = new Entity({
+        name:       `Zombie-W${this._round}-${(Date.now() % 100_000)}`,
+        tag:        "gehenna-zombie",
+        modelUri:   "models/enemies/zombie.gltf",
+        modelScale: zScale,
+        rigidBodyOptions: {
+          type: RigidBodyType.KINEMATIC_VELOCITY,
+          colliders: [
+            {
+              shape:      ColliderShape.CAPSULE,
+              halfHeight: capHalf,
+              radius:     capRad,
+              tag:        "body"
+            }
+          ]
+        }
+      });
+      zEnt.spawn(world, spawnPos);
+
+      const RUN_THRESHOLD = Z_BASE_SPEED + 5 * Z_SPEED_PER_WAVE;
+      if (this._waveZombieSpeed >= RUN_THRESHOLD) {
+        const runAnim = zEnt.getModelAnimation("run");
+        if (runAnim) {
+          runAnim.setLoopMode(EntityModelAnimationLoopMode.LOOP);
+          runAnim.setPlaybackRate(Math.min(this._waveZombieSpeed / RUN_THRESHOLD, 1.5));
+          runAnim.play();
+        }
+      } else {
+        const walkAnim = zEnt.getModelAnimation("walk");
+        if (walkAnim) {
+          walkAnim.setLoopMode(EntityModelAnimationLoopMode.LOOP);
+          const t = (this._waveZombieSpeed - Z_BASE_SPEED) / (RUN_THRESHOLD - Z_BASE_SPEED);
+          walkAnim.setPlaybackRate(0.5 + t * 0.5);
+          walkAnim.play();
+        }
+      }
+
+      this._zombies.push({
+        entity:          zEnt,
+        hp:              this._waveZombieHealth,
+        speed:           this._waveZombieSpeed,
+        attackCooldownS: 0,
+        isDog:           false,
+        scale:           zScale
+      });
+      return;
+    }
   }
 
   private spawnOneDog(world: World, pe: PlayerEntity): void {
     const base = pe.position;
-    const ang  = Math.random() * Math.PI * 2;
-    const dist = SPAWN_RING_MIN + Math.random() * (SPAWN_RING_MAX - SPAWN_RING_MIN);
+    const dogScale = DOG_MODEL_SCALE;
+    const capHalf = 0.18 * dogScale;
+    const capRad  = 0.22 * dogScale;
 
-    const spawnPos: Vector3Like = {
-      x: base.x + Math.sin(ang) * dist,
-      y: base.y,
-      z: base.z + Math.cos(ang) * dist
-    };
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const ang  = Math.random() * Math.PI * 2;
+      const dist = SPAWN_RING_MIN + Math.random() * (SPAWN_RING_MAX - SPAWN_RING_MIN);
+      const targetX = base.x + Math.sin(ang) * dist;
+      const targetZ = base.z + Math.cos(ang) * dist;
 
-    // Scaled to fit the official world proportions (player 0.5, zombies 0.5–0.7)
-    const dogScale = 0.6;
+      if (!isSpawnInMapBounds({ x: targetX, y: 0, z: targetZ }, this._currentMapId)) continue;
 
-    const dEnt = new Entity({
-      name:       `HellHound-W${this._round}-${(Date.now() % 100_000)}`,
-      tag:        "gehenna-zombie",
-      modelUri:   "models/npcs/animals/dog-german-shepherd.gltf",
-      modelScale: dogScale,
-      rigidBodyOptions: {
-        type: RigidBodyType.KINEMATIC_VELOCITY,
-        colliders: [
-          {
-            shape:      ColliderShape.CAPSULE,
-            halfHeight: 0.18 * dogScale,
-            radius:     0.22 * dogScale,
-            tag:        "body"
-          }
-        ]
+      const groundTop = this.findGroundTop(world, targetX, targetZ);
+      if (groundTop === null || groundTop > 4) continue;
+
+      const spawnPos: Vector3Like = {
+        x: targetX,
+        y: groundTop + capHalf + capRad,
+        z: targetZ,
+      };
+
+      const dEnt = new Entity({
+        name:       `HellHound-W${this._round}-${(Date.now() % 100_000)}`,
+        tag:        "gehenna-zombie",
+        modelUri:   "models/npcs/animals/dog-german-shepherd.gltf",
+        modelScale: dogScale,
+        rigidBodyOptions: {
+          type: RigidBodyType.KINEMATIC_VELOCITY,
+          colliders: [
+            {
+              shape:      ColliderShape.CAPSULE,
+              halfHeight: capHalf,
+              radius:     capRad,
+              tag:        "body"
+            }
+          ]
+        }
+      });
+      dEnt.spawn(world, spawnPos);
+
+      const runAnim = dEnt.getModelAnimation("run");
+      if (runAnim) {
+        runAnim.setLoopMode(EntityModelAnimationLoopMode.LOOP);
+        runAnim.setPlaybackRate(1.2 + (this._round - DOG_WAVE_INTERVAL) * 0.05);
+        runAnim.play();
       }
-    });
-    dEnt.spawn(world, spawnPos);
 
-    // Dogs sprint — run animation, rate scales with wave number (frantic from wave 5+).
-    const runAnim = dEnt.getModelAnimation("run");
-    if (runAnim) {
-      runAnim.setLoopMode(EntityModelAnimationLoopMode.LOOP);
-      runAnim.setPlaybackRate(1.2 + (this._round - DOG_WAVE_INTERVAL) * 0.05);
-      runAnim.play();
+      const dogHp = DOG_BASE_HEALTH + (this._round - 1) * DOG_HEALTH_PER_WAVE;
+      this._zombies.push({
+        entity:          dEnt,
+        hp:              dogHp,
+        speed:           DOG_SPEED,
+        attackCooldownS: 0,
+        isDog:           true,
+        scale:           dogScale
+      });
+      return;
     }
-
-    const dogHp = DOG_BASE_HEALTH + (this._round - 1) * DOG_HEALTH_PER_WAVE;
-    this._zombies.push({
-      entity:          dEnt,
-      hp:              dogHp,
-      speed:           DOG_SPEED,
-      attackCooldownS: 0,
-      isDog:           true,
-      scale:           dogScale
-    });
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1283,6 +1443,19 @@ export class GehennaDirector {
       }
     }
 
+    // Explosions also hurt the Ice Dragon (lethals are a big part of the boss DPS plan)
+    if (this._boss?.isAlive) {
+      const bp = this._boss.entity.position;
+      const dist = Math.hypot(bp.x - center.x, bp.y - center.y, bp.z - center.z);
+      // The dragon is huge — give the blast a little extra effective reach against it
+      if (dist <= blastRadius + 1.5) {
+        const falloff = Math.max(0.25, 1 - dist / (blastRadius + 1.5));
+        this._boss.takeDamage(Math.round(baseDamage * falloff));
+        this._points += PTS_HIT;
+        hudDirty = true;
+      }
+    }
+
     if (hudDirty) this.syncHud(host);
 
     // === Block Destruction & Physics Debris ===
@@ -1404,7 +1577,7 @@ export class GehennaDirector {
     }
   }
 
-  /** Raycast hit resolution — zombies (damage/points/headshots) and teddies (test map). */
+  /** Raycast hit resolution — boss, zombies (damage/points/headshots), teddies (test map). */
   private onGunHit(hitEntity: Entity, hitPoint: Vector3Like, baseDamage: number): void {
     const world = this._world;
     const host  = this._hostPlayer;
@@ -1413,6 +1586,18 @@ export class GehennaDirector {
     // Test-map teddy bears launch when shot
     if (this._teddyEntities.includes(hitEntity)) {
       this.launchTeddyBear(hitEntity, world);
+      return;
+    }
+
+    // Ice Dragon boss — flat damage × PaP (no headshot bonus on the dragon)
+    if (this._boss?.isAlive && hitEntity === this._boss.entity) {
+      this._shotsHit += 1;
+      const tierMul = Math.pow(PAP_DAMAGE_FACTOR, this._packTier);
+      const dmg = Math.round(baseDamage * tierMul);
+      VFX.bloodHit(world, hitPoint, false);
+      this._points += PTS_HIT;
+      this._boss.takeDamage(dmg);
+      this.syncHud(host);
       return;
     }
 
@@ -1720,6 +1905,8 @@ export class GehennaDirector {
     this._waveZombieHealth  = Z_BASE_HEALTH;
     this._waveZombieSpeed   = Z_BASE_SPEED;
     this._isDogWave         = false;
+    this._isDragonWave      = false;
+    this._dragonsSlain      = 0;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1729,6 +1916,10 @@ export class GehennaDirector {
   private spawnWorldProps(world: World): void {
     this.destroyPropEntities();
 
+    const mapId = this._currentMapId;
+    const papPos = this.snapPropToGround(world, PROP_PAP_POS[mapId]);
+    const mysteryPos = this.snapPropToGround(world, PROP_MYSTERY_POS[mapId]);
+
     this._papEntity = new Entity({
       name:       "Pack-a-Punch",
       tag:        "gehenna-pap",
@@ -1736,7 +1927,7 @@ export class GehennaDirector {
       modelScale: 1.05,
       rigidBodyOptions: { type: RigidBodyType.FIXED }
     });
-    this._papEntity.spawn(world, PROP_PAP_POS);
+    this._papEntity.spawn(world, papPos);
 
     this._mysteryEntity = new Entity({
       name:       "Mystery Chest",
@@ -1745,7 +1936,7 @@ export class GehennaDirector {
       modelScale: 1.0,
       rigidBodyOptions: { type: RigidBodyType.FIXED }
     });
-    this._mysteryEntity.spawn(world, PROP_MYSTERY_POS);
+    this._mysteryEntity.spawn(world, mysteryPos);
 
     // Spawn Test Map specific decorations and testing tools
     if (this._currentMapId === "test_zone") {
@@ -1759,6 +1950,8 @@ export class GehennaDirector {
     this._teddyEntities = [];
 
     TEDDY_POSITIONS.forEach((pos, index) => {
+      const groundTop = this.findGroundTop(world, pos.x, pos.z) ?? 1;
+      const spawnPos: Vector3Like = { x: pos.x, y: groundTop + 0.2, z: pos.z };
       const teddy = new Entity({
         name:       `TeddyBear-${index + 1}`,
         tag:        "gehenna-decoration",
@@ -1766,7 +1959,7 @@ export class GehennaDirector {
         modelScale: 1.0,
         rigidBodyOptions: { type: RigidBodyType.FIXED }
       });
-      teddy.spawn(world, pos);
+      teddy.spawn(world, spawnPos);
       this._teddyEntities.push(teddy);
     });
   }
@@ -1776,9 +1969,8 @@ export class GehennaDirector {
     this._lethalPickupEntities = [];
 
     LETHAL_PICKUP_XZ.forEach((data) => {
-      const groundY = this.findGroundY(world, data.x, data.z);
-      // Nice floating height above the actual floor
-      const spawnPos: Vector3Like = { x: data.x, y: groundY + 0.9, z: data.z };
+      const groundTop = this.findGroundTop(world, data.x, data.z) ?? 1;
+      const spawnPos: Vector3Like = { x: data.x, y: groundTop + 0.9, z: data.z };
 
       const pickup = new Entity({
         name:       `LethalPickup-${data.lethalId}`,
@@ -1813,8 +2005,8 @@ export class GehennaDirector {
     this._weaponPickupEntities = [];
 
     WEAPON_PICKUP_XZ.forEach((data) => {
-      const groundY = this.findGroundY(world, data.x, data.z);
-      const spawnPos: Vector3Like = { x: data.x, y: groundY + 1.0, z: data.z };
+      const groundTop = this.findGroundTop(world, data.x, data.z) ?? 1;
+      const spawnPos: Vector3Like = { x: data.x, y: groundTop + 1.0, z: data.z };
 
       const pickup = new Entity({
         name:       `WeaponPickup-${data.weaponKey}`,
@@ -1880,6 +2072,10 @@ export class GehennaDirector {
       if (z.entity.isSpawned) z.entity.despawn();
     }
     this._zombies = [];
+
+    // Every "all hostiles down" teardown (run end, quit, reset, detach) also
+    // removes the Ice Dragon and its live projectiles.
+    this.clearBoss();
   }
 
   private getHostPlayerEntity(
@@ -1952,28 +2148,63 @@ export class GehennaDirector {
     ).catch(() => {});
   }
 
-  /**
-   * Finds the highest solid block at the given X/Z coordinates and returns
-   * a Y value so the zombie's feet sit on the ground instead of spawning in the air.
-   */
-  private findGroundY(world: World, x: number, z: number, startY = 50): number {
+  /** Swap voxel worlds when the player picks a different deploy zone. */
+  private ensureMapLoaded(world: World, mapId: GehennaMapId): void {
+    if (this._loadedMapId === mapId) return;
+
+    const data = (mapId === "test_zone" ? testMap : worldMap) as WorldMap;
+    world.loadMap(data);
+    this._loadedMapId = mapId;
+    console.log(`[Gehenna] Loaded map: ${mapId}`);
+  }
+
+  /** Walkable ground surface Y (top of block). Skips foliage so spawns land on the floor. */
+  private findGroundTop(world: World, x: number, z: number): number | null {
     const cx = Math.floor(x);
     const cz = Math.floor(z);
+    const maxY = this._currentMapId === "test_zone" ? 2 : 3;
 
-    for (let y = startY; y >= -2; y--) {
+    for (let y = maxY; y >= -2; y--) {
       try {
         const blockId = world.chunkLattice.getBlockId({ x: cx, y, z: cz });
-        if (blockId !== 0) {
-          // Return a safe height above the block top.
-          // The zombie capsule + model needs a bit of extra clearance.
-          return y + 1.35;
+        if (blockId === 0 || FOLIAGE_BLOCK_IDS.has(blockId)) continue;
+
+        const aboveId = world.chunkLattice.getBlockId({ x: cx, y: y + 1, z: cz });
+        if (aboveId === 0) {
+          return y + 1;
         }
       } catch {
-        // Chunk may not be loaded yet — continue searching
+        // Chunk may not be loaded yet
       }
     }
 
-    return 1.0; // safe fallback
+    // Physics raycast fallback for uneven terrain / unloaded lattice edge cases
+    try {
+      const hit = world.simulation.raycast(
+        { x, y: 64, z },
+        { x: 0, y: -1, z: 0 },
+        128,
+        {
+          filterGroups: CollisionGroupsBuilder.buildRawCollisionGroups({
+            belongsTo: [CollisionGroup.ALL],
+            collidesWith: [CollisionGroup.BLOCK],
+          }),
+        }
+      );
+      if (hit?.hitPoint) return hit.hitPoint.y;
+    } catch {
+      void 0;
+    }
+
+    return null;
+  }
+
+  /** Place a fixed prop on the ground at its X/Z, preserving model height offset. */
+  private snapPropToGround(world: World, pos: Vector3Like): Vector3Like {
+    const groundTop = this.findGroundTop(world, pos.x, pos.z);
+    if (groundTop === null) return pos;
+    const lift = Math.max(0, pos.y - 1);
+    return { x: pos.x, y: groundTop + lift, z: pos.z };
   }
 
   /**

@@ -235,7 +235,7 @@ startServer((world) => {
     // OFFICIAL zombies-fps player setup: soldier-player.gltf @ 0.5. This is THE
     // rig every official FPS value is tuned for — gun hand-anchor transform,
     // underscore animations (idle_gun_both etc), FP hidden nodes, camera offset.
-    // Zombies are scaled 0.5–0.7 (also official) so proportions match.
+    // Zombies are scaled to match player height (see GehennaDirector ZOMBIE_MODEL_SCALE).
     const playerEntity = new DefaultPlayerEntity({
       player,
       name: "Player",
