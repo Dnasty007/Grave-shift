@@ -62,8 +62,38 @@ const SKYBOX_NIGHT = "skyboxes/black";
  * Per-map sky/lighting profiles.
  * - "industrial_yard": moody night look (main game)
  * - "test_zone": bright clear day for mechanics QA and visibility during testing
+ * - "high_bastion": overcast daylight for castle exploration
+ * - "the_sprawl": amber urban dusk for the mega city map
  */
 function applyGehennaSky(world: World, mapId: GehennaMapId = DEFAULT_MAP_ID): void {
+  if (mapId === "the_sprawl") {
+    world.setSkyboxUri(SKYBOX_NIGHT);
+    world.setSkyboxIntensity(0.55);
+    world.setAmbientLightColor({ r: 48, g: 42, b: 52 });
+    world.setAmbientLightIntensity(1.0);
+    world.setDirectionalLightColor({ r: 255, g: 175, b: 95 });
+    world.setDirectionalLightIntensity(0.52);
+    world.setDirectionalLightPosition({ x: 60, y: 80, z: -50 });
+    world.setFogColor({ r: 28, g: 22, b: 18 });
+    world.setFogNear(60);
+    world.setFogFar(220);
+    return;
+  }
+
+  if (mapId === "high_bastion") {
+    world.setSkyboxUri(SKYBOX_DAY);
+    world.setSkyboxIntensity(0.82);
+    world.setAmbientLightColor({ r: 195, g: 200, b: 215 });
+    world.setAmbientLightIntensity(0.72);
+    world.setDirectionalLightColor({ r: 240, g: 235, b: 220 });
+    world.setDirectionalLightIntensity(0.95);
+    world.setDirectionalLightPosition({ x: -30, y: 100, z: 45 });
+    world.setFogColor({ r: 140, g: 148, b: 165 });
+    world.setFogNear(90);
+    world.setFogFar(280);
+    return;
+  }
+
   if (mapId === "test_zone") {
     // Bright, clear test sky — maximum visibility for debugging lethals, weapons, zombies etc.
     world.setSkyboxUri(SKYBOX_DAY);
@@ -132,7 +162,7 @@ startServer((world) => {
               : "";
         /** Prefer `{ type: "gehenna", cmd: "…" }` if platform treats bare `quitToMenu` oddly. */
         const action =
-          t === "gehenna" && cmd ? cmd : t === "restartRun" || t === "quitToMenu" ? t : "";
+          t === "gehenna" && cmd ? cmd : t === "restartRun" || t === "quitToMenu" || t === "toggleFly" ? t : "";
 
         // #region agent log
         const dbgRestartOrQuit =
@@ -189,6 +219,14 @@ startServer((world) => {
         // Having both paths caused double-throws on every G press; server-side polling wins.
         if (t === "uiReady") {
           gehennaDirector.resyncScreenForUiMount(player);
+          return;
+        }
+        if (t === "gamePause") {
+          gehennaDirector.setGamePaused(w, player, payload.paused === true);
+          return;
+        }
+        if (t === "toggleFly" || action === "toggleFly") {
+          gehennaDirector.toggleFlyMode(w, player);
           return;
         }
         /* Single-field types (like uiReady) — some runtimes strip unknown sibling keys on UI packets. */

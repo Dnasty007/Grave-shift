@@ -28,6 +28,20 @@ import { VFX } from "../VFX";
 
 // ── Tuning ───────────────────────────────────────────────────────────────────
 const MODEL_SCALE   = 0.4;    // raw model ~13u long → ~5.4u long, ~4.2u tall in-world
+/** ice-dragon.glb Dragon_client axis-aligned bounds (metres, unscaled). */
+const MODEL_BBOX_MIN_Y = 0.87461;
+const MODEL_BBOX_MAX_Y = 15.29705;
+/** Rig origin sits near bbox centre — raise entity so feet rest on the floor. */
+const MODEL_HALF_HEIGHT = ((MODEL_BBOX_MAX_Y - MODEL_BBOX_MIN_Y) * 0.5) * MODEL_SCALE;
+/** Small lift so belly/legs clear the grass voxel surface (matches how players stand on y+1). */
+const GROUND_SURFACE_LIFT = 0.55;
+
+/** World Y for entity.position so the dragon walks on top of groundTop blocks. */
+export function iceDragonSpawnY(groundTop: number, playerFloorOffset = 0): number {
+  const fromBbox = groundTop + MODEL_HALF_HEIGHT + GROUND_SURFACE_LIFT;
+  const fromPlayer = groundTop + playerFloorOffset;
+  return Math.max(fromBbox, fromPlayer);
+}
 const BASE_HP       = 6000;
 const WALK_SPEED    = 2.3;
 
@@ -226,6 +240,10 @@ export class IceDragonBoss {
 
   private _tickGround(dtS: number, p: Vector3Like): void {
     const bp = this.entity.position;
+    // Kinematic chase can sink the model into voxel blocks — lock Y to the floor.
+    if (Math.abs(bp.y - this._groundY) > 0.02) {
+      try { this.entity.setPosition({ x: bp.x, y: this._groundY, z: bp.z }); } catch {}
+    }
     const dx = p.x - bp.x, dz = p.z - bp.z;
     const dist = Math.hypot(dx, dz);
 

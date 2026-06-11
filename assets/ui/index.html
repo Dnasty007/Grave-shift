@@ -281,7 +281,7 @@
     else                  { _hideQuitConfirm(); }
   }
 
-  function closePauseMenu() {
+  function closePauseMenu(resumeGame) {
     _pauseOpen = false;
     _hideQuitConfirm();
     var ov = q('pause-overlay');
@@ -291,6 +291,9 @@
     var setp = q('pause-panel-settings');
     if (main) main.style.display = 'flex';
     if (setp) setp.style.display = 'none';
+    if (resumeGame !== false && typeof hytopia !== 'undefined') {
+      hytopia.sendData({ type: 'gamePause', paused: false });
+    }
   }
 
   function openPauseMenu() {
@@ -302,12 +305,15 @@
     _pauseSetView('main');
     ov.style.display = 'flex';
     ov.setAttribute('aria-hidden', 'false');
-    if (typeof hytopia !== 'undefined' && hytopia.lockPointer) hytopia.lockPointer(false);
+    if (typeof hytopia !== 'undefined') {
+      if (hytopia.lockPointer) hytopia.lockPointer(false);
+      hytopia.sendData({ type: 'gamePause', paused: true });
+    }
   }
 
   function resumeFromPause() {
     if (!_pauseOpen) return;
-    closePauseMenu();
+    closePauseMenu(true);
     var hs = q('hud-screen');
     if (hs && hs.style.display !== 'none') {
       if (typeof hytopia !== 'undefined' && hytopia.lockPointer) hytopia.lockPointer(true);
@@ -347,6 +353,8 @@
     if (typeof hytopia !== 'undefined') hytopia.sendData({ type: 'gehennaUseLethal' });
   };
   document.addEventListener('keydown', window._gehLethalKeyOld, true);
+
+  /* Dev fly: V is polled on the server (like C for camera). No UI key handler — avoids double-toggle. */
 
   function initPauseSettingsSliders() {
     bindSlider('pause-setting-mouse-sens',  'pause-setting-mouse-sens-val',  'mouseSensitivity',       100, fmtMult);
@@ -1005,7 +1013,7 @@
       if (!data || typeof data !== 'object') return;
 
       if (data.type === 'screen') {
-        setScreen(data.value);
+        setScreen(data.value, data.submenu);
         return;
       }
 
@@ -1129,6 +1137,24 @@
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); q('card-test-zone').click(); }
     });
 
+    on('card-high-bastion', 'click', function() {
+      pendingMap = 'high_bastion';
+      renderPlayerSelect();
+      showSubScreen('sub-player-select');
+    });
+    on('card-high-bastion', 'keydown', function(e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); q('card-high-bastion').click(); }
+    });
+
+    on('card-the-sprawl', 'click', function() {
+      pendingMap = 'the_sprawl';
+      renderPlayerSelect();
+      showSubScreen('sub-player-select');
+    });
+    on('card-the-sprawl', 'keydown', function(e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); q('card-the-sprawl').click(); }
+    });
+
     /* ── Player select nav ────────────────────────────────── */
     on('btn-player-back', 'click', function() {
       pendingOperative = null;
@@ -1212,6 +1238,7 @@
       var btnBack      = q('btn-pause-settings-back');
       var btnReset     = q('btn-pause-settings-reset');
       var btnQuit      = q('btn-pause-quit');
+      var btnPauseFly  = q('btn-pause-fly');
       var btnConfirmYes = q('btn-pause-confirm-yes');
       var btnConfirmNo  = q('btn-pause-confirm-no');
 
@@ -1220,6 +1247,11 @@
 
       /* Settings → slide to settings view */
       if (btnSettings)  btnSettings.addEventListener('click',  function () { _pauseSetView('settings'); });
+      if (btnPauseFly)  btnPauseFly.addEventListener('click', function () {
+        if (typeof hytopia !== 'undefined') {
+          try { hytopia.sendData({ type: 'toggleFly' }); } catch (ePF) {}
+        }
+      });
       if (btnBack)      btnBack.addEventListener('click',      function () { _pauseSetView('main'); });
       if (btnReset)     btnReset.addEventListener('click',     function () {
         cfg = defaultCfg(); saveCfg();
@@ -1236,10 +1268,11 @@
       if (btnConfirmYes) btnConfirmYes.addEventListener('click', function (e) {
         try { e.stopPropagation(); } catch (eqy) {}
         if (typeof hytopia !== 'undefined') {
+          hytopia.sendData({ type: 'gamePause', paused: false });
           hytopia.sendData({ type: 'gehennaQuit' });
           hytopia.sendData({ type: 'quitToMenu' });
         }
-        closePauseMenu();
+        closePauseMenu(false);
       });
 
       /* Confirm NO → back to main pause panel */
@@ -1281,9 +1314,9 @@
   }
 
   /* ── Screen switching ─────────────────────────────────── */
-  function setScreen(name) {
+  function setScreen(name, submenu) {
     hideDeathScreen();
-    closePauseMenu();
+    closePauseMenu(false);
     _menuActive = (name === 'menu');
 
     /* Lock/unlock pointer BEFORE showing elements so no click can sneak through */
@@ -1294,9 +1327,11 @@
     if (menuScreen) menuScreen.style.display = (name === 'menu') ? 'flex' : 'none';
     if (hudScreen)  hudScreen.style.display  = (name === 'hud')  ? 'block' : 'none';
 
-    /* When returning to menu, always reset to the title sub-screen */
+    /* When returning to menu, open title or map picker (quit → map select). */
     if (name === 'menu') {
-      showSubScreen('sub-title');
+      var menuSub = (submenu === 'sub-map-select') ? 'sub-map-select' : 'sub-title';
+      showSubScreen(menuSub);
+      pendingOperative = null;
       startMenuMusic();
       // Hard clear any active hit flash or shake when leaving the game
       if (damageFlash) {
@@ -1616,7 +1651,7 @@
         <button type="button" id="btn-map-back" class="lobby-back-btn" data-submenu="sub-title">← Return to Base</button>
       </aside>
 
-      <div class="lobby-main">
+      <div class="lobby-main lobby-main--scroll">
         <div class="lobby-main-header" aria-hidden="true">
           <span class="lobby-main-label">AVAILABLE ZONES</span>
           <span class="lobby-main-rule"></span>
@@ -1636,6 +1671,36 @@
               <span class="map-card-tag">NIGHT</span>
             </div>
             <div class="map-card-action" id="map-card-action-text">ENTER ZONE <span class="map-card-arrow">▶</span></div>
+          </div>
+
+          <div class="map-card" data-map="high_bastion" role="button" tabindex="0" id="card-high-bastion">
+            <div class="map-card-bg map-card-bg--castle" aria-hidden="true"></div>
+            <div class="map-card-header">
+              <span class="map-card-name">HIGH BASTION</span>
+              <span class="map-card-badge map-card-badge--explore">EXPLORE</span>
+            </div>
+            <p class="map-card-desc">Stonevale Citadel — a massive castle to climb and wander. Ramparts, towers, and vaulted halls. No horde, no waves.</p>
+            <div class="map-card-meta">
+              <span class="map-card-tag">EXPLORE ONLY</span>
+              <span class="map-card-tag">CASTLE</span>
+              <span class="map-card-tag">DAYLIGHT</span>
+            </div>
+            <div class="map-card-action">ENTER ZONE <span class="map-card-arrow">▶</span></div>
+          </div>
+
+          <div class="map-card" data-map="the_sprawl" role="button" tabindex="0" id="card-the-sprawl">
+            <div class="map-card-bg map-card-bg--sprawl" aria-hidden="true"></div>
+            <div class="map-card-header">
+              <span class="map-card-name">THE SPRAWL</span>
+              <span class="map-card-badge">MEGA MAP</span>
+            </div>
+            <p class="map-card-desc">A vast urban expanse — streets, plazas, palms, and city props across 100k+ blocks. Full horde mode in the biggest zone yet.</p>
+            <div class="map-card-meta">
+              <span class="map-card-tag">HORDE MODE</span>
+              <span class="map-card-tag">URBAN</span>
+              <span class="map-card-tag">DUSK</span>
+            </div>
+            <div class="map-card-action">ENTER ZONE <span class="map-card-arrow">▶</span></div>
           </div>
 
           <div class="map-card" data-map="test_zone" role="button" tabindex="0" id="card-test-zone">
@@ -2304,6 +2369,12 @@
             <span class="pov-btn-label">SETTINGS</span>
           </button>
 
+          <button type="button" id="btn-pause-fly" class="pov-btn pov-btn--dev" title="Dev only — desktop map scouting">
+            <span class="pov-btn-pip" aria-hidden="true"></span>
+            <span class="pov-btn-icon" aria-hidden="true">▲</span>
+            <span class="pov-btn-label">DEV: FLY</span>
+          </button>
+
           <button type="button" id="btn-pause-quit" class="pov-btn pov-btn--quit">
             <span class="pov-btn-pip" aria-hidden="true"></span>
             <span class="pov-btn-icon" aria-hidden="true">⊗</span>
@@ -2313,6 +2384,7 @@
 
         <p class="pov-hint">
           <kbd class="pov-key">ESC</kbd>&thinsp;RESUME &nbsp;·&nbsp;
+          <kbd class="pov-key">V</kbd>&thinsp;DEV FLY &nbsp;·&nbsp;
           QUIT SAVES YOUR PROGRESS
         </p>
       </div>
@@ -3481,6 +3553,9 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Dev-only pause action (desktop local scouting) */
+.pov-btn--dev .pov-btn-label { letter-spacing: 0.12em; }
+
 /* ── Mobile controls ─────────────────────────────────────── */
 .mobile-controls {
   display: none;
@@ -3686,6 +3761,33 @@ body.mobile .mobile-controls {
     ),
     radial-gradient(ellipse 100% 90% at 50% 0%, rgba(200, 170, 40, 0.18) 0%, transparent 55%),
     linear-gradient(180deg, rgba(12, 10, 4, 0.95) 0%, rgba(6, 5, 2, 0.85) 100%);
+}
+.map-card-bg--castle {
+  opacity: 0.5;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 100%, rgba(90, 95, 120, 0.45) 0%, transparent 55%),
+    repeating-linear-gradient(
+      90deg,
+      rgba(42, 40, 48, 0.9) 0 18px,
+      rgba(58, 54, 62, 0.85) 18px 36px
+    ),
+    linear-gradient(175deg, rgba(18, 16, 24, 0.95) 0%, rgba(32, 28, 38, 0.75) 45%, rgba(12, 10, 16, 0.9) 100%);
+}
+.map-card-badge--explore {
+  color: #b8d4ff;
+  border-color: rgba(120, 160, 220, 0.45);
+  background: rgba(20, 36, 64, 0.55);
+}
+.map-card-bg--sprawl {
+  opacity: 0.48;
+  background:
+    radial-gradient(ellipse 90% 70% at 30% 100%, rgba(255, 120, 40, 0.28) 0%, transparent 55%),
+    repeating-linear-gradient(
+      0deg,
+      rgba(22, 18, 16, 0.92) 0 12px,
+      rgba(34, 28, 24, 0.88) 12px 24px
+    ),
+    linear-gradient(180deg, rgba(10, 8, 12, 0.95) 0%, rgba(24, 18, 14, 0.85) 100%);
 }
 .map-card-bg--gehinnom {
   opacity: 0.55;
