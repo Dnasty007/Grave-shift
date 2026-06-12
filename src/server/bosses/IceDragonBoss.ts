@@ -28,15 +28,31 @@ import { VFX } from "../VFX";
 
 // ── Tuning ───────────────────────────────────────────────────────────────────
 const MODEL_SCALE   = 0.4;    // raw model ~13u long → ~5.4u long, ~4.2u tall in-world
-/** ice-dragon.glb Dragon_client axis-aligned bounds (metres, unscaled). */
-const MODEL_BBOX_MIN_Y = 0.87461;
-const MODEL_BBOX_MAX_Y = 15.29705;
-/** Scaled model height along local Y (feet → crown). */
-const MODEL_LOCAL_HEIGHT = (MODEL_BBOX_MAX_Y - MODEL_BBOX_MIN_Y) * MODEL_SCALE;
-/** Gun-ray / physics hit volume — centred on torso, sized to cover the visible mesh. */
-const HIT_CENTER_Y    = MODEL_LOCAL_HEIGHT * 0.42;
-const HIT_HALF_HEIGHT = MODEL_LOCAL_HEIGHT * 0.38;
-const HIT_RADIUS      = MODEL_LOCAL_HEIGHT * 0.22;
+/**
+ * ice-dragon.glb TRUE rest-pose bounds relative to the model origin, computed by
+ * walking the node hierarchy with transforms applied (not raw accessor bounds):
+ *   x: -6.251 .. +6.276   y: +0.875 .. +15.297   z: -12.474 .. +9.579
+ * The dragon is LONG (22u along Z: tail behind, head in front) — which is why the
+ * old thin vertical capsule only registered hits on the lower center ("bottom area"):
+ * a vertical column can't cover a horizontal dragon.
+ */
+const MODEL_BBOX_MIN_Y = 0.875;
+const MODEL_BBOX_MAX_Y = 15.297;
+// Scaled, origin-relative hit-volume box covering the whole visible body (+ small pad
+// for animation sway). Rotates with the entity's yaw, so the long axis tracks facing.
+const HIT_BOX_HALF = {
+  x: 6.3  * MODEL_SCALE + 0.1,                              // ±2.6
+  y: ((MODEL_BBOX_MAX_Y - MODEL_BBOX_MIN_Y) / 2) * MODEL_SCALE + 0.15, // ±3.03
+  z: (22.05 / 2) * MODEL_SCALE + 0.2,                       // ±4.6
+};
+const HIT_BOX_CENTER = {
+  x: 0,
+  y: ((MODEL_BBOX_MIN_Y + MODEL_BBOX_MAX_Y) / 2) * MODEL_SCALE, // +3.23
+  z: ((-12.474 + 9.579) / 2) * MODEL_SCALE,                     // -0.58 (tail-heavy)
+};
+/** Forgiving fallback hit-sphere: rotation-invariant, covers body + head + tail. */
+const HIT_SPHERE_CENTER_Y = HIT_BOX_CENTER.y;
+const HIT_SPHERE_RADIUS   = 5.5;
 /** Rig origin sits near bbox centre — raise entity so feet rest on the floor. */
 const MODEL_HALF_HEIGHT = ((MODEL_BBOX_MAX_Y - MODEL_BBOX_MIN_Y) * 0.5) * MODEL_SCALE;
 /** Small lift so belly/legs clear the grass voxel surface (matches how players stand on y+1). */
@@ -170,19 +186,14 @@ export class IceDragonBoss {
         type: RigidBodyType.KINEMATIC_VELOCITY,
         colliders: [
           {
-            // Torso — covers most of the visible mesh (old capsule was tiny + low).
-            shape: ColliderShape.CAPSULE,
-            halfHeight: HIT_HALF_HEIGHT,
-            radius: HIT_RADIUS,
-            relativePosition: { x: 0, y: HIT_CENTER_Y, z: 0 },
+            // One body-sized box covering the WHOLE visible dragon (head, neck,
+            // torso, tail). Rotates with the entity's yaw so the long axis always
+            // matches the model. Replaces the old thin vertical capsule that only
+            // caught shots at the lower center.
+            shape: ColliderShape.BLOCK,
+            halfExtents: { ...HIT_BOX_HALF },
+            relativePosition: { ...HIT_BOX_CENTER },
             tag: "body",
-          },
-          {
-            // Head / neck — shots aimed at the upper silhouette still register on the ground.
-            shape: ColliderShape.BALL,
-            radius: HIT_RADIUS * 0.85,
-            relativePosition: { x: 0, y: HIT_CENTER_Y + HIT_HALF_HEIGHT + HIT_RADIUS * 0.5, z: 0 },
-            tag: "head",
           },
         ],
       },
@@ -198,15 +209,21 @@ export class IceDragonBoss {
 
   /**
    * Forgiving ray test when the physics ray misses or hits terrain first.
-   * Uses the same torso capsule as the gun hit volume.
+   * Ray-vs-sphere around the body centre — rotation-invariant, so it covers the
+   * dragon regardless of facing (the old capsule test also had a sign bug that
+   * made it only register point-blank).
    */
   raycastHitPoint(origin: Vector3Like, direction: Vector3Like, maxDist: number): Vector3Like | null {
     if (this._dead || !this.entity.isSpawned) return null;
 
     const bp = this.entity.position;
-    const capA = { x: bp.x, y: bp.y + HIT_CENTER_Y - HIT_HALF_HEIGHT, z: bp.z };
-    const capB = { x: bp.x, y: bp.y + HIT_CENTER_Y + HIT_HALF_HEIGHT, z: bp.z };
-    const t = rayCapsuleDistance(origin, direction, maxDist, capA, capB, HIT_RADIUS);
+    const t = raySphereDistance(
+      origin,
+      direction,
+      maxDist,
+      { x: bp.x, y: bp.y + HIT_SPHERE_CENTER_Y, z: bp.z },
+      HIT_SPHERE_RADIUS
+    );
     if (t === null) return null;
 
     return {
@@ -588,13 +605,12 @@ export class IceDragonBoss {
   }
 }
 
-/** Ray vs capsule segment — returns hit distance along ray, or null. */
-function rayCapsuleDistance(
+/** Ray vs sphere — returns entry distance along the (normalised) ray, or null on miss. */
+function raySphereDistance(
   origin: Vector3Like,
   direction: Vector3Like,
   maxDist: number,
-  capA: Vector3Like,
-  capB: Vector3Like,
+  center: Vector3Like,
   radius: number
 ): number | null {
   const dLen = Math.hypot(direction.x, direction.y, direction.z) || 1;
@@ -602,37 +618,20 @@ function rayCapsuleDistance(
   const dy = direction.y / dLen;
   const dz = direction.z / dLen;
 
-  const abx = capB.x - capA.x;
-  const aby = capB.y - capA.y;
-  const abz = capB.z - capA.z;
+  const fx = origin.x - center.x;
+  const fy = origin.y - center.y;
+  const fz = origin.z - center.z;
 
-  const oax = origin.x - capA.x;
-  const oay = origin.y - capA.y;
-  const oaz = origin.z - capA.z;
+  const b = 2 * (fx * dx + fy * dy + fz * dz);
+  const c = fx * fx + fy * fy + fz * fz - radius * radius;
+  const disc = b * b - 4 * c; // a = 1 (unit direction)
+  if (disc < 0) return null;
 
-  const abDotAb = abx * abx + aby * aby + abz * abz;
-  const abDotD  = abx * dx + aby * dy + abz * dz;
-  const abDotOa = abx * oax + aby * oay + abz * oaz;
-  const dDotOa  = dx * oax + dy * oay + dz * oaz;
-
-  const denom = abDotAb - abDotD * abDotD;
-  let segT = abDotAb > 1e-6 ? (abDotOa - abDotD * dDotOa) / denom : 0;
-  segT = Math.max(0, Math.min(1, segT));
-
-  const cx = capA.x + abx * segT;
-  const cy = capA.y + aby * segT;
-  const cz = capA.z + abz * segT;
-
-  const px = origin.x - cx;
-  const py = origin.y - cy;
-  const pz = origin.z - cz;
-  const pDotD = px * dx + py * dy + pz * dz;
-  const t = Math.max(0, Math.min(maxDist, pDotD));
-
-  const hx = px - dx * t;
-  const hy = py - dy * t;
-  const hz = pz - dz * t;
-  const distSq = hx * hx + hy * hy + hz * hz;
-
-  return distSq <= radius * radius ? t : null;
+  const sq = Math.sqrt(disc);
+  const t1 = (-b - sq) * 0.5;
+  const t2 = (-b + sq) * 0.5;
+  // Entry point if outside; clamp to 0 if the origin is inside the sphere.
+  const t = t1 >= 0 ? t1 : (t2 >= 0 ? 0 : null);
+  if (t === null || t > maxDist) return null;
+  return t;
 }
