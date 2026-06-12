@@ -27,42 +27,47 @@ import { VFX } from "../VFX";
  */
 
 // ── Tuning ───────────────────────────────────────────────────────────────────
-const MODEL_SCALE   = 0.4;    // raw model ~13u long → ~5.4u long, ~4.2u tall in-world
+const MODEL_SCALE   = 0.4;
 /**
- * ice-dragon.glb TRUE rest-pose bounds relative to the model origin, computed by
- * walking the node hierarchy with transforms applied (not raw accessor bounds):
- *   x: -6.251 .. +6.276   y: +0.875 .. +15.297   z: -12.474 .. +9.579
- * The dragon is LONG (22u along Z: tail behind, head in front) — which is why the
- * old thin vertical capsule only registered hits on the lower center ("bottom area"):
- * a vertical column can't cover a horizontal dragon.
+ * ice-dragon.glb (2026-06-12 export of the updated dragonice.bbmodel) TRUE
+ * rest-pose bounds relative to the model origin, computed by walking the node
+ * hierarchy with transforms applied (not raw accessor bounds):
+ *   x: -10.45 .. +10.52   y: -0.58 .. +4.91   z: -12.53 .. +9.83
+ * The new pose is WIDE and LOW (wings spread, body horizontal) — at scale 0.4
+ * that's ±4.2 wide, ~2.2 tall, ~8.9 long, with the origin inside the body and
+ * the feet slightly BELOW it (minY is negative). The hit volume must cover the
+ * full span: a thin vertical shape would miss wings, neck, and tail entirely.
  */
-const MODEL_BBOX_MIN_Y = 0.875;
-const MODEL_BBOX_MAX_Y = 15.297;
+const MODEL_BBOX_MIN_Y = -0.58;
+const MODEL_BBOX_MAX_Y =  4.91;
 // Scaled, origin-relative hit-volume box covering the whole visible body (+ small pad
 // for animation sway). Rotates with the entity's yaw, so the long axis tracks facing.
 const HIT_BOX_HALF = {
-  x: 6.3  * MODEL_SCALE + 0.1,                              // ±2.6
-  y: ((MODEL_BBOX_MAX_Y - MODEL_BBOX_MIN_Y) / 2) * MODEL_SCALE + 0.15, // ±3.03
-  z: (22.05 / 2) * MODEL_SCALE + 0.2,                       // ±4.6
+  x: 10.55 * MODEL_SCALE + 0.1,                                        // ±4.3 (wingspan)
+  y: ((MODEL_BBOX_MAX_Y - MODEL_BBOX_MIN_Y) / 2) * MODEL_SCALE + 0.15, // ±1.25
+  z: (22.36 / 2) * MODEL_SCALE + 0.2,                                  // ±4.7
 };
 const HIT_BOX_CENTER = {
   x: 0,
-  y: ((MODEL_BBOX_MIN_Y + MODEL_BBOX_MAX_Y) / 2) * MODEL_SCALE, // +3.23
-  z: ((-12.474 + 9.579) / 2) * MODEL_SCALE,                     // -0.58 (tail-heavy)
+  y: ((MODEL_BBOX_MIN_Y + MODEL_BBOX_MAX_Y) / 2) * MODEL_SCALE, // +0.87
+  z: ((-12.53 + 9.83) / 2) * MODEL_SCALE,                       // -0.54 (tail-heavy)
 };
-/** Forgiving fallback hit-sphere: rotation-invariant, covers body + head + tail. */
+/** Forgiving fallback hit-sphere: rotation-invariant, covers wings + head + tail. */
 const HIT_SPHERE_CENTER_Y = HIT_BOX_CENTER.y;
 const HIT_SPHERE_RADIUS   = 5.5;
-/** Rig origin sits near bbox centre — raise entity so feet rest on the floor. */
-const MODEL_HALF_HEIGHT = ((MODEL_BBOX_MAX_Y - MODEL_BBOX_MIN_Y) * 0.5) * MODEL_SCALE;
-/** Small lift so belly/legs clear the grass voxel surface (matches how players stand on y+1). */
-const GROUND_SURFACE_LIFT = 0.55;
+/** Clearance so the belly/feet clear the voxel surface without visible floating. */
+const GROUND_SURFACE_LIFT = 0.2;
 
-/** World Y for entity.position so the dragon walks on top of groundTop blocks. */
+/**
+ * World Y for entity.position so the dragon's feet rest on top of groundTop blocks.
+ * The new export's origin sits inside the body with feet at MIN_Y (negative), so
+ * placement is exact: lift the origin by |minY|·scale. playerFloorOffset remains a
+ * degenerate-ground guard only — capped so it can't float the dragon.
+ */
 export function iceDragonSpawnY(groundTop: number, playerFloorOffset = 0): number {
-  const fromBbox = groundTop + MODEL_HALF_HEIGHT + GROUND_SURFACE_LIFT;
-  const fromPlayer = groundTop + playerFloorOffset;
-  return Math.max(fromBbox, fromPlayer);
+  const fromBbox = groundTop - MODEL_BBOX_MIN_Y * MODEL_SCALE + GROUND_SURFACE_LIFT;
+  const guard    = groundTop + Math.min(Math.max(playerFloorOffset, 0), GROUND_SURFACE_LIFT);
+  return Math.max(fromBbox, guard);
 }
 const BASE_HP       = 6000;
 const WALK_SPEED    = 2.3;
@@ -100,6 +105,8 @@ const BOMB_RADIUS       = 3;
 const LAND_S            = 1.2;
 const LAND_DMG          = 30;
 const LAND_RADIUS       = 8;
+/** Aerial breath clip (glidefire, 3.875s) replays on this period while circling. */
+const GLIDEFIRE_PERIOD_S = 4.0;
 
 const PUSH_RANGE    = 2.8;
 const PUSH_CD_S     = 3;
@@ -161,6 +168,7 @@ export class IceDragonBoss {
   // Sub-timers
   private _boltAccS  = 0;
   private _bombAccS  = 0;
+  private _glidefireAccS = 0;
   private _circleAng = 0;
   private _milestones = new Set<number>(); // announced HP % marks
 
@@ -302,7 +310,13 @@ export class IceDragonBoss {
     const dist = Math.hypot(dx, dz);
 
     // Skill priority (mirrors the YAML timer/condition gates)
-    if (this._flightCdS === 0) { this._enter("takeoff"); this._loop("fly"); return; }
+    if (this._flightCdS === 0) {
+      this._enter("takeoff");
+      this._loop("fly");
+      // "ascend" clip from the updated bbmodel (no-op until it's authored + exported)
+      this._oneshot("ascend");
+      return;
+    }
     if (this._breathCdS === 0 && dist >= BREATH_MIN_R && dist <= BREATH_MAX_R) {
       this._enter("breath");
       this._halt();
@@ -388,6 +402,7 @@ export class IceDragonBoss {
     if (this._stateT >= TAKEOFF_S || bp.y >= targetY) {
       this.entity.setLinearVelocity({ x: 0, y: 0, z: 0 });
       this._circleAng = Math.atan2(bp.x, bp.z);
+      this._glidefireAccS = GLIDEFIRE_PERIOD_S; // breathe fire immediately on the first orbit
       this._enter("circle");
       return;
     }
@@ -411,6 +426,14 @@ export class IceDragonBoss {
     this._faceToward(p);
     this._loop("fly");
 
+    // Aerial fire-breath clip (glidefire) replays while bombing — the dragon
+    // visibly breathes as the ice bombs fall. No-op on models without the clip.
+    this._glidefireAccS += dtS;
+    if (this._glidefireAccS >= GLIDEFIRE_PERIOD_S) {
+      this._glidefireAccS = 0;
+      this._oneshot("glidefire");
+    }
+
     this._bombAccS += dtS;
     if (this._bombAccS >= BOMB_INTERVAL_S) {
       this._bombAccS = 0;
@@ -419,6 +442,8 @@ export class IceDragonBoss {
 
     if (this._stateT >= CIRCLE_S) {
       this._enter("land");
+      // "descend" clip from the updated bbmodel (no-op until authored + exported)
+      this._oneshot("descend");
     }
   }
 
