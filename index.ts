@@ -4,13 +4,9 @@
  *
  * Docs: https://dev.hytopia.com/ · SDK: https://www.npmjs.com/package/hytopia (repo: hytopiagg/sdk)
  */
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   startServer,
   DefaultPlayerEntity,
-  DefaultPlayerEntityController,
   PlayerEvent,
   PlayerUIEvent,
   WorldEvent,
@@ -26,24 +22,6 @@ import {
   normalizeMapId,
   type GehennaMapId
 } from "./src/server/mapConfig";
-
-/** Co-located with bundled `index.mjs` so writes work in Hytopia/local runs. */
-const AGENT_DEBUG_LOG = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "debug-agent-de4214.log"
-);
-
-function agentDbgFile(entry: Record<string, unknown>): void {
-  try {
-    fs.mkdirSync(path.dirname(AGENT_DEBUG_LOG), { recursive: true });
-    fs.appendFileSync(
-      AGENT_DEBUG_LOG,
-      JSON.stringify({ sessionId: "de4214", timestamp: Date.now(), ...entry }) + "\n"
-    );
-  } catch {
-    void 0;
-  }
-}
 
 /** World-space spawn for menu / pre-deploy (defaults to industrial yard). */
 const PLAYER_SPAWN = MAP_SPAWN[DEFAULT_MAP_ID];
@@ -163,48 +141,6 @@ startServer((world) => {
         /** Prefer `{ type: "gehenna", cmd: "…" }` if platform treats bare `quitToMenu` oddly. */
         const action =
           t === "gehenna" && cmd ? cmd : t === "restartRun" || t === "quitToMenu" || t === "toggleFly" ? t : "";
-
-        // #region agent log
-        const dbgRestartOrQuit =
-          action === "restartRun" ||
-          action === "quitToMenu" ||
-          t === "gehennaRestart" ||
-          t === "gehennaQuit";
-        if (dbgRestartOrQuit) {
-          void fetch("http://127.0.0.1:7457/ingest/ed9b07e2-465a-482e-b5a8-7dd1854cf52a", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "de4214" },
-            body: JSON.stringify({
-              sessionId: "de4214",
-              hypothesisId: "H2",
-              location: "index.ts:PlayerUI.DATA",
-              message: "parsed_restart_or_quit",
-              data: { t, cmd, action, playerId: player.id },
-              timestamp: Date.now()
-            })
-          }).catch(() => {});
-          agentDbgFile({
-            hypothesisId: "H2",
-            location: "index.ts:PlayerUI.DATA",
-            message: "parsed_restart_or_quit_file",
-            data: { t, cmd, action, playerId: player.id }
-          });
-        }
-        if (t && t !== "settings") {
-          agentDbgFile({
-            hypothesisId: "S0",
-            message: "ui_data_in",
-            data: { t, cmd, action, playerId: player.id, hasW: !!w }
-          });
-        }
-        if (w && dbgRestartOrQuit) {
-          w.chatManager.sendPlayerMessage(
-            player,
-            `[DBG] UI rx action=${action} t=${t}`,
-            "8888FF"
-          );
-        }
-        // #endregion
 
         if (!w) return;
 

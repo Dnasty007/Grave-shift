@@ -4,46 +4,12 @@ const VFX_MODEL_URI = "models/projectiles/fireball.gltf";
 
 /**
  * VFX.ts - Improved visual effects for Project Gehenna
- * Uses simple, reliable entity-based effects
+ * Uses simple, reliable entity-based effects.
  *
- * Updated to support attachment to weapon entities for correct first-person behavior.
+ * NOTE: gun muzzle flash is NOT here — each GunEntity owns a muzzle-flash child
+ * entity (official zombies-fps pattern, see src/server/guns/GunEntity.ts).
  */
 export class VFX {
-  /**
-   * Muzzle flash when the player shoots.
-   * 
-   * @param world - The world
-   * @param position - World position (used if no parentEntity is provided)
-   * @param parentEntity - Optional entity to attach the flash to (e.g. the weapon)
-   * @param localOffset - Local offset when attached to a parent
-   */
-  static muzzleFlash(
-    world: World,
-    position: Vector3Like,
-    parentEntity?: Entity,
-    localOffset?: Vector3Like
-  ) {
-    const flash = new Entity({
-      name: "MuzzleFlash",
-      modelUri: VFX_MODEL_URI,
-      modelScale: 0.25,
-      parent: parentEntity,
-    });
-
-    if (parentEntity) {
-      // Attach to the weapon entity
-      flash.spawn(world, localOffset ?? { x: 0, y: 0, z: -0.5 });
-    } else {
-      flash.spawn(world, position);
-    }
-
-    setTimeout(() => {
-      try {
-        if (flash.isSpawned) flash.despawn();
-      } catch {}
-    }, 60);
-  }
-
   /**
    * Blood / hit effect on zombies
    */

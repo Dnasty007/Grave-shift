@@ -31,6 +31,12 @@ const MODEL_SCALE   = 0.4;    // raw model ~13u long → ~5.4u long, ~4.2u tall 
 /** ice-dragon.glb Dragon_client axis-aligned bounds (metres, unscaled). */
 const MODEL_BBOX_MIN_Y = 0.87461;
 const MODEL_BBOX_MAX_Y = 15.29705;
+/** Scaled model height along local Y (feet → crown). */
+const MODEL_LOCAL_HEIGHT = (MODEL_BBOX_MAX_Y - MODEL_BBOX_MIN_Y) * MODEL_SCALE;
+/** Gun-ray / physics hit volume — centred on torso, sized to cover the visible mesh. */
+const HIT_CENTER_Y    = MODEL_LOCAL_HEIGHT * 0.42;
+const HIT_HALF_HEIGHT = MODEL_LOCAL_HEIGHT * 0.38;
+const HIT_RADIUS      = MODEL_LOCAL_HEIGHT * 0.22;
 /** Rig origin sits near bbox centre — raise entity so feet rest on the floor. */
 const MODEL_HALF_HEIGHT = ((MODEL_BBOX_MAX_Y - MODEL_BBOX_MIN_Y) * 0.5) * MODEL_SCALE;
 /** Small lift so belly/legs clear the grass voxel surface (matches how players stand on y+1). */
@@ -162,13 +168,23 @@ export class IceDragonBoss {
       modelScale: MODEL_SCALE,
       rigidBodyOptions: {
         type: RigidBodyType.KINEMATIC_VELOCITY,
-        colliders: [{
-          // Wide low capsule — the dragon's body. Raycasts (guns) hit this.
-          shape: ColliderShape.CAPSULE,
-          halfHeight: 0.8,
-          radius: 1.5,
-          tag: "body",
-        }],
+        colliders: [
+          {
+            // Torso — covers most of the visible mesh (old capsule was tiny + low).
+            shape: ColliderShape.CAPSULE,
+            halfHeight: HIT_HALF_HEIGHT,
+            radius: HIT_RADIUS,
+            relativePosition: { x: 0, y: HIT_CENTER_Y, z: 0 },
+            tag: "body",
+          },
+          {
+            // Head / neck — shots aimed at the upper silhouette still register on the ground.
+            shape: ColliderShape.BALL,
+            radius: HIT_RADIUS * 0.85,
+            relativePosition: { x: 0, y: HIT_CENTER_Y + HIT_HALF_HEIGHT + HIT_RADIUS * 0.5, z: 0 },
+            tag: "head",
+          },
+        ],
       },
     });
 
@@ -178,6 +194,27 @@ export class IceDragonBoss {
 
   get isAlive(): boolean { return !this._dead; }
   get hp(): number { return this._hp; }
+  get hpFraction(): number { return this.maxHp > 0 ? this._hp / this.maxHp : 0; }
+
+  /**
+   * Forgiving ray test when the physics ray misses or hits terrain first.
+   * Uses the same torso capsule as the gun hit volume.
+   */
+  raycastHitPoint(origin: Vector3Like, direction: Vector3Like, maxDist: number): Vector3Like | null {
+    if (this._dead || !this.entity.isSpawned) return null;
+
+    const bp = this.entity.position;
+    const capA = { x: bp.x, y: bp.y + HIT_CENTER_Y - HIT_HALF_HEIGHT, z: bp.z };
+    const capB = { x: bp.x, y: bp.y + HIT_CENTER_Y + HIT_HALF_HEIGHT, z: bp.z };
+    const t = rayCapsuleDistance(origin, direction, maxDist, capA, capB, HIT_RADIUS);
+    if (t === null) return null;
+
+    return {
+      x: origin.x + direction.x * t,
+      y: origin.y + direction.y * t,
+      z: origin.z + direction.z * t,
+    };
+  }
 
   /** Damage from guns / lethals. Returns true if this hit killed the boss. */
   takeDamage(amount: number): boolean {
@@ -225,7 +262,7 @@ export class IceDragonBoss {
     if (!playerPos) { this._halt(); return; }
 
     switch (this._state) {
-      case "ground":  this._tickGround(dtS, playerPos); break;
+      case "ground":  this._tickGround(playerPos); break;
       case "claw":    this._tickClaw(playerPos); break;
       case "slam":    this._tickSlam(playerPos); break;
       case "breath":  this._tickBreath(dtS, playerPos); break;
@@ -238,7 +275,7 @@ export class IceDragonBoss {
 
   // ── States ─────────────────────────────────────────────────────────────────
 
-  private _tickGround(dtS: number, p: Vector3Like): void {
+  private _tickGround(p: Vector3Like): void {
     const bp = this.entity.position;
     // Kinematic chase can sink the model into voxel blocks — lock Y to the floor.
     if (Math.abs(bp.y - this._groundY) > 0.02) {
@@ -549,4 +586,53 @@ export class IceDragonBoss {
   private _oneshot(name: string): void {
     try { this.entity.getModelAnimation(name)?.restart(); } catch {}
   }
+}
+
+/** Ray vs capsule segment — returns hit distance along ray, or null. */
+function rayCapsuleDistance(
+  origin: Vector3Like,
+  direction: Vector3Like,
+  maxDist: number,
+  capA: Vector3Like,
+  capB: Vector3Like,
+  radius: number
+): number | null {
+  const dLen = Math.hypot(direction.x, direction.y, direction.z) || 1;
+  const dx = direction.x / dLen;
+  const dy = direction.y / dLen;
+  const dz = direction.z / dLen;
+
+  const abx = capB.x - capA.x;
+  const aby = capB.y - capA.y;
+  const abz = capB.z - capA.z;
+
+  const oax = origin.x - capA.x;
+  const oay = origin.y - capA.y;
+  const oaz = origin.z - capA.z;
+
+  const abDotAb = abx * abx + aby * aby + abz * abz;
+  const abDotD  = abx * dx + aby * dy + abz * dz;
+  const abDotOa = abx * oax + aby * oay + abz * oaz;
+  const dDotOa  = dx * oax + dy * oay + dz * oaz;
+
+  const denom = abDotAb - abDotD * abDotD;
+  let segT = abDotAb > 1e-6 ? (abDotOa - abDotD * dDotOa) / denom : 0;
+  segT = Math.max(0, Math.min(1, segT));
+
+  const cx = capA.x + abx * segT;
+  const cy = capA.y + aby * segT;
+  const cz = capA.z + abz * segT;
+
+  const px = origin.x - cx;
+  const py = origin.y - cy;
+  const pz = origin.z - cz;
+  const pDotD = px * dx + py * dy + pz * dz;
+  const t = Math.max(0, Math.min(maxDist, pDotD));
+
+  const hx = px - dx * t;
+  const hy = py - dy * t;
+  const hz = pz - dz * t;
+  const distSq = hx * hx + hy * hy + hz * hz;
+
+  return distSq <= radius * radius ? t : null;
 }

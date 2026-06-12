@@ -63,20 +63,19 @@ export function isImportedGunId(raw: unknown): raw is ImportedGunId {
   return typeof raw === "string" && (IMPORTED_GUN_IDS as readonly string[]).includes(raw);
 }
 
-/** Test Map pickup rows south of the official gun lane (z=32) and north of swords (z=40). */
+/** Test Map import grid — far north of hub, above the official gun row (z≈30). */
 export function buildImportedGunPickups(): {
   x: number;
   z: number;
-  kind: "gun";
   weaponKey: ImportedGunId;
   label: string;
   model: string;
   scale: number;
 }[] {
-  const rows = [18, 22, 26] as const;
+  const rows = [38, 41, 44] as const;
   const cols = 5;
-  const startX = -45;
-  const stepX = 9;
+  const startX = -46;
+  const stepX = 8;
   const pickupScale = 1.2;
 
   return IMPORTED_GUN_DEFS.map((def, i) => {
@@ -85,7 +84,6 @@ export function buildImportedGunPickups(): {
     return {
       x: startX + col * stepX,
       z: rows[row] ?? rows[rows.length - 1],
-      kind: "gun" as const,
       weaponKey: def.id,
       label: def.name,
       model: def.modelUri,

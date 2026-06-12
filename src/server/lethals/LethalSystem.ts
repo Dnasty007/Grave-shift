@@ -9,10 +9,8 @@ import { VFX } from "../VFX";
 import type { LethalId } from "../loadoutConfig";
 
 // Visual model paths
-const FIREBALL      = "models/projectiles/fireball.gltf";
 const GOLD_BLOCK    = "models/particles/.optimized/gold-block/gold-block.glb";
 const RED_BLOCK     = "models/particles/.optimized/red-block/red-block.glb";
-const GREEN_SPHERE  = "models/particles/green-sphere.glb"; // custom-generated green emissive ball
 const STICKY_BOMB   = "models/particles/sticky-bomb.glb";  // custom: olive sphere + wooden handle (No. 74 ST)
 const C4_BLOCK      = "models/particles/c4-block.glb";     // custom: flat cream M112 demolition block
 const SMINE_MODEL   = "models/particles/smine.glb";         // custom: olive cylinder + 3 steel trigger prongs
@@ -120,7 +118,7 @@ export class LethalSystem {
   }
 
   /** Per-frame simulation for all live lethals (bounces, fuse, sticky, proximity, pop, shrapnel) */
-  tick(dt: number, world: World, host: any, playerPos?: Vector3Like, zombiePositions?: readonly Vector3Like[]): void {
+  tick(dt: number, world: World, host: any, zombiePositions?: readonly Vector3Like[]): void {
     if (this._active.length === 0) return;
 
     this._pulseAcc += dt;
@@ -158,7 +156,6 @@ export class LethalSystem {
   /** Main entry from Director (G tap or UI lethal use) */
   useLethal(
     world: World,
-    host: any,
     pe: any,
     lethalId: LethalId,
     origin: Vector3Like,

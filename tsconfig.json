@@ -8,7 +8,10 @@
     "strict": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "noEmit": true
+    "noEmit": true,
+    // Allows explicit .ts extensions on relative imports — required so the test
+    // files can run under plain `node` (ESM type-stripping needs full extensions).
+    "allowImportingTsExtensions": true
   },
   "include": ["index.ts", "src/**/*.ts"]
 }

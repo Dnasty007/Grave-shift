@@ -50,6 +50,13 @@ export type GunEntityOptions = {
   // Director hooks (our extension)
   onShoot?: () => void;
   onHit?: (hitEntity: Entity, hitPoint: Vector3Like, baseDamage: number) => void;
+  /** Prefer boss / custom targets when the physics ray misses (blocks have no entity). */
+  resolveHit?: (
+    origin: Vector3Like,
+    direction: Vector3Like,
+    length: number,
+    primary: { entity: Entity; hitPoint: Vector3Like } | null
+  ) => { entity: Entity; hitPoint: Vector3Like } | null;
   onAmmoChanged?: () => void;
 };
 
@@ -75,6 +82,7 @@ export default abstract class GunEntity extends Entity {
   private _shootAudio: Audio;
   private _onShoot?: () => void;
   private _onHit?: (hitEntity: Entity, hitPoint: Vector3Like, baseDamage: number) => void;
+  private _resolveHit?: GunEntityOptions["resolveHit"];
   private _onAmmoChanged?: () => void;
 
   public constructor(options: GunEntityOptions) {
@@ -103,6 +111,7 @@ export default abstract class GunEntity extends Entity {
     this.shootAnimation = options.shootAnimation;
     this._onShoot = options.onShoot;
     this._onHit = options.onHit;
+    this._resolveHit = options.resolveHit;
     this._onAmmoChanged = options.onAmmoChanged;
 
     this._reloadAudio = new Audio({
@@ -264,8 +273,14 @@ export default abstract class GunEntity extends Entity {
       }),
     });
 
-    if (raycastHit?.hitEntity) {
-      this._onHit?.(raycastHit.hitEntity, raycastHit.hitPoint, this.damage);
+    const primary = raycastHit?.hitEntity && raycastHit.hitPoint
+      ? { entity: raycastHit.hitEntity, hitPoint: raycastHit.hitPoint }
+      : null;
+
+    const resolved = this._resolveHit?.(origin, direction, length, primary) ?? primary;
+
+    if (resolved) {
+      this._onHit?.(resolved.entity, resolved.hitPoint, this.damage);
     }
   }
 

@@ -64,7 +64,7 @@ export function isGunId(raw: unknown): raw is GunId {
 export function createGun(
   id: GunId,
   parent: PlayerEntity,
-  hooks: Pick<GunEntityOptions, "onShoot" | "onHit" | "onAmmoChanged">
+  hooks: Pick<GunEntityOptions, "onShoot" | "onHit" | "onAmmoChanged" | "resolveHit">
 ): GunEntity {
   if (isImportedGunId(id)) {
     return new ImportedGunEntity(IMPORTED_GUN_BY_ID[id], { parent, ...hooks });

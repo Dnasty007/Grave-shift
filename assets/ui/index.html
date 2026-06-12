@@ -60,6 +60,7 @@
 
   /* HUD elements */
   var healthBar, healthVal, hostilesVal, scoreVal;
+  var bossHpBar, bossHpFill, bossHpVal, bossHpLabel;
   var roundTracker, waveBannerText, waveBanner;
   var weaponName, ammoMag, ammoReserve, weaponCaliber, reloadBar;
   var damageFlash;   // full-screen red hit flash + shake layer (COD feel)
@@ -1029,6 +1030,7 @@
         updateScore(data.score);
         updateWeapon(data.weapon, data.magAmmo, data.reserveAmmo, data.caliber, data.reloadFraction);
         updateLethal(data.lethalName, data.lethalCharges);
+        updateBossHealth(data.bossHealth, data.bossMaxHealth, data.bossName);
         return;
       }
 
@@ -1069,6 +1071,10 @@
     hudScreen      = q('hud-screen');
     healthBar      = q('health-bar-fill');
     healthVal      = q('health-val');
+    bossHpBar      = q('boss-hp-bar');
+    bossHpFill     = q('boss-hp-fill');
+    bossHpVal      = q('boss-hp-val');
+    bossHpLabel    = q('boss-hp-label');
     hostilesVal    = q('hostiles-val');
     scoreVal       = q('score-val');
     roundTracker   = q('round-tracker');
@@ -1386,6 +1392,19 @@
     if (lethalChargesEl) {
       lethalChargesEl.textContent = typeof charges === 'number' ? String(charges) : '0';
     }
+  }
+
+  function updateBossHealth(hp, maxHp, name) {
+    var active = typeof hp === 'number' && typeof maxHp === 'number' && maxHp > 0;
+    if (bossHpBar) bossHpBar.style.display = active ? 'flex' : 'none';
+    if (!active) return;
+    var pct = Math.max(0, Math.min(100, (hp / maxHp) * 100));
+    if (bossHpFill) {
+      bossHpFill.style.width = pct + '%';
+      bossHpFill.classList.toggle('is-critical', pct <= 20);
+    }
+    if (bossHpVal) bossHpVal.textContent = Math.max(0, Math.round(hp)).toLocaleString() + ' / ' + Math.round(maxHp).toLocaleString();
+    if (bossHpLabel && name) bossHpLabel.textContent = name;
   }
 
   /* Roman numerals for waves 1–10; plain numbers for 11+. */
@@ -1709,7 +1728,7 @@
               <span class="map-card-name">TEST ZONE</span>
               <span class="map-card-badge map-card-badge--sandbox">SANDBOX</span>
             </div>
-            <p class="map-card-desc">Flat grass arena for mechanics QA: weapons range, all four lethals, Pack-a-Punch, Mystery Chest, and waves — without the industrial yard layout.</p>
+            <p class="map-card-desc">Sandbox QA arena with a clear layout: lethals west, economy south, gun ranges north, dragon spawner east. Pack-a-Punch, Mystery Chest, waves, and unlimited lethals.</p>
             <div class="map-card-meta">
               <span class="map-card-tag">MECHANICS QA</span>
               <span class="map-card-tag">DEV SPAWN</span>
@@ -2269,6 +2288,15 @@
       </div>
     </div>
 
+  </div>
+
+  <!-- BOSS HEALTH (top center — Ice Dragon) -->
+  <div id="boss-hp-bar" class="boss-hp-bar" style="display:none" aria-hidden="true">
+    <span class="boss-hp-label" id="boss-hp-label">ICE DRAGON</span>
+    <div class="boss-hp-track">
+      <div class="boss-hp-fill" id="boss-hp-fill"></div>
+    </div>
+    <span class="boss-hp-val" id="boss-hp-val">—</span>
   </div>
 
   <!-- CROSSHAIR (center) -->
@@ -3308,6 +3336,61 @@
 
 /* Health card */
 .health-card { min-width: 230px; }
+
+/* ── Boss health bar (Ice Dragon) ─────────────────────────── */
+.boss-hp-bar {
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-width: min(420px, 72vw);
+  padding: 8px 14px 10px;
+  pointer-events: none;
+  border: 1px solid rgba(102, 204, 255, 0.35);
+  border-top: 2px solid rgba(102, 204, 255, 0.65);
+  background: rgba(4, 12, 22, 0.82);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45), 0 0 18px rgba(80, 160, 255, 0.12);
+}
+.boss-hp-label {
+  font-family: var(--font-ui);
+  font-size: 0.52rem;
+  font-weight: 700;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: rgba(170, 220, 255, 0.95);
+  text-align: center;
+}
+.boss-hp-track {
+  height: 10px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(102, 204, 255, 0.25);
+  overflow: hidden;
+}
+.boss-hp-fill {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #1a6a9e 0%, #66ccff 45%, #a8e4ff 100%);
+  box-shadow: 0 0 10px rgba(102, 204, 255, 0.45);
+  transition: width 0.12s ease-out;
+}
+.boss-hp-fill.is-critical {
+  background: linear-gradient(90deg, #8b2020 0%, #ff4444 50%, #ff8888 100%);
+  box-shadow: 0 0 12px rgba(255, 68, 68, 0.5);
+  animation: low-health-pulse 0.4s ease-in-out infinite;
+}
+.boss-hp-val {
+  font-family: var(--font-mono, var(--font-ui));
+  font-size: 0.48rem;
+  letter-spacing: 0.12em;
+  text-align: center;
+  color: rgba(200, 230, 255, 0.75);
+}
 
 .health-bar {
   height: 12px;

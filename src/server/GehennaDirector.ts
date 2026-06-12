@@ -26,7 +26,6 @@ import {
   type GehennaMapId,
   hordesEnabledForMap,
   isSpawnInMapBounds,
-  MAP_BOUNDS,
   MAP_FOLIAGE_BLOCK_IDS,
   MAP_GROUND_SCAN_MAX_Y,
   MAP_MAX_SPAWN_GROUND_Y,
@@ -47,15 +46,7 @@ import {
 import { VFX } from "./VFX";
 import { WeaponManager } from "./WeaponManager";
 import { LethalSystem } from "./lethals/LethalSystem";
-import { buildImportedGunPickups, createGun, GUN_DISPLAY_NAME, isGunId, type GunEntity, type GunId } from "./guns";
-import {
-  SwordEntity,
-  createSword,
-  SWORD_DISPLAY_NAME,
-  SWORD_HAND_POSITION,
-  SWORD_HAND_ROTATION,
-  type SwordId,
-} from "./swords";
+import { buildImportedGunPickups, createGun, GUN_DISPLAY_NAME, type GunEntity, type GunId } from "./guns";
 import { IceDragonBoss, iceDragonSpawnY } from "./bosses/IceDragonBoss";
 import { Quaternion } from "hytopia";
 
@@ -118,8 +109,8 @@ const DRAGON_WAVE_INTERVAL_TEST = 2;
 const DRAGON_KILL_POINTS        = 2000;
 const DRAGON_HP_PER_KILL        = 2000;  // each slain dragon makes the next one tougher
 const DRAGON_SPAWN_DISTANCE     = 16;    // metres from the player
-/** Test Map: glowing ice orb on the east edge — press F to summon the dragon. */
-const TEST_BOSS_SPAWN_XZ: Vector3Like = { x: 17, y: 0, z: 17 };
+/** Test Map: glowing ice orb east of spawn — press F to summon the dragon. */
+const TEST_BOSS_SPAWN_XZ: Vector3Like = { x: 22, y: 0, z: 16 };
 
 // Dog wave tuning
 const DOG_WAVE_INTERVAL  = 5;    // every Nth wave is a dog wave
@@ -150,22 +141,22 @@ const MYSTERY_COOLDOWN_MS = 30_000;
 const INTERACT_RADIUS = 3.2;
 const PROP_PAP_POS: Record<GehennaMapId, Vector3Like> = {
   industrial_yard: { x: -12, y: 3.8, z: -8 },
-  test_zone:       { x: -18, y: 1.0, z: 12 },
+  test_zone:       { x: -20, y: 1.0, z: 6 },  // south plaza, east of hub
   high_bastion:    { x: 0, y: 1.0, z: 0 },
   the_sprawl:      { x: 12, y: 1.0, z: 8 },
 };
 const PROP_MYSTERY_POS: Record<GehennaMapId, Vector3Like> = {
   industrial_yard: { x: -30, y: 3.8, z: 4 },
-  test_zone:       { x: -32, y: 1.0, z: 18 },
+  test_zone:       { x: -30, y: 1.0, z: 6 },  // south plaza, west of hub
   high_bastion:    { x: 0, y: 1.0, z: 0 },
   the_sprawl:      { x: -12, y: 1.0, z: 8 },
 };
 
-// Test Map decorations (assets/test-map.json — near primary spawn)
+// Test Map easter-egg teddies — northeast corner, away from weapon lanes.
 const TEDDY_POSITIONS: Vector3Like[] = [
-  { x: -28, y: 1.2, z: 20 },
-  { x: -32, y: 1.2, z: 22 },
-  { x: -24, y: 1.2, z: 18 },
+  { x: 35, y: 1.2, z: 40 },
+  { x: 40, y: 1.2, z: 42 },
+  { x: 45, y: 1.2, z: 39 },
 ];
 
 // Explosion safety: Never destroy blocks at or below this Y to protect the main floor of the map.
@@ -179,36 +170,32 @@ const C4_JUMP_HORIZONTAL = 7;    // allows some creative movement (directional j
 /** Host-only desktop dev fly — V or pause menu; WASD move, Space up, Shift down. */
 const FLY_MOVE_SPEED = 18;
 
-// Lethal Testing Pickups (physical objects on Test Map)
-// Spread out and away from the teddy bears for easy access.
+// Lethal lane — west of spawn hub (walk west from deploy point).
 const LETHAL_PICKUP_XZ: { x: number; z: number; lethalId: LethalId; label: string; model: string; scale: number }[] = [
-  { x: -42, z: 6,  lethalId: "frag",    label: "Frag Grenade",     model: "models/particles/green-sphere.glb", scale: 1.1 },
-  { x: -45, z: 10, lethalId: "n74st",   label: "N 74 ST (Sticky)", model: "models/particles/sticky-bomb.glb",  scale: 1.0 },
-  { x: -38, z: 4,  lethalId: "satchel", label: "C4 Satchel",       model: "models/particles/c4-block.glb",     scale: 1.25 },
-  { x: -48, z: 8,  lethalId: "smine44", label: "S-Mine 44",        model: "models/particles/smine.glb",        scale: 1.15 },
+  { x: -40, z: 9,  lethalId: "frag",    label: "Frag Grenade",     model: "models/particles/green-sphere.glb", scale: 1.1 },
+  { x: -40, z: 12, lethalId: "n74st",   label: "N 74 ST (Sticky)", model: "models/particles/sticky-bomb.glb",  scale: 1.0 },
+  { x: -40, z: 15, lethalId: "satchel", label: "C4 Satchel",       model: "models/particles/c4-block.glb",     scale: 1.25 },
+  { x: -40, z: 18, lethalId: "smine44", label: "S-Mine 44",        model: "models/particles/smine.glb",        scale: 1.15 },
 ];
 
-type WeaponPickupDef =
-  | { x: number; z: number; kind: "gun"; weaponKey: GunId; label: string; model: string; scale: number }
-  | { x: number; z: number; kind: "sword"; weaponKey: SwordId; label: string; model: string; scale: number };
+type WeaponPickupDef = {
+  x: number;
+  z: number;
+  weaponKey: GunId;
+  label: string;
+  model: string;
+  scale: number;
+};
 
-// Weapons + swords testing range (Test Map): north of primary spawn.
+// Official gun row — north of hub (import pack grid is farther north via buildImportedGunPickups).
 const WEAPON_PICKUP_DEFS: WeaponPickupDef[] = [
-  { x: -40, z: 32, kind: "gun", weaponKey: "pistol",       label: "Pistol",       model: "models/items/pistol.glb",                    scale: 0.8 },
-  { x: -34, z: 32, kind: "gun", weaponKey: "auto-pistol",  label: "Auto Pistol",  model: "models/items/auto-pistol.glb",               scale: 0.8 },
-  { x: -28, z: 32, kind: "gun", weaponKey: "shotgun",      label: "Shotgun",      model: "models/items/shotgun.glb",                   scale: 0.8 },
-  { x: -22, z: 32, kind: "gun", weaponKey: "auto-shotgun", label: "Auto Shotgun", model: "models/items/auto-shotgun.glb",              scale: 0.8 },
-  { x: -16, z: 32, kind: "gun", weaponKey: "ar15",         label: "AR-15",        model: "models/items/ar-15.glb",                     scale: 0.8 },
-  { x: -10, z: 32, kind: "gun", weaponKey: "ak47",         label: "AK-47",        model: "models/items/ak-47.glb",                       scale: 0.8 },
+  { x: -44, z: 30, weaponKey: "pistol",       label: "Pistol",       model: "models/items/pistol.glb",       scale: 0.8 },
+  { x: -38, z: 30, weaponKey: "auto-pistol",  label: "Auto Pistol",  model: "models/items/auto-pistol.glb",  scale: 0.8 },
+  { x: -32, z: 30, weaponKey: "shotgun",      label: "Shotgun",      model: "models/items/shotgun.glb",      scale: 0.8 },
+  { x: -26, z: 30, weaponKey: "auto-shotgun", label: "Auto Shotgun", model: "models/items/auto-shotgun.glb", scale: 0.8 },
+  { x: -20, z: 30, weaponKey: "ar15",         label: "AR-15",        model: "models/items/ar-15.glb",        scale: 0.8 },
+  { x: -14, z: 30, weaponKey: "ak47",         label: "AK-47",        model: "models/items/ak-47.glb",        scale: 0.8 },
   ...buildImportedGunPickups(),
-  { x: -40, z: 40, kind: "sword", weaponKey: "wooden",   label: "Wooden Sword",   model: "models/items/swords/sword-wooden.gltf",   scale: 1.4 },
-  { x: -35, z: 40, kind: "sword", weaponKey: "stone",    label: "Stone Sword",    model: "models/items/swords/sword-stone.gltf",    scale: 1.4 },
-  { x: -30, z: 40, kind: "sword", weaponKey: "iron",     label: "Iron Sword",     model: "models/items/swords/sword-iron.gltf",     scale: 1.4 },
-  { x: -25, z: 40, kind: "sword", weaponKey: "golden",   label: "Golden Sword",   model: "models/items/swords/sword-golden.gltf",   scale: 1.4 },
-  { x: -20, z: 40, kind: "sword", weaponKey: "emerald",  label: "Emerald Sword",  model: "models/items/swords/sword-emerald.gltf",  scale: 1.4 },
-  { x: -15, z: 40, kind: "sword", weaponKey: "ruby",     label: "Ruby Sword",     model: "models/items/swords/sword-ruby.gltf",     scale: 1.4 },
-  { x: -10, z: 40, kind: "sword", weaponKey: "diamond",  label: "Diamond Sword",  model: "models/items/swords/sword-diamond.gltf",  scale: 1.4 },
-  { x: -5,  z: 40, kind: "sword", weaponKey: "sapphire", label: "Sapphire Sword", model: "models/items/swords/sword-sapphire.gltf", scale: 1.4 },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -241,6 +228,10 @@ export type GehennaHudPayload = {
   wave?: number;
   lethalCharges?: number;
   lethalName?: string;
+  /** Ice Dragon boss bar — only present while the boss is alive. */
+  bossHealth?: number;
+  bossMaxHealth?: number;
+  bossName?: string;
 };
 
 export type GehennaRunEndPayload = {
@@ -323,8 +314,7 @@ export class GehennaDirector {
   private _lethalPickupEntities: { entity: Entity; lethalId: LethalId; label: string }[] = [];
   private _weaponPickupEntities: {
     entity: Entity;
-    kind: "gun" | "sword";
-    weaponKey: GunId | SwordId;
+    weaponKey: GunId;
     label: string;
   }[] = [];
   private _teddyVictorySongPlayed = false; // Only play "The Piston Stops" once per run when all 3 teddies are shot
@@ -362,16 +352,11 @@ export class GehennaDirector {
   /** The currently equipped gun — a child entity of the player's hand anchor. */
   private _gun: GunEntity | null = null;
   private _gunId: GunId = "ar15";   // start with the rifle (Assault Rifle feel)
-  private _sword: SwordEntity | null = null;
-  private _swordId: SwordId | null = null;
-  /** Every sword spawned on the hand this run — despawn all when switching to guns. */
-  private _handSwords: SwordEntity[] = [];
   private _packTier = 0;
   private _outOfAmmoMsgAtMs = 0;    // throttle for "Out of ammo!" chat
 
   // ── Input / fire timing ──────────────────────────────────────────────────────
   private _prevF  = false;
-  private _prevR  = false;
   private _prevC  = false;
   /** Edge detect for lethal throw (wire key **n**; local client maps **G** → n). */
   private _prevN  = false;
@@ -422,7 +407,7 @@ export class GehennaDirector {
   private readonly _onTickEnd = (
     payload: WorldLoopEventPayloads[WorldLoopEvent.TICK_END]
   ) => {
-    this.tickFlyMovement(payload.tickDeltaMs / 1000);
+    this.tickFlyMovement(payload.tickDurationMs / 1000);
   };
 
   private isSessionHost(player: Player): boolean {
@@ -527,7 +512,7 @@ export class GehennaDirector {
     }
 
     const tip = mapId === "test_zone"
-      ? "Test Zone — official guns z=32, import pack z=18–26, swords z=40. Walk into pickups to equip. LMB fire/swing · R reload · G lethal."
+      ? "Test Zone layout — Hub: spawn · West: lethals · South: PaP + Mystery · North: official guns · Far north: import pack · East: dragon orb (F). LMB · R · G."
       : mapId === "high_bastion"
         ? "High Bastion — explore only. No horde. Walk the towers and ramparts. LMB fire · R reload · G lethal · C toggle 1st/3rd person."
         : mapId === "the_sprawl"
@@ -542,7 +527,6 @@ export class GehennaDirector {
       this._sessionStarted = false;
       this._round = 0;
       this.despawnGun();
-      this.despawnSword();
       this.clearZombies();
       this.destroyPropEntities();
       this.resetWaveDirector();
@@ -563,11 +547,7 @@ export class GehennaDirector {
     if (!this.isSessionHost(player)) return;
     const pe = this.getHostPlayerEntity(this._world, player);
     if (!pe) return;
-    if (this._swordId) {
-      this.equipSword(this._world, pe, this._swordId);
-    } else {
-      this.equipGun(this._world, pe, this._gunId);
-    }
+    this.equipGun(this._world, pe, this._gunId);
   }
 
   resyncScreenForUiMount(player: Player): void {
@@ -584,13 +564,6 @@ export class GehennaDirector {
    *  Acts as an "insta-die" — all XP / stats earned are saved via runEnd before
    *  the menu is shown. No score penalty applied. */
   quitToMenu(world: World, player: Player): void {
-    this.debugFetch("GehennaDirector:quitToMenu", "entry", "H4", {
-      playerId: player.id,
-      hostId: this._hostPlayer?.id ?? null,
-      isHost: this.isSessionHost(player),
-      sessionStarted: this._sessionStarted
-    });
-
     if (!this.isSessionHost(player)) {
       if (!this.isSolePlayerInWorld(world, player)) {
         world.chatManager.sendPlayerMessage(
@@ -620,7 +593,6 @@ export class GehennaDirector {
     }
 
     this.despawnGun();
-    this.despawnSword();
     this.clearZombies();
     this.destroyPropEntities();
     this.resetWaveDirector();
@@ -652,19 +624,10 @@ export class GehennaDirector {
     this.setGamePaused(world, player, false);
     this.pushScreenToPlayer(player, "menu", "sub-map-select");
     world.chatManager.sendPlayerMessage(player, "Run ended — pick a zone to deploy again.", "AAAAFF");
-
-    this.debugFetch("GehennaDirector:quitToMenu", "after_push_menu", "H5", { playerId: player.id });
   }
 
   /** Restart the run from scratch (also works from the game-over screen after death). */
   restartRun(world: World, player: Player): void {
-    this.debugFetch("GehennaDirector:restartRun", "entry", "H4", {
-      playerId: player.id,
-      hostId: this._hostPlayer?.id ?? null,
-      isHost: this.isSessionHost(player),
-      sessionStarted: this._sessionStarted
-    });
-
     // Host only — sole player can recover if host ref was lost (e.g. reconnect edge cases).
     if (!this.isSessionHost(player)) {
       if (!this.isSolePlayerInWorld(world, player)) return;
@@ -694,8 +657,6 @@ export class GehennaDirector {
       ? "Run restarted — horde re-staged."
       : "Run restarted — explore the bastion.";
     world.chatManager.sendPlayerMessage(player, restartMsg, "88FFCC");
-
-    this.debugFetch("GehennaDirector:restartRun", "restart_complete", "H5", { playerId: player.id, round: this._round });
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -990,7 +951,6 @@ export class GehennaDirector {
   ): void {
     // Ammo / reload state now lives on the equipped GunEntity (official pattern).
     const gun = this._gun;
-    const sword = this._sword;
 
     const payload: GehennaHudPayload = {
       type:           "gehennaHud",
@@ -999,16 +959,22 @@ export class GehennaDirector {
       hostiles:       this._zombies.length + (this._boss?.isAlive ? 1 : 0),
       score:          this._points,
       weapon:         this.weaponDisplayName(),
-      ...(sword
-        ? {}
-        : { magAmmo: gun?.ammo ?? 0, reserveAmmo: gun?.reserveAmmo ?? 0 }),
-      caliber:        sword ? "MELEE" : (this._packTier > 0 ? `PaP ×${this._packTier}` : "9×19mm"),
-      reloadFraction: sword ? 0 : (gun?.isReloading ? gun.reloadProgress : 0),
+      magAmmo:        gun?.ammo ?? 0,
+      reserveAmmo:    gun?.reserveAmmo ?? 0,
+      caliber:        this._packTier > 0 ? `PaP ×${this._packTier}` : "9×19mm",
+      reloadFraction: gun?.isReloading ? gun.reloadProgress : 0,
       wave:           this._round,
       lethalCharges:  this._activeLethal ? this._lethalCharges : undefined,
       lethalName:     this._activeLethal
         ? LETHAL_HUD_LABEL[this._activeLethal]
         : undefined,
+      ...(this._boss?.isAlive
+        ? {
+            bossHealth:    this._boss.hp,
+            bossMaxHealth: this._boss.maxHp,
+            bossName:      "ICE DRAGON",
+          }
+        : {}),
       ...overrides
     };
     player.ui.sendData(payload);
@@ -1048,11 +1014,11 @@ export class GehennaDirector {
 
     this.tickCameraToggle(host, w);
     this.tickFlyMode(host, pe, w);
-    this.tickGun(host, pe, w);
+    this.tickGun(host, w);
     this.tickAds(host, dtS);
     this.tickLethalInput(host, w, dtS);
-    this.tickLethalBlasts(w, host, pe, dtS);
-    this.tickTeddyBears(w);
+    this.tickLethalBlasts(w, host, dtS);
+    this.tickTeddyBears();
     this.tickLethalPickups(w, pe);
     this.tickWeaponPickups(w, pe);
     this.tickInteract(host, pe, w);
@@ -1234,6 +1200,15 @@ export class GehennaDirector {
       },
       this._dragonsSlain * DRAGON_HP_PER_KILL
     );
+
+    if (this._hostPlayer) {
+      this.syncHud(this._hostPlayer);
+      world.chatManager.sendPlayerMessage(
+        this._hostPlayer,
+        `ICE DRAGON — ${this._boss.maxHp} HP. Shoot the body — health bar is at the top of the screen.`,
+        "66CCFF"
+      );
+    }
   }
 
   /** Damage the host player (boss attacks). Mirrors the zombie melee feedback path. */
@@ -1539,7 +1514,7 @@ export class GehennaDirector {
     // Real C4 is a plant-then-hold device: tap G to THROW the brick, HOLD G to detonate.
     // Detonation is handled exclusively by tickC4Hold (0.65 s hold threshold).
 
-    const res = this._lethalSystem.useLethal(world, player, pe, this._activeLethal, origin, dir);
+    const res = this._lethalSystem.useLethal(world, pe, this._activeLethal, origin, dir);
     if (!res.ok) {
       if (res.reason) world.chatManager.sendPlayerMessage(player, res.reason, "FFAA66");
       return;
@@ -1566,17 +1541,17 @@ export class GehennaDirector {
   }
 
   /** Delegate to real LethalSystem (bouncing nades, sticky, C4, smines + shrapnel) */
-  private tickLethalBlasts(world: World, host: Player, pe: PlayerEntity | undefined, dtS = 1 / 60): void {
+  private tickLethalBlasts(world: World, host: Player, dtS = 1 / 60): void {
     if (!this._lethalSystem) return;
     // Gather live zombie positions so S-Mine proximity check triggers on enemies, not the player.
     const zombiePositions = this._zombies
       .filter(z => z.entity.isSpawned)
       .map(z => z.entity.position);
-    this._lethalSystem.tick(dtS, world, host, pe?.position, zombiePositions);
+    this._lethalSystem.tick(dtS, world, host, zombiePositions);
   }
 
   /** Updates any teddy bears that have been shot and are flying away. */
-  private tickTeddyBears(world: World): void {
+  private tickTeddyBears(): void {
     if (this._launchedTeddies.length === 0) return;
 
     const now = performance.now();
@@ -1650,23 +1625,13 @@ export class GehennaDirector {
       if (!pickup.entity?.isSpawned) continue;
       if (this.distXZ(p, pickup.entity.position) >= PICKUP_RADIUS) continue;
 
-      if (pickup.kind === "gun") {
-        if (!this._sword && this._gunId === pickup.weaponKey && this._gun) break;
-        this.equipGun(world, pe, pickup.weaponKey as GunId);
-        world.chatManager.sendPlayerMessage(
-          this._hostPlayer,
-          `Equipped: ${GUN_DISPLAY_NAME[pickup.weaponKey as GunId]}`,
-          "FFD700"
-        );
-      } else {
-        if (this._swordId === pickup.weaponKey && this._sword) break;
-        this.equipSword(world, pe, pickup.weaponKey as SwordId);
-        world.chatManager.sendPlayerMessage(
-          this._hostPlayer,
-          `Equipped: ${SWORD_DISPLAY_NAME[pickup.weaponKey as SwordId]}`,
-          "FFD700"
-        );
-      }
+      if (this._gunId === pickup.weaponKey && this._gun) break;
+      this.equipGun(world, pe, pickup.weaponKey);
+      world.chatManager.sendPlayerMessage(
+        this._hostPlayer,
+        `Equipped: ${GUN_DISPLAY_NAME[pickup.weaponKey]}`,
+        "FFD700"
+      );
       break; // one per frame
     }
   }
@@ -1877,7 +1842,6 @@ export class GehennaDirector {
    * are authored to fit the soldier rig's hand with exactly this transform.
    */
   equipGun(world: World, pe: PlayerEntity, gunId: GunId): void {
-    this.despawnSword();
     if (this._gun) {
       try { if (this._gun.isSpawned) this._gun.despawn(); } catch {}
       this._gun = null;
@@ -1887,6 +1851,7 @@ export class GehennaDirector {
     const gun = createGun(gunId, pe, {
       onShoot: () => { this._shotsFired += 1; },
       onHit: (hitEntity, hitPoint, baseDamage) => this.onGunHit(hitEntity, hitPoint, baseDamage),
+      resolveHit: (origin, direction, length, primary) => this.resolveGunHit(origin, direction, length, primary),
       onAmmoChanged: () => { if (this._hostPlayer) this.syncHud(this._hostPlayer); },
     });
     gun.spawn(world, { x: 0, y: 0, z: -0.2 }, Quaternion.fromEuler(-90, 0, 0));
@@ -1904,45 +1869,12 @@ export class GehennaDirector {
     }
   }
 
-  equipSword(world: World, pe: PlayerEntity, swordId: SwordId): void {
-    this.despawnGun();
-    this.despawnSword();
-    this._swordId = swordId;
-    const sword = createSword(swordId, pe, {
-      onSwing: () => { this._shotsFired += 1; },
-      onHit: (hitEntity, hitPoint, baseDamage) => this.onGunHit(hitEntity, hitPoint, baseDamage),
-    });
-    sword.spawn(world, SWORD_HAND_POSITION, SWORD_HAND_ROTATION);
-    this._sword = sword;
-    this._handSwords.push(sword);
-
-    if (this._hostPlayer) this.syncHud(this._hostPlayer);
-  }
-
-  /** Remove every hand-parented sword (official gun unequip pattern — no isSpawned guard). */
-  private despawnSword(): void {
-    for (const sword of this._handSwords) {
-      SwordEntity.detachAndDespawn(sword);
-    }
-    this._handSwords = [];
-    this._sword = null;
-    this._swordId = null;
-  }
-
   /**
    * Per-tick gun input (official pattern): LMB → gun.shoot() — the gun itself
    * gates fire rate + ammo and handles audio/anim/muzzle flash/raycast.
    * Semi-auto guns clear input.ml after each shot; full-auto guns keep it held.
    */
-  private tickGun(host: Player, pe: PlayerEntity, world: World): void {
-    const sword = this._sword;
-    if (sword?.isSpawned) {
-      if ((host.input as { ml?: boolean }).ml) {
-        sword.swing();
-      }
-      return;
-    }
-
+  private tickGun(host: Player, world: World): void {
     const gun = this._gun;
     if (!gun || !gun.isSpawned) return;
 
@@ -1969,6 +1901,30 @@ export class GehennaDirector {
   }
 
   /** Raycast hit resolution — boss, zombies (damage/points/headshots), teddies (test map). */
+  private resolveGunHit(
+    origin: Vector3Like,
+    direction: Vector3Like,
+    length: number,
+    primary: { entity: Entity; hitPoint: Vector3Like } | null
+  ): { entity: Entity; hitPoint: Vector3Like } | null {
+    const boss = this._boss;
+    if (!boss?.isAlive) return primary;
+
+    const bossEnt = boss.entity;
+    if (primary?.entity === bossEnt) return primary;
+
+    const bossPoint = boss.raycastHitPoint(origin, direction, length);
+    if (!bossPoint) return primary;
+
+    const distAlongRay = (pt: Vector3Like) =>
+      Math.hypot(pt.x - origin.x, pt.y - origin.y, pt.z - origin.z);
+
+    const bossDist = distAlongRay(bossPoint);
+    if (primary && distAlongRay(primary.hitPoint) <= bossDist) return primary;
+
+    return { entity: bossEnt, hitPoint: bossPoint };
+  }
+
   private onGunHit(hitEntity: Entity, hitPoint: Vector3Like, baseDamage: number): void {
     const world = this._world;
     const host  = this._hostPlayer;
@@ -1987,8 +1943,9 @@ export class GehennaDirector {
       const dmg = Math.round(baseDamage * tierMul);
       VFX.bloodHit(world, hitPoint, false);
       this._points += PTS_HIT;
-      this._boss.takeDamage(dmg);
+      const killed = this._boss.takeDamage(dmg);
       this.syncHud(host);
+      if (killed) return;
       return;
     }
 
@@ -2112,7 +2069,6 @@ export class GehennaDirector {
     this._sessionStarted = false;
     this._round = 0;
     this.despawnGun();
-    this.despawnSword();
     this.clearZombies();
     this.destroyPropEntities();
     this.resetWaveDirector();
@@ -2264,13 +2220,11 @@ export class GehennaDirector {
 
     // Gun state lives on the GunEntity — a fresh one is equipped on deploy.
     this.despawnGun();
-    this.despawnSword();
     this._gunId    = "ar15";
     this._packTier = 0;
     this._outOfAmmoMsgAtMs = 0;
 
     this._prevF  = false;
-    this._prevR  = false;
     this._prevC  = false;
     this._prevN  = false;
     this._prevV  = false;
@@ -2382,7 +2336,7 @@ export class GehennaDirector {
     if (this._hostPlayer) {
       world.chatManager.sendPlayerMessage(
         this._hostPlayer,
-        "Dragon spawner: ice orb near (17, 17) — press F there to summon the Ice Dragon.",
+        "Dragon spawner: ice orb east of hub (~22, 16) — press F there to summon the Ice Dragon.",
         "66CCFF"
       );
     }
@@ -2436,7 +2390,7 @@ export class GehennaDirector {
     if (this._hostPlayer) {
       world.chatManager.sendPlayerMessage(
         this._hostPlayer,
-        "Test Map: 4 Lethal Pickups spawned (Frag / Sticky / C4 / S-Mine). Run into them to equip with 999 charges. They stay for repeated testing!",
+        "Lethal lane (west of hub): Frag · Sticky · C4 · S-Mine — run into one for 999 charges.",
         "00FFAA"
       );
     }
@@ -2451,7 +2405,7 @@ export class GehennaDirector {
       const spawnPos: Vector3Like = { x: data.x, y: groundTop + 1.0, z: data.z };
 
       const pickup = new Entity({
-        name:       `WeaponPickup-${data.kind}-${data.weaponKey}`,
+        name:       `WeaponPickup-${data.weaponKey}`,
         tag:        "gehenna-weapon-pickup",
         modelUri:   data.model,
         modelScale: data.scale,
@@ -2461,20 +2415,18 @@ export class GehennaDirector {
 
       this._weaponPickupEntities.push({
         entity: pickup,
-        kind: data.kind,
         weaponKey: data.weaponKey,
         label: data.label,
       });
     });
 
-    const gunCount = WEAPON_PICKUP_DEFS.filter((d) => d.kind === "gun").length;
-    const swordCount = WEAPON_PICKUP_DEFS.filter((d) => d.kind === "sword").length;
-    console.log(`[Test Map] Spawned ${gunCount} gun + ${swordCount} sword pickups`);
+    const gunCount = WEAPON_PICKUP_DEFS.length;
+    console.log(`[Test Map] Spawned ${gunCount} gun pickups`);
 
     if (this._hostPlayer) {
       world.chatManager.sendPlayerMessage(
         this._hostPlayer,
-        `Weapons Range: ${gunCount} guns (z=32) + ${swordCount} swords (z=40) — walk into one to equip. LMB fire or swing.`,
+        `Weapons range: ${gunCount} guns north of hub (official row + import grid) — walk into one to equip.`,
         "FFD700"
       );
     }
@@ -2557,7 +2509,6 @@ export class GehennaDirector {
   }
 
   private weaponDisplayName(): string {
-    if (this._sword) return this._sword.name;
     const pap = this._packTier > 0 ? ` [PaP×${this._packTier}]` : "";
     const name = this._gun?.name || GUN_DISPLAY_NAME[this._gunId];
     return `${name}${pap}`;
@@ -2565,36 +2516,6 @@ export class GehennaDirector {
 
   private distXZ(a: Vector3Like, b: Vector3Like): number {
     return Math.hypot(a.x - b.x, a.z - b.z);
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Debug fetch (preserved from existing session instrumentation)
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  private debugFetch(
-    location: string,
-    message: string,
-    hypothesisId: string,
-    data: Record<string, unknown>
-  ): void {
-    void fetch(
-      "http://127.0.0.1:7457/ingest/ed9b07e2-465a-482e-b5a8-7dd1854cf52a",
-      {
-        method:  "POST",
-        headers: {
-          "Content-Type":       "application/json",
-          "X-Debug-Session-Id": "de4214"
-        },
-        body: JSON.stringify({
-          sessionId:    "de4214",
-          hypothesisId,
-          location,
-          message,
-          data,
-          timestamp:    Date.now()
-        })
-      }
-    ).catch(() => {});
   }
 
   /** Swap voxel worlds when the player picks a different deploy zone. */
