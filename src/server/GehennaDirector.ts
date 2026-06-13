@@ -1360,7 +1360,7 @@ export class GehennaDirector {
     if (!world || !host || !this._sessionStarted) return;
 
     // REAL TEST ROOM god mode: ignore boss damage while testing
-    if (!(this._currentMapId === "test_zone" && this._testGodMode)) {
+    if (!(this._testGodMode)) {
       this._health = Math.max(0, this._health - amount);
     }
 
@@ -1560,7 +1560,7 @@ export class GehennaDirector {
           row.attackCooldownS = attackCooldown;
 
           // REAL TEST ROOM god mode: never take damage while testing
-          if (!(this._currentMapId === "test_zone" && this._testGodMode)) {
+          if (!(this._testGodMode)) {
             this._health = Math.max(0, this._health - attackDmg);
           }
           hudDirty = true;
@@ -2717,58 +2717,72 @@ export class GehennaDirector {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Dev Lab portals (Test Map → installed maps in EDIT mode)
+  // Dev Lab doors (Test Map → installed maps in EDIT mode)
   // ─────────────────────────────────────────────────────────────────────────────
 
-  /** Spawn one glowing portal pad per installed map, west side of the lab. */
+  /** Spawn one big framed door per installed map, west side of the lab. */
   private spawnDevPortals(world: World): void {
     this._portalEntities = [];
 
     for (const def of PORTAL_DEFS) {
       const groundTop = this.findGroundTop(world, def.x, def.z) ?? 1;
 
-      // Glowing ring/orb pad on the floor — green sphere reads as a portal core.
-      const pad = new Entity({
-        name: `PORTAL → ${def.label}`,
+      // Face the door toward the arena centre so you walk up to its front.
+      const yaw = Math.atan2(-def.x, -def.z) + Math.PI;
+      const rot = Quaternion.fromEuler(0, yaw, 0);
+
+      // Stone door frame sitting on the floor.
+      const frame = new Entity({
+        name: `DOOR → ${def.label}`,
         tag: "gehenna-portal",
-        modelUri: "models/particles/green-sphere.glb",
-        modelScale: 1.6,
-        opacity: 0.85,
+        modelUri: "models/environment/House/door-big-frame.gltf",
+        modelScale: 2.0,
         rigidBodyOptions: { type: RigidBodyType.FIXED },
       });
-      pad.spawn(world, { x: def.x, y: groundTop + 1.0, z: def.z });
-      this._portalEntities.push(pad);
+      frame.spawn(world, { x: def.x, y: groundTop + 0.05, z: def.z }, rot);
+      this._portalEntities.push(frame);
 
-      // Floating label column above the pad so you can read the destination.
+      // The door slab inside the frame.
+      const door = new Entity({
+        name: " ",
+        tag: "gehenna-portal",
+        modelUri: "models/environment/House/door-big.gltf",
+        modelScale: 2.0,
+        rigidBodyOptions: { type: RigidBodyType.FIXED },
+      });
+      door.spawn(world, { x: def.x, y: groundTop + 0.05, z: def.z }, rot);
+      this._portalEntities.push(door);
+
+      // Floating destination label above the door.
       const label = new Entity({
-        name: `${def.label}\n(stand here · press F to edit)`,
+        name: `${def.label}\n(walk up · press F to enter)`,
         tag: "gehenna-portal",
         modelUri: "models/particles/c4-block.glb",
-        modelScale: 1.4,
+        modelScale: 1.2,
         opacity: 0.9,
         rigidBodyOptions: { type: RigidBodyType.FIXED },
       });
-      label.spawn(world, { x: def.x, y: groundTop + 3.2, z: def.z });
+      label.spawn(world, { x: def.x, y: groundTop + 5.0, z: def.z });
       this._portalEntities.push(label);
     }
 
-    console.log(`[Test Map] Spawned ${PORTAL_DEFS.length} dev portals`);
+    console.log(`[Test Map] Spawned ${PORTAL_DEFS.length} dev doors`);
     if (this._hostPlayer) {
       world.chatManager.sendPlayerMessage(
         this._hostPlayer,
-        `DEV PORTALS (west): ${PORTAL_DEFS.map(p => p.label).join(", ")}. Stand on a glowing pad, press F to enter that map in EDIT mode (fly + build). Press F again on the return pad to come back.`,
+        `DEV DOORS (west): ${PORTAL_DEFS.map(p => p.label).join(", ")}. Walk up to a door, press F to enter that map in EDIT mode. Press V to fly, shoot/explode to edit blocks, press F at the door inside to return.`,
         "AA88FF"
       );
     }
   }
 
-  /** F-interact handler for portals — returns true if it consumed the press. */
+  /** F-interact handler for doors — returns true if it consumed the press. */
   private tryPortalInteract(world: World, host: Player, pe: PlayerEntity): boolean {
     const now = performance.now();
     if (now - this._lastPortalWarpMs < PORTAL_COOLDOWN_MS) return false;
     const p = pe.position;
 
-    // In an edit map: a single return pad sits at the map spawn — F warps back to the lab.
+    // In an edit map: a return door sits at the map spawn — F warps back to the lab.
     if (this._devEditMapId) {
       const spawn = MAP_SPAWN[this._devEditMapId];
       if (this.distXZ(p, spawn) < PORTAL_TRIGGER_R + 1.5) {
@@ -2779,7 +2793,7 @@ export class GehennaDirector {
       return false;
     }
 
-    // In the lab: check each portal pad.
+    // In the lab: check each door.
     if (this._currentMapId !== "test_zone") return false;
     for (const def of PORTAL_DEFS) {
       if (this.distXZ(p, { x: def.x, y: 0, z: def.z }) < PORTAL_TRIGGER_R) {
@@ -2791,38 +2805,70 @@ export class GehennaDirector {
     return false;
   }
 
-  /** Warp into an installed map in free-build EDIT mode (no hordes, fly on). */
+  /** Warp into an installed map in free-build EDIT mode (walk + god; press V to fly). */
   private enterEditMap(world: World, host: Player, mapId: GehennaMapId, label: string): void {
-    const pe = this.getHostPlayerEntity(world, host);
-    if (!pe) return;
-
-    // Tear down lab props/hostiles, swap world, place the player at its spawn.
+    // Tear down lab props/hostiles + clear any leftover fly/edit state BEFORE swapping.
     this.abortActiveWave();
     this.clearZombies();
     this.destroyPropEntities();
     this.restoreAndClearTestMapBlocks();
 
+    // Make sure walking is fully restored (in case fly was on in the lab).
+    const peBefore = this.getHostPlayerEntity(world, host);
+    if (peBefore) this.disableFlyMode(world, peBefore);
+
     this._devEditMapId = mapId;
     this._currentMapId = mapId;
     this.ensureMapLoaded(world, mapId);
     this._applySky(world, mapId);
-    this.teleportHostToMapSpawn(world, host, mapId);
 
-    // Edit freedom: fly on so you can build anywhere; god so stray hazards don't kill you.
-    this.setFlyMode(world, host, pe, true);
+    // Re-fetch the player entity AFTER the world swap, then place + spawn the return door.
+    this.teleportHostToMapSpawn(world, host, mapId);
+    this.spawnReturnDoor(world, mapId);
+
+    // God on so stray map hazards can't kill you while editing. Movement stays normal
+    // (walk works immediately); press V any time to fly for high builds.
     this._testGodMode = true;
 
     this.syncHud(host);
-    world.chatManager.sendPlayerMessage(host, `EDIT MODE — ${label}. Fly (Space/Shift), shoot blocks to remove, press F at the spawn pad to return to the lab.`, "AA88FF");
+    world.chatManager.sendPlayerMessage(host, `EDIT MODE — ${label}. Walk freely, press V to fly, shoot/explode to edit blocks, press F at the door to return to the lab.`, "AA88FF");
+  }
+
+  /** A single return door at an edit map's spawn so F sends you back to the lab. */
+  private spawnReturnDoor(world: World, mapId: GehennaMapId): void {
+    const spawn = MAP_SPAWN[mapId];
+    const groundTop = this.findGroundTop(world, spawn.x, spawn.z) ?? Math.floor(spawn.y);
+
+    const frame = new Entity({
+      name: "DOOR → Dev Lab",
+      tag: "gehenna-portal",
+      modelUri: "models/environment/House/door-big-frame.gltf",
+      modelScale: 2.0,
+      rigidBodyOptions: { type: RigidBodyType.FIXED },
+    });
+    frame.spawn(world, { x: spawn.x + 2, y: groundTop + 0.05, z: spawn.z });
+    this._portalEntities.push(frame);
+
+    const label = new Entity({
+      name: "Dev Lab\n(press F to return)",
+      tag: "gehenna-portal",
+      modelUri: "models/particles/c4-block.glb",
+      modelScale: 1.2,
+      opacity: 0.9,
+      rigidBodyOptions: { type: RigidBodyType.FIXED },
+    });
+    label.spawn(world, { x: spawn.x + 2, y: groundTop + 5.0, z: spawn.z });
+    this._portalEntities.push(label);
   }
 
   /** Return from an edit map back to the Dev Lab. */
   private exitEditMap(world: World, host: Player): void {
-    const pe = this.getHostPlayerEntity(world, host);
+    const peBefore = this.getHostPlayerEntity(world, host);
+    if (peBefore) this.disableFlyMode(world, peBefore);
     this._devEditMapId = null;
     this._testGodMode = false;
-    if (pe) this.disableFlyMode(world, pe);
 
+    this.destroyPropEntities(); // clears the return door too
     this._currentMapId = "test_zone";
     this.ensureMapLoaded(world, "test_zone");
     this._applySky(world, "test_zone");
@@ -3021,7 +3067,8 @@ export class GehennaDirector {
           try {
             const blockId = world.chunkLattice.getBlockId(pos);
             if (blockId !== 0) {
-              // Record destroyed blocks so we can restore them on Test Map restart
+              // Record destroyed blocks so we can restore them on Test Map restart.
+              // (Edit maps keep their edits — they aren't auto-restored.)
               if (this._currentMapId === "test_zone") {
                 this._destroyedBlocksThisRun.push({
                   pos: { ...pos },
