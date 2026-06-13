@@ -105,6 +105,35 @@ export class LayoutEditor {
     return `Dropped "${id}". /save to make it permanent.`;
   }
 
+  /**
+   * Left-click while holding: lock the prop in place AND auto-save its transform
+   * so the placement persists. Returns a status line (or null if nothing held).
+   */
+  placeHeld(): string | null {
+    if (!this._heldId) return null;
+    const prop = this._props.get(this._heldId);
+    this._heldId = null;
+    if (!prop) return "Placed.";
+    const entry: LayoutEntry = {
+      modelUri: prop.modelUri,
+      scale: prop.scale,
+      position: prop.position,
+      rotation: Quaternion.fromEuler(0, prop.rotationDeg, 0),
+    };
+    saveLayoutEntry(this._mapId, prop.layoutId, entry);
+    return `Placed & saved "${prop.layoutId}" (scale ${prop.scale.toFixed(2)}).`;
+  }
+
+  /** Scroll-wheel resize on the held prop. dir = +1 bigger / -1 smaller. */
+  scaleStep(dir: number): boolean {
+    const prop = this._heldProp();
+    if (!prop) return false;
+    const factor = dir > 0 ? 1.08 : 1 / 1.08;
+    prop.scale = Math.max(0.05, Math.min(20, prop.scale * factor));
+    this._applyTransform(prop);
+    return true;
+  }
+
   rotate(deg: number): string {
     const prop = this._heldProp();
     if (!prop) return "Grab a prop first (/grab).";

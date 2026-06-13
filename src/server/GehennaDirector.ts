@@ -364,6 +364,13 @@ export class GehennaDirector {
   private _layoutCommandsRegistered = false;
   /** Live door-frame entity per portal so a moved/saved door carries its trigger. */
   private _portalDoorByMap = new Map<GehennaMapId, Entity>();
+  /** Pickaxe tool equipped (left-click breaks the single aimed block). */
+  private _pickaxeMode = false;
+  /** Held pickaxe model while pickaxe mode is on (gun is hidden meanwhile). */
+  private _pickaxeEntity: Entity | null = null;
+  /** Mouse edge-detect for the dev editor (place / rotate / break). */
+  private _prevDevMl = false;
+  private _prevDevMr = false;
 
   /** Throttle for automatic proximity hints when near a test control station. */
   private _lastTestHintMs = 0;
@@ -515,6 +522,48 @@ export class GehennaDirector {
     cm.registerCommand("/rotate", (player, args) => withPlayer(player, () => this._layout.rotate(parseFloat(args[0] ?? "45") || 45)));
     cm.registerCommand("/scale",  (player, args) => withPlayer(player, () => this._layout.scale(args[0] ?? "1.1")));
     cm.registerCommand("/reset",  (player, args) => withPlayer(player, () => this._layout.reset(args[0])));
+  }
+
+  /**
+   * Right-edge dev panel actions (clickable UI mirror of the chat commands).
+   * Routes each button to the LayoutEditor and echoes a status line to the panel.
+   */
+  handleDevTool(world: World, player: Player, action: string, arg: string): void {
+    const inDevRoom = this._currentMapId === "test_zone" || this._devEditMapId !== null;
+    const reply = (text: string) => {
+      try { player.ui.sendData({ type: "devStatus", text }); } catch {}
+    };
+    if (!inDevRoom) { reply("Dev tools only work in the Dev Lab / edit maps."); return; }
+
+    const pe = this.getHostPlayerEntity(world, player);
+    if (!pe) { reply("No player entity."); return; }
+
+    switch (action) {
+      case "grab":   reply(this._layout.grab(player, pe) + " — scroll to resize, LEFT-click to place, RIGHT-click to rotate."); break;
+      case "drop":   reply(this._layout.drop()); break;
+      case "rotate": reply(this._layout.rotate(parseFloat(arg) || 45)); break;
+      case "scale":  reply(this._layout.scale(arg || "1.1")); break;
+      case "up":     reply(this._layout.nudgeHeight(0.25)); break;
+      case "down":   reply(this._layout.nudgeHeight(-0.25)); break;
+      case "save":   reply(this._layout.saveAll()); break;
+      case "reset":  reply(this._layout.reset()); break;
+      case "fly":    this.toggleFlyMode(world, player); reply("Toggled fly."); break;
+      case "pickaxe":
+        this._pickaxeMode = !this._pickaxeMode;
+        this.setPickaxeVisual(world, player, pe, this._pickaxeMode);
+        reply(this._pickaxeMode ? "Pickaxe ON — LEFT-click a block to break it." : "Pickaxe OFF.");
+        break;
+      default:       reply(`Unknown dev action: ${action}`);
+    }
+  }
+
+  /** Scroll-wheel from the UI: resize the held prop (dir = +1 up / -1 down). */
+  handleDevScroll(_world: World, player: Player, dir: number): void {
+    const inDevRoom = this._currentMapId === "test_zone" || this._devEditMapId !== null;
+    if (!inDevRoom) return;
+    if (this._layout.scaleStep(dir)) {
+      this.devReply(player, dir > 0 ? "↑ bigger" : "↓ smaller");
+    }
   }
 
   detach(): void {
@@ -1105,8 +1154,99 @@ export class GehennaDirector {
     this.tickWeaponPickups(w, pe);
     this.tickInteract(host, pe, w);
     this.tickTestControlHints(host, w);
-    this._layout.tick(host, pe); // grabbed prop follows the player's aim
+    this.tickDevInteract(host, pe, w);
     this.maybeThrottleHud(host, 80);
+  }
+
+  /**
+   * Dev editor mouse loop (dev rooms only):
+   *  - Holding a prop: it follows your aim; LEFT-click places+saves, RIGHT-click rotates 15°.
+   *  - Pickaxe equipped: LEFT-click breaks the single block you're aiming at.
+   * (Scroll-wheel resize arrives via the `devScroll` UI message → handleDevScroll.)
+   */
+  private tickDevInteract(host: Player, pe: PlayerEntity, world: World): void {
+    const inDevRoom = this._currentMapId === "test_zone" || this._devEditMapId !== null;
+    if (!inDevRoom) { this._prevDevMl = false; this._prevDevMr = false; return; }
+
+    const inp = host.input;
+    const ml = !!(inp as { ml?: boolean }).ml;
+    const mr = !!(inp as { mr?: boolean }).mr;
+    const mlRise = ml && !this._prevDevMl;
+    const mrRise = mr && !this._prevDevMr;
+    this._prevDevMl = ml;
+    this._prevDevMr = mr;
+
+    if (this._layout.isHolding) {
+      this._layout.tick(host, pe); // follow aim
+      if (mlRise) {
+        const msg = this._layout.placeHeld();
+        if (msg) this.devReply(host, msg);
+      } else if (mrRise) {
+        this.devReply(host, this._layout.rotate(15));
+      }
+      return;
+    }
+
+    if (this._pickaxeMode && mlRise) {
+      this.breakAimedBlock(host, pe, world);
+    }
+  }
+
+  /** Pickaxe: raycast from the eye and remove the single block hit. */
+  private breakAimedBlock(host: Player, pe: PlayerEntity, world: World): void {
+    const origin = this.getShotOrigin(host, pe);
+    const dir = this.getShotDirection(host);
+    let hit: any = null;
+    try {
+      hit = world.simulation.raycast(origin, dir, 8, {
+        filterExcludeRigidBody: (pe as any).rawRigidBody,
+      });
+    } catch {}
+    const coord = hit?.hitBlock?.globalCoordinate;
+    if (!coord) { this.devReply(host, "Pickaxe: no block in range."); return; }
+
+    try {
+      const id = world.chunkLattice.getBlockId(coord);
+      if (id === 0) return;
+      // Record on the test map so it restores on restart (edit maps keep edits).
+      if (this._currentMapId === "test_zone") {
+        this._destroyedBlocksThisRun.push({ pos: { ...coord }, originalBlockId: id });
+      }
+      world.chunkLattice.setBlock(coord, 0);
+      VFX.bloodHit(world, { x: coord.x + 0.5, y: coord.y + 0.5, z: coord.z + 0.5 }, false);
+    } catch {}
+  }
+
+  private devReply(host: Player, text: string): void {
+    try { host.ui.sendData({ type: "devStatus", text }); } catch {}
+  }
+
+  /** Show/hide the held pickaxe model; hide the gun while it's out. */
+  private setPickaxeVisual(world: World, _player: Player, pe: PlayerEntity, on: boolean): void {
+    // Remove any previous pickaxe.
+    if (this._pickaxeEntity) {
+      try { if (this._pickaxeEntity.isSpawned) this._pickaxeEntity.despawn(); } catch {}
+      this._pickaxeEntity = null;
+    }
+
+    if (on) {
+      // Hide the gun while wielding the pickaxe.
+      this.despawnGun();
+      const pick = new Entity({
+        name: "DevPickaxe",
+        modelUri: "models/tools/pickaxe/stone-pickaxe.gltf",
+        modelScale: 0.6,
+        parent: pe,
+        parentNodeName: "hand_right_anchor",
+      });
+      try {
+        pick.spawn(world, { x: 0, y: 0, z: -0.2 }, Quaternion.fromEuler(-90, 0, 0));
+      } catch {}
+      this._pickaxeEntity = pick;
+    } else {
+      // Re-equip the gun when putting the pickaxe away.
+      this.equipGun(world, pe, this._gunId);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -2062,6 +2202,10 @@ export class GehennaDirector {
     const gun = this._gun;
     if (!gun || !gun.isSpawned) return;
 
+    // While editing (grabbing a prop or holding the pickaxe) the mouse drives the
+    // editor, not the gun — don't fire/reload underneath the layout tools.
+    if (this._layout.isHolding || this._pickaxeMode) return;
+
     const inp = host.input;
 
     // R = reload (consume the edge so it doesn't repeat)
@@ -2924,6 +3068,11 @@ export class GehennaDirector {
     if (peBefore) this.disableFlyMode(world, peBefore);
     this._devEditMapId = null;
     this._testGodMode = false;
+    this._pickaxeMode = false;
+    if (this._pickaxeEntity) {
+      try { if (this._pickaxeEntity.isSpawned) this._pickaxeEntity.despawn(); } catch {}
+      this._pickaxeEntity = null;
+    }
 
     this.destroyPropEntities(); // clears the return door too
     this._currentMapId = "test_zone";

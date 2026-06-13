@@ -167,6 +167,18 @@ startServer((world) => {
           gehennaDirector.toggleFlyMode(w, player);
           return;
         }
+        if (t === "devTool") {
+          gehennaDirector.handleDevTool(
+            w, player,
+            typeof payload.action === "string" ? payload.action : "",
+            typeof payload.arg === "string" ? payload.arg : ""
+          );
+          return;
+        }
+        if (t === "devScroll") {
+          gehennaDirector.handleDevScroll(w, player, payload.dir === -1 ? -1 : 1);
+          return;
+        }
         /* Single-field types (like uiReady) — some runtimes strip unknown sibling keys on UI packets. */
         if (t === "gehennaRestart") {
           const mapId = gehennaDirector.getCurrentMapId();
