@@ -48,6 +48,7 @@ import { WeaponManager } from "./WeaponManager";
 import { LethalSystem } from "./lethals/LethalSystem";
 import { buildImportedGunPickups, createGun, GUN_DISPLAY_NAME, type GunEntity, type GunId } from "./guns";
 import { IceDragonBoss, iceDragonSpawnY } from "./bosses/IceDragonBoss";
+import { LayoutEditor } from "./devtools/LayoutEditor";
 import { Quaternion } from "hytopia";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -358,6 +359,12 @@ export class GehennaDirector {
   /** Debounce timestamp for portal warps. */
   private _lastPortalWarpMs = 0;
 
+  /** In-game model layout tool (grab/move/rotate/scale/save props). */
+  private readonly _layout = new LayoutEditor();
+  private _layoutCommandsRegistered = false;
+  /** Live door-frame entity per portal so a moved/saved door carries its trigger. */
+  private _portalDoorByMap = new Map<GehennaMapId, Entity>();
+
   /** Throttle for automatic proximity hints when near a test control station. */
   private _lastTestHintMs = 0;
   private _teddyVictorySongPlayed = false; // Only play "The Piston Stops" once per run when all 3 teddies are shot
@@ -481,6 +488,33 @@ export class GehennaDirector {
     this._loadedMapId = DEFAULT_MAP_ID; // index.ts already loaded assets/map.json
     world.loop.on(WorldLoopEvent.TICK_START, this._onTick);
     world.loop.on(WorldLoopEvent.TICK_END, this._onTickEnd);
+    this.registerLayoutCommands(world);
+  }
+
+  /** Chat-command interface for the in-game model layout tool (dev rooms). */
+  private registerLayoutCommands(world: World): void {
+    if (this._layoutCommandsRegistered) return;
+    this._layoutCommandsRegistered = true;
+    const cm = world.chatManager;
+
+    const isDevRoom = () => this._currentMapId === "test_zone" || this._devEditMapId !== null;
+
+    const withPlayer = (player: Player, fn: (pe: PlayerEntity) => string) => {
+      if (!isDevRoom()) { cm.sendPlayerMessage(player, "Layout tools only work in the Dev Lab / edit maps.", "FF6666"); return; }
+      const pe = this.getHostPlayerEntity(world, player);
+      if (!pe) return;
+      cm.sendPlayerMessage(player, fn(pe), "AA88FF");
+    };
+
+    cm.registerCommand("/grab",   (player) => withPlayer(player, (pe) => this._layout.grab(player, pe)));
+    cm.registerCommand("/drop",   (player) => withPlayer(player, () => this._layout.drop()));
+    cm.registerCommand("/save",   (player) => withPlayer(player, () => this._layout.saveAll()));
+    cm.registerCommand("/list",   (player) => withPlayer(player, () => this._layout.list()));
+    cm.registerCommand("/up",     (player) => withPlayer(player, () => this._layout.nudgeHeight(0.25)));
+    cm.registerCommand("/down",   (player) => withPlayer(player, () => this._layout.nudgeHeight(-0.25)));
+    cm.registerCommand("/rotate", (player, args) => withPlayer(player, () => this._layout.rotate(parseFloat(args[0] ?? "45") || 45)));
+    cm.registerCommand("/scale",  (player, args) => withPlayer(player, () => this._layout.scale(args[0] ?? "1.1")));
+    cm.registerCommand("/reset",  (player, args) => withPlayer(player, () => this._layout.reset(args[0])));
   }
 
   detach(): void {
@@ -1071,6 +1105,7 @@ export class GehennaDirector {
     this.tickWeaponPickups(w, pe);
     this.tickInteract(host, pe, w);
     this.tickTestControlHints(host, w);
+    this._layout.tick(host, pe); // grabbed prop follows the player's aim
     this.maybeThrottleHud(host, 80);
   }
 
@@ -2526,7 +2561,7 @@ export class GehennaDirector {
 
     TEDDY_POSITIONS.forEach((pos, index) => {
       const groundTop = this.findGroundTop(world, pos.x, pos.z) ?? 1;
-      const spawnPos: Vector3Like = { x: pos.x, y: groundTop + 0.2, z: pos.z };
+      const defaultPos: Vector3Like = { x: pos.x, y: groundTop + 0.2, z: pos.z };
       const teddy = new Entity({
         name:       `TeddyBear-${index + 1}`,
         tag:        "gehenna-decoration",
@@ -2534,7 +2569,10 @@ export class GehennaDirector {
         modelScale: 1.0,
         rigidBodyOptions: { type: RigidBodyType.FIXED }
       });
-      teddy.spawn(world, spawnPos);
+      // Editable + savable layout prop.
+      const t = this._layout.register(`teddy-${index + 1}`, teddy, "models/teddy_bear.glb", 1.0, defaultPos, 0);
+      teddy.spawn(world, t.position, t.rotation);
+      teddy.setModelScale(t.scale);
       this._teddyEntities.push(teddy);
     });
   }
@@ -2723,15 +2761,17 @@ export class GehennaDirector {
   /** Spawn one big framed door per installed map, west side of the lab. */
   private spawnDevPortals(world: World): void {
     this._portalEntities = [];
+    this._portalDoorByMap.clear();
+    this._layout.setMap("test_zone");
 
     for (const def of PORTAL_DEFS) {
       const groundTop = this.findGroundTop(world, def.x, def.z) ?? 1;
 
-      // Face the door toward the arena centre so you walk up to its front.
-      const yaw = Math.atan2(-def.x, -def.z) + Math.PI;
-      const rot = Quaternion.fromEuler(0, yaw, 0);
+      // Default: face the door toward the arena centre so you walk up to its front.
+      const defaultYawDeg = ((Math.atan2(-def.x, -def.z) + Math.PI) * 180) / Math.PI;
+      const defaultPos = { x: def.x, y: groundTop + 0.05, z: def.z };
 
-      // Stone door frame sitting on the floor.
+      // Stone door frame — this is the editable, layout-savable prop.
       const frame = new Entity({
         name: `DOOR → ${def.label}`,
         tag: "gehenna-portal",
@@ -2739,18 +2779,23 @@ export class GehennaDirector {
         modelScale: 2.0,
         rigidBodyOptions: { type: RigidBodyType.FIXED },
       });
-      frame.spawn(world, { x: def.x, y: groundTop + 0.05, z: def.z }, rot);
+      // Apply any saved override (grab/move/rotate/scale → /save), else default.
+      const layoutId = `portal-door-${def.mapId}`;
+      const t = this._layout.register(layoutId, frame, "models/environment/House/door-big-frame.gltf", 2.0, defaultPos, defaultYawDeg);
+      frame.spawn(world, t.position, t.rotation);
+      frame.setModelScale(t.scale);
       this._portalEntities.push(frame);
+      this._portalDoorByMap.set(def.mapId, frame);
 
-      // The door slab inside the frame.
+      // The door slab inside the frame (rides the saved frame transform).
       const door = new Entity({
         name: " ",
         tag: "gehenna-portal",
         modelUri: "models/environment/House/door-big.gltf",
-        modelScale: 2.0,
+        modelScale: t.scale,
         rigidBodyOptions: { type: RigidBodyType.FIXED },
       });
-      door.spawn(world, { x: def.x, y: groundTop + 0.05, z: def.z }, rot);
+      door.spawn(world, t.position, t.rotation);
       this._portalEntities.push(door);
 
       // Floating destination label above the door.
@@ -2762,7 +2807,7 @@ export class GehennaDirector {
         opacity: 0.9,
         rigidBodyOptions: { type: RigidBodyType.FIXED },
       });
-      label.spawn(world, { x: def.x, y: groundTop + 5.0, z: def.z });
+      label.spawn(world, { x: t.position.x, y: t.position.y + 5.0, z: t.position.z });
       this._portalEntities.push(label);
     }
 
@@ -2782,10 +2827,11 @@ export class GehennaDirector {
     if (now - this._lastPortalWarpMs < PORTAL_COOLDOWN_MS) return false;
     const p = pe.position;
 
-    // In an edit map: a return door sits at the map spawn — F warps back to the lab.
+    // In an edit map: the return door (live position) warps back to the lab.
     if (this._devEditMapId) {
-      const spawn = MAP_SPAWN[this._devEditMapId];
-      if (this.distXZ(p, spawn) < PORTAL_TRIGGER_R + 1.5) {
+      const door = this._portalDoorByMap.get(this._devEditMapId);
+      const at = door?.isSpawned ? door.position : MAP_SPAWN[this._devEditMapId];
+      if (this.distXZ(p, at) < PORTAL_TRIGGER_R + 1.5) {
         this._lastPortalWarpMs = now;
         this.exitEditMap(world, host);
         return true;
@@ -2793,10 +2839,13 @@ export class GehennaDirector {
       return false;
     }
 
-    // In the lab: check each door.
+    // In the lab: check each door at its LIVE position (so a moved/saved door
+    // carries its entry trigger with it). Falls back to the default XZ.
     if (this._currentMapId !== "test_zone") return false;
     for (const def of PORTAL_DEFS) {
-      if (this.distXZ(p, { x: def.x, y: 0, z: def.z }) < PORTAL_TRIGGER_R) {
+      const door = this._portalDoorByMap.get(def.mapId);
+      const at = door?.isSpawned ? door.position : { x: def.x, y: 0, z: def.z };
+      if (this.distXZ(p, at) < PORTAL_TRIGGER_R + 1.0) {
         this._lastPortalWarpMs = now;
         this.enterEditMap(world, host, def.mapId, def.label);
         return true;
@@ -2822,6 +2871,9 @@ export class GehennaDirector {
     this.ensureMapLoaded(world, mapId);
     this._applySky(world, mapId);
 
+    // Editor now tracks THIS map's saved layout (props placed inside it).
+    this._layout.setMap(mapId);
+
     // Re-fetch the player entity AFTER the world swap, then place + spawn the return door.
     this.teleportHostToMapSpawn(world, host, mapId);
     this.spawnReturnDoor(world, mapId);
@@ -2838,6 +2890,7 @@ export class GehennaDirector {
   private spawnReturnDoor(world: World, mapId: GehennaMapId): void {
     const spawn = MAP_SPAWN[mapId];
     const groundTop = this.findGroundTop(world, spawn.x, spawn.z) ?? Math.floor(spawn.y);
+    const defaultPos = { x: spawn.x + 2, y: groundTop + 0.05, z: spawn.z };
 
     const frame = new Entity({
       name: "DOOR → Dev Lab",
@@ -2846,8 +2899,12 @@ export class GehennaDirector {
       modelScale: 2.0,
       rigidBodyOptions: { type: RigidBodyType.FIXED },
     });
-    frame.spawn(world, { x: spawn.x + 2, y: groundTop + 0.05, z: spawn.z });
+    // Return door is itself an editable/savable prop (relocate where you re-enter).
+    const t = this._layout.register("return-door", frame, "models/environment/House/door-big-frame.gltf", 2.0, defaultPos, 0);
+    frame.spawn(world, t.position, t.rotation);
+    frame.setModelScale(t.scale);
     this._portalEntities.push(frame);
+    this._portalDoorByMap.set(mapId, frame);
 
     const label = new Entity({
       name: "Dev Lab\n(press F to return)",
@@ -2857,7 +2914,7 @@ export class GehennaDirector {
       opacity: 0.9,
       rigidBodyOptions: { type: RigidBodyType.FIXED },
     });
-    label.spawn(world, { x: spawn.x + 2, y: groundTop + 5.0, z: spawn.z });
+    label.spawn(world, { x: t.position.x, y: t.position.y + 5.0, z: t.position.z });
     this._portalEntities.push(label);
   }
 
@@ -2912,6 +2969,8 @@ export class GehennaDirector {
       if (e?.isSpawned) e.despawn();
     });
     this._portalEntities = [];
+    this._portalDoorByMap.clear();
+    this._layout.clear();
 
     this._papEntity     = null;
     this._mysteryEntity = null;
