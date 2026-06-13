@@ -20,8 +20,8 @@ assert(
   "test_zone spawn must lie inside flat test arena bounds"
 );
 
-assert.equal(MAP_SPAWN.test_zone.x, -25);
-assert.equal(MAP_SPAWN.test_zone.z, 15);
+assert.equal(MAP_SPAWN.test_zone.x, 0);
+assert.equal(MAP_SPAWN.test_zone.z, 0);
 
 assert.equal(
   MAP_DEV_FLAGS.test_zone.unlimitedLethals,

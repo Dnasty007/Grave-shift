@@ -6,6 +6,7 @@
   "scripts": {
     "build": "hytopia build",
     "check-assets": "node scripts/check-model-uris.mjs",
+    "generate-test-map": "node scripts/generate-test-map.mjs",
     "prestart": "node scripts/print-local-play-hint.mjs",
     "start": "hytopia start",
     "predev": "node scripts/print-local-play-hint.mjs",

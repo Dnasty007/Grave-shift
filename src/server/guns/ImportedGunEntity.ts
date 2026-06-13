@@ -18,7 +18,7 @@ export default class ImportedGunEntity extends GunEntity {
       name: options.name ?? def.name,
       maxAmmo: options.maxAmmo ?? def.maxAmmo,
       modelUri: options.modelUri ?? def.modelUri,
-      modelScale: options.modelScale ?? def.modelScale ?? 1.8,
+      modelScale: options.modelScale ?? def.modelScale,
       parent: options.parent,
       range: options.range ?? def.range ?? 50,
       reloadAudioUri: options.reloadAudioUri ?? "audio/sfx/rifle-reload.mp3",

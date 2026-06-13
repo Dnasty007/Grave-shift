@@ -102,15 +102,40 @@ const FIRST_PERSON_CAMERA_OFFSET: Vector3Like = { x: 0, y: 0.5, z: 0 };
 // Dog explosion body offset (per 1.0 scale, same convention as BODY_CENTER_Y)
 const DOG_BODY_CENTER_Y = -0.05;
 
-// Ice Dragon boss waves — the dragon descends INSTEAD of a horde on these waves.
-// Test Map: every 2nd wave so the fight is quick to reach while tuning.
-const DRAGON_WAVE_INTERVAL      = 10;
-const DRAGON_WAVE_INTERVAL_TEST = 2;
+// Ice Dragon boss — guaranteed on waves 10, 16, 23; rare random chance after wave 23.
+const DRAGON_GUARANTEED_WAVES = new Set([10, 16, 23]);
+/** Per-wave roll once wave 24+ (unpredictable — players know he CAN appear, not when). */
+const DRAGON_LATE_GAME_CHANCE = 0.05;
 const DRAGON_KILL_POINTS        = 2000;
 const DRAGON_HP_PER_KILL        = 2000;  // each slain dragon makes the next one tougher
 const DRAGON_SPAWN_DISTANCE     = 16;    // metres from the player
-/** Test Map: glowing ice orb east of spawn — press F to summon the dragon. */
-const TEST_BOSS_SPAWN_XZ: Vector3Like = { x: 22, y: 0, z: 16 };
+
+/** Test Map — interact pillars (F). Blocks are built in generate-test-map.mjs.
+ *  This is the dedicated REAL TEST ROOM for fast mechanic iteration:
+ *    - Walk-over weapon & lethal lanes (permanent, 999 charges on test)
+ *    - Manual wave + boss control
+ *    - Clear / God Mode / Max Kit utility pillars for safe + fast testing
+ */
+const TEST_WAVE_NEXT_XZ: Vector3Like   = { x: 12,  y: 0, z: 0 };
+const TEST_WAVE_REPLAY_XZ: Vector3Like = { x: -12, y: 0, z: 0 };
+const TEST_BOSS_PILLAR_XZ: Vector3Like = { x: 38,  y: 0, z: 0 };
+
+// Smart low-profile test control positions (colored pad + central block in map + overhead glowing screen entity spawned in code)
+const TEST_CLEAR_XZ: Vector3Like  = { x: 0, y: 0, z: 12 };
+const TEST_GOD_XZ: Vector3Like    = { x: 0, y: 0, z: -12 };
+const TEST_MAXKIT_XZ: Vector3Like = { x: 12, y: 0, z: 12 };
+
+// ── Dev Lab portals ──────────────────────────────────────────────────────────
+// Stand on a portal pad in the Test Map and press F to warp into that installed
+// map in EDIT mode (no hordes, fly + build freedom). Press F on the return pad
+// inside an edit map to come back to the lab. Portals only target real maps.
+const PORTAL_DEFS: { mapId: GehennaMapId; label: string; x: number; z: number }[] = [
+  { mapId: "industrial_yard", label: "Industrial Yard", x: -24, z: 0 },
+  { mapId: "high_bastion",    label: "High Bastion",    x: -24, z: 12 },
+  { mapId: "the_sprawl",      label: "The Sprawl",      x: -24, z: -12 },
+];
+const PORTAL_TRIGGER_R = 2.2;     // how close to a pad before F warps you
+const PORTAL_COOLDOWN_MS = 1200;  // debounce so you don't instantly warp back
 
 // Dog wave tuning
 const DOG_WAVE_INTERVAL  = 5;    // every Nth wave is a dog wave
@@ -141,22 +166,22 @@ const MYSTERY_COOLDOWN_MS = 30_000;
 const INTERACT_RADIUS = 3.2;
 const PROP_PAP_POS: Record<GehennaMapId, Vector3Like> = {
   industrial_yard: { x: -12, y: 3.8, z: -8 },
-  test_zone:       { x: -20, y: 1.0, z: 6 },  // south plaza, east of hub
+  test_zone:       { x: 10, y: 1.0, z: -35 },  // south plaza, east of hub path
   high_bastion:    { x: 0, y: 1.0, z: 0 },
   the_sprawl:      { x: 12, y: 1.0, z: 8 },
 };
 const PROP_MYSTERY_POS: Record<GehennaMapId, Vector3Like> = {
   industrial_yard: { x: -30, y: 3.8, z: 4 },
-  test_zone:       { x: -30, y: 1.0, z: 6 },  // south plaza, west of hub
+  test_zone:       { x: -10, y: 1.0, z: -35 }, // south plaza, west of hub path
   high_bastion:    { x: 0, y: 1.0, z: 0 },
   the_sprawl:      { x: -12, y: 1.0, z: 8 },
 };
 
-// Test Map easter-egg teddies — northeast corner, away from weapon lanes.
+// Test Map easter-egg teddies — northeast corner foliage markers.
 const TEDDY_POSITIONS: Vector3Like[] = [
-  { x: 35, y: 1.2, z: 40 },
-  { x: 40, y: 1.2, z: 42 },
-  { x: 45, y: 1.2, z: 39 },
+  { x: 42, y: 1.2, z: 42 },
+  { x: 45, y: 1.2, z: 44 },
+  { x: 40, y: 1.2, z: 45 },
 ];
 
 // Explosion safety: Never destroy blocks at or below this Y to protect the main floor of the map.
@@ -170,12 +195,12 @@ const C4_JUMP_HORIZONTAL = 7;    // allows some creative movement (directional j
 /** Host-only desktop dev fly — V or pause menu; WASD move, Space up, Shift down. */
 const FLY_MOVE_SPEED = 18;
 
-// Lethal lane — west of spawn hub (walk west from deploy point).
+// Lethal lane — west range off the hub path.
 const LETHAL_PICKUP_XZ: { x: number; z: number; lethalId: LethalId; label: string; model: string; scale: number }[] = [
-  { x: -40, z: 9,  lethalId: "frag",    label: "Frag Grenade",     model: "models/particles/green-sphere.glb", scale: 1.1 },
-  { x: -40, z: 12, lethalId: "n74st",   label: "N 74 ST (Sticky)", model: "models/particles/sticky-bomb.glb",  scale: 1.0 },
-  { x: -40, z: 15, lethalId: "satchel", label: "C4 Satchel",       model: "models/particles/c4-block.glb",     scale: 1.25 },
-  { x: -40, z: 18, lethalId: "smine44", label: "S-Mine 44",        model: "models/particles/smine.glb",        scale: 1.15 },
+  { x: -38, z: -6,  lethalId: "frag",    label: "Frag Grenade",     model: "models/particles/green-sphere.glb", scale: 1.1 },
+  { x: -38, z: -2,  lethalId: "n74st",   label: "N 74 ST (Sticky)", model: "models/particles/sticky-bomb.glb",  scale: 1.0 },
+  { x: -38, z: 2,   lethalId: "satchel", label: "C4 Satchel",       model: "models/particles/c4-block.glb",     scale: 1.25 },
+  { x: -38, z: 6,   lethalId: "smine44", label: "S-Mine 44",        model: "models/particles/smine.glb",        scale: 1.15 },
 ];
 
 type WeaponPickupDef = {
@@ -187,14 +212,14 @@ type WeaponPickupDef = {
   scale: number;
 };
 
-// Official gun row — north of hub (import pack grid is farther north via buildImportedGunPickups).
+// Official gun row — north range (import grid farther north via buildImportedGunPickups).
 const WEAPON_PICKUP_DEFS: WeaponPickupDef[] = [
-  { x: -44, z: 30, weaponKey: "pistol",       label: "Pistol",       model: "models/items/pistol.glb",       scale: 0.8 },
-  { x: -38, z: 30, weaponKey: "auto-pistol",  label: "Auto Pistol",  model: "models/items/auto-pistol.glb",  scale: 0.8 },
-  { x: -32, z: 30, weaponKey: "shotgun",      label: "Shotgun",      model: "models/items/shotgun.glb",      scale: 0.8 },
-  { x: -26, z: 30, weaponKey: "auto-shotgun", label: "Auto Shotgun", model: "models/items/auto-shotgun.glb", scale: 0.8 },
-  { x: -20, z: 30, weaponKey: "ar15",         label: "AR-15",        model: "models/items/ar-15.glb",        scale: 0.8 },
-  { x: -14, z: 30, weaponKey: "ak47",         label: "AK-47",        model: "models/items/ak-47.glb",        scale: 0.8 },
+  { x: -25, z: 32, weaponKey: "pistol",       label: "Pistol",       model: "models/items/pistol.glb",       scale: 0.8 },
+  { x: -15, z: 32, weaponKey: "auto-pistol",  label: "Auto Pistol",  model: "models/items/auto-pistol.glb",  scale: 0.8 },
+  { x: -5,  z: 32, weaponKey: "shotgun",      label: "Shotgun",      model: "models/items/shotgun.glb",      scale: 0.8 },
+  { x: 5,   z: 32, weaponKey: "auto-shotgun", label: "Auto Shotgun", model: "models/items/auto-shotgun.glb", scale: 0.8 },
+  { x: 15,  z: 32, weaponKey: "ar15",         label: "AR-15",        model: "models/items/ar-15.glb",        scale: 0.8 },
+  { x: 25,  z: 32, weaponKey: "ak47",         label: "AK-47",        model: "models/items/ak-47.glb",        scale: 0.8 },
   ...buildImportedGunPickups(),
 ];
 
@@ -232,6 +257,8 @@ export type GehennaHudPayload = {
   bossHealth?: number;
   bossMaxHealth?: number;
   bossName?: string;
+  /** When true the client can show a persistent TEST ROOM banner / dev tools hint. */
+  testMode?: boolean;
 };
 
 export type GehennaRunEndPayload = {
@@ -285,6 +312,10 @@ export class GehennaDirector {
   private _loadedMapId: GehennaMapId | null = null;
   private _sessionStarted = false;
 
+  /** Sky/lighting applier injected from index.ts (where the skybox profiles live). */
+  private _applySky: (world: World, mapId: GehennaMapId) => void = () => {};
+  setSkyApplier(fn: (world: World, mapId: GehennaMapId) => void): void { this._applySky = fn; }
+
   // Identity
   private _hostPlayer: Player | null = null;
   private _currentMapId: GehennaMapId = DEFAULT_MAP_ID;
@@ -308,7 +339,6 @@ export class GehennaDirector {
   // Props
   private _papEntity: Entity | null = null;
   private _mysteryEntity: Entity | null = null;
-  private _bossSpawnPedestal: Entity | null = null;
   private _teddyEntities: Entity[] = [];
   private _launchedTeddies: { entity: Entity; despawnAt: number }[] = [];
   private _lethalPickupEntities: { entity: Entity; lethalId: LethalId; label: string }[] = [];
@@ -317,6 +347,19 @@ export class GehennaDirector {
     weaponKey: GunId;
     label: string;
   }[] = [];
+  /** Overhead "UI Screens" for the smart low-profile test control stations (the floating labels + visual markers). */
+  private _testControlScreens: Entity[] = [];
+
+  // ── Dev Lab portals + edit mode ──────────────────────────────────────────────
+  /** Visual portal pads spawned in the Test Map (one per installed map). */
+  private _portalEntities: Entity[] = [];
+  /** When set, we are in free-build EDIT mode inside this map (no hordes, fly on). */
+  private _devEditMapId: GehennaMapId | null = null;
+  /** Debounce timestamp for portal warps. */
+  private _lastPortalWarpMs = 0;
+
+  /** Throttle for automatic proximity hints when near a test control station. */
+  private _lastTestHintMs = 0;
   private _teddyVictorySongPlayed = false; // Only play "The Piston Stops" once per run when all 3 teddies are shot
   private _teddyVictorySong: any = null; // Store the Audio instance so we can stop it on menu / new game
 
@@ -380,6 +423,9 @@ export class GehennaDirector {
 
   /** True while the client pause overlay is open — freezes wave/zombie/lethal simulation. */
   private _gamePaused = false;
+
+  /** Test Room only: god mode for safe iteration (never die from zombies/boss/explosions while testing). */
+  private _testGodMode = false;
   private _savedMovement: {
     canWalk: (controller: DefaultPlayerEntityController) => boolean;
     canRun: (controller: DefaultPlayerEntityController) => boolean;
@@ -512,9 +558,9 @@ export class GehennaDirector {
     }
 
     const tip = mapId === "test_zone"
-      ? "Test Zone layout — Hub: spawn · West: lethals · South: PaP + Mystery · North: official guns · Far north: import pack · East: dragon orb (F). LMB · R · G."
+      ? "TEST ROOM — Tiny single floor blocks = buttons. Floating rectangular panels + green light above them = the Minecraft/Roblox-style UI Screens (text on the panel = what it does). Stand under the screen, look up, F to activate. N=full guns, W=999 lethals."
       : mapId === "high_bastion"
-        ? "High Bastion — explore only. No horde. Walk the towers and ramparts. LMB fire · R reload · G lethal · C toggle 1st/3rd person."
+        ? "High Bastion — explore only. No horde. Walk the towers and ramparts. LMB fire · R reload · G lethal · F interact · C toggle 1st/3rd person."
         : mapId === "the_sprawl"
           ? "The Sprawl — massive urban zone. Hold the streets. LMB fire · R reload · G lethal · F interact · C toggle 1st/3rd person."
           : "Wave 1 inbound. LMB fire · R reload · G lethal · F interact · C toggle 1st/3rd person.";
@@ -975,6 +1021,7 @@ export class GehennaDirector {
             bossName:      "ICE DRAGON",
           }
         : {}),
+      ...(this._currentMapId === "test_zone" ? { testMode: true } : {}),
       ...overrides
     };
     player.ui.sendData(payload);
@@ -999,7 +1046,8 @@ export class GehennaDirector {
 
     const dtS = tickDeltaMs / 1000;
 
-    if (hordesEnabledForMap(this._currentMapId)) {
+    // Dev edit mode never runs the horde, even on maps that normally have it.
+    if (!this._devEditMapId && hordesEnabledForMap(this._currentMapId)) {
       this.tickWaveDirector(dtS, w, host, pe);
       this.tickMysteryResolve(host, w);
       this.tickZombies(dtS, pe, host, w);
@@ -1022,6 +1070,7 @@ export class GehennaDirector {
     this.tickLethalPickups(w, pe);
     this.tickWeaponPickups(w, pe);
     this.tickInteract(host, pe, w);
+    this.tickTestControlHints(host, w);
     this.maybeThrottleHud(host, 80);
   }
 
@@ -1071,27 +1120,40 @@ export class GehennaDirector {
         `Wave ${this._round} cleared!`,
         "88FF88"
       );
-      this._intermissionTimer = WAVE_INTERMISSION_S;
+      // Test Map: wait for player to hit Next or Replay — no auto intermission.
+      if (this._currentMapId !== "test_zone") {
+        this._intermissionTimer = WAVE_INTERMISSION_S;
+      }
     }
   }
 
-  private startNextWave(world: World, host: Player): void {
-    this._round += 1;
+  private rollDragonWave(wave: number): boolean {
+    if (this._currentMapId === "test_zone") return false;
+    if (DRAGON_GUARANTEED_WAVES.has(wave)) return true;
+    if (wave > 23) return Math.random() < DRAGON_LATE_GAME_CHANCE;
+    return false;
+  }
+
+  private abortActiveWave(): void {
+    this.clearZombies();
+    this._waveActive        = false;
+    this._intermissionTimer = 0;
+    this._queuedSpawns      = 0;
+    this._spawnCooldownS    = 0;
+  }
+
+  private beginWave(world: World, host: Player, waveNumber: number): void {
+    this._round = waveNumber;
     const w = this._round;
 
-    // Dragon wave takes precedence, then dog waves, then regular hordes.
-    const dragonEvery = this._currentMapId === "test_zone"
-      ? DRAGON_WAVE_INTERVAL_TEST
-      : DRAGON_WAVE_INTERVAL;
-    this._isDragonWave = (w % dragonEvery === 0);
+    this._isDragonWave = this.rollDragonWave(w);
     this._isDogWave    = !this._isDragonWave && (w % DOG_WAVE_INTERVAL === 0);
 
-    // Scale zombie health / speed with wave number (exact legacy formulas).
     this._waveZombieHealth = Z_BASE_HEALTH + (w - 1) * Z_HEALTH_PER_WAVE;
     this._waveZombieSpeed  = Z_BASE_SPEED  + (w - 1) * Z_SPEED_PER_WAVE;
 
     if (this._isDragonWave) {
-      this._queuedSpawns = 0; // the dragon IS the wave
+      this._queuedSpawns = 0;
     } else if (this._isDogWave) {
       this._queuedSpawns = DOG_WAVE_COUNT;
     } else {
@@ -1105,11 +1167,10 @@ export class GehennaDirector {
     if (this._isDragonWave) {
       const pe = this.getHostPlayerEntity(world, host);
       if (pe) this.spawnIceDragon(world, pe);
-      world.chatManager.sendPlayerMessage(
-        host,
-        `WAVE ${w} — THE ICE DRAGON DESCENDS! Bring it down!`,
-        "66CCFF"
-      );
+      const msg = DRAGON_GUARANTEED_WAVES.has(w)
+        ? `WAVE ${w} — THE ICE DRAGON DESCENDS! Bring it down!`
+        : `Something stirs in the sky… THE ICE DRAGON DESCENDS!`;
+      world.chatManager.sendPlayerMessage(host, msg, "66CCFF");
     } else if (this._isDogWave) {
       world.chatManager.sendPlayerMessage(
         host,
@@ -1123,6 +1184,87 @@ export class GehennaDirector {
         "FFAA00"
       );
     }
+    this.syncHud(host);
+  }
+
+  private startNextWave(world: World, host: Player): void {
+    this.beginWave(world, host, this._round + 1);
+  }
+
+  private replayCurrentWave(world: World, host: Player): void {
+    if (this._round < 1) {
+      world.chatManager.sendPlayerMessage(
+        host,
+        "No wave yet — use the lime Next Wave pillar (east of hub, F) to start Wave 1.",
+        "FFAA00"
+      );
+      return;
+    }
+    this.abortActiveWave();
+    this.beginWave(world, host, this._round);
+    world.chatManager.sendPlayerMessage(host, `Replaying Wave ${this._round}…`, "88FF88");
+  }
+
+  private advanceTestWave(world: World, host: Player): void {
+    this.abortActiveWave();
+    this.startNextWave(world, host);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // REAL TEST ROOM utility actions (new pillars)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /** Instantly remove every living zombie + the boss without ending the run. Perfect for re-testing a specific mechanic. */
+  private clearAllHostiles(world: World, host: Player): void {
+    const before = this._zombies.length + (this._boss?.isAlive ? 1 : 0);
+    this.clearZombies(); // also clears boss
+    this._boss = null;
+    this._isDragonWave = false;
+    world.chatManager.sendPlayerMessage(host, `Test: cleared ${before} hostiles. Arena reset.`, "00FFFF");
+    this.syncHud(host);
+  }
+
+  /** Toggle god mode (only meaningful on the test map). Health stops decreasing from enemies. */
+  private toggleTestGodMode(world: World, host: Player): void {
+    if (this._currentMapId !== "test_zone") return;
+
+    this._testGodMode = !this._testGodMode;
+
+    if (this._testGodMode) {
+      this._health = PLAYER_MAX_HEALTH; // top up when enabling
+    }
+
+    world.chatManager.sendPlayerMessage(
+      host,
+      this._testGodMode
+        ? "TEST GOD MODE ON — you cannot die from enemies (explosions still affect world)."
+        : "TEST GOD MODE OFF",
+      this._testGodMode ? "00FFAA" : "AAAAAA"
+    );
+    this.syncHud(host);
+  }
+
+  /** Give the tester a strong combat loadout instantly (good gun + high PaP + points + full ammo). */
+  private giveTestMaxKit(world: World, pe: PlayerEntity, host: Player): void {
+    if (this._currentMapId !== "test_zone") return;
+
+    // Strong late-game feeling gun + high pack tier
+    this.equipGun(world, pe, "ak47");
+    this._packTier = Math.max(this._packTier, 3);
+    this._gun?.refillReserve();
+
+    // Enough points to freely PaP more or buy mystery if desired
+    this._points = Math.max(this._points, 12000);
+
+    // Also top up health + give max lethals for the session
+    this._health = PLAYER_MAX_HEALTH;
+    this._lethalCharges = 999;
+
+    world.chatManager.sendPlayerMessage(
+      host,
+      "TEST MAX KIT: AK-47 + PaP×3 + 12k pts + full lethals + reserves. Go break things.",
+      "FFD700"
+    );
     this.syncHud(host);
   }
 
@@ -1217,7 +1359,10 @@ export class GehennaDirector {
     const host  = this._hostPlayer;
     if (!world || !host || !this._sessionStarted) return;
 
-    this._health = Math.max(0, this._health - amount);
+    // REAL TEST ROOM god mode: ignore boss damage while testing
+    if (!(this._currentMapId === "test_zone" && this._testGodMode)) {
+      this._health = Math.max(0, this._health - amount);
+    }
 
     // Red flash + screen shake on the client (same payload the zombie melee uses;
     // isDog=true triggers the heavier feedback — fitting for dragon hits)
@@ -1413,7 +1558,11 @@ export class GehennaDirector {
 
         if (row.attackCooldownS === 0) {
           row.attackCooldownS = attackCooldown;
-          this._health = Math.max(0, this._health - attackDmg);
+
+          // REAL TEST ROOM god mode: never take damage while testing
+          if (!(this._currentMapId === "test_zone" && this._testGodMode)) {
+            this._health = Math.max(0, this._health - attackDmg);
+          }
           hudDirty = true;
 
           // COD-style hit feedback — "getting hit Hurts HARD"
@@ -2110,6 +2259,9 @@ export class GehennaDirector {
     if (!fRise) return;
     if (this._gun?.isReloading) return;
 
+    // Dev portals take priority over every other F-interact (lab pads + return pad).
+    if (this.tryPortalInteract(world, host, pe)) return;
+
     const p      = pe.position;
     const nearPap = this._papEntity?.isSpawned
       ? this.distXZ(p, this._papEntity.position) < INTERACT_RADIUS
@@ -2177,21 +2329,61 @@ export class GehennaDirector {
       return;
     }
 
-    const nearBossSpawn = this._currentMapId === "test_zone" && this._bossSpawnPedestal?.isSpawned
-      ? this.distXZ(p, this._bossSpawnPedestal.position) < INTERACT_RADIUS
+    const nearWaveNext = this._currentMapId === "test_zone"
+      ? this.distXZ(p, TEST_WAVE_NEXT_XZ) < INTERACT_RADIUS
       : false;
-    if (nearBossSpawn) {
+    const nearWaveReplay = this._currentMapId === "test_zone"
+      ? this.distXZ(p, TEST_WAVE_REPLAY_XZ) < INTERACT_RADIUS
+      : false;
+    const nearBossPillar = this._currentMapId === "test_zone"
+      ? this.distXZ(p, TEST_BOSS_PILLAR_XZ) < INTERACT_RADIUS
+      : false;
+
+    // REAL TEST ROOM new pillars
+    const nearClear = this._currentMapId === "test_zone"
+      ? this.distXZ(p, TEST_CLEAR_XZ) < INTERACT_RADIUS
+      : false;
+    const nearGod = this._currentMapId === "test_zone"
+      ? this.distXZ(p, TEST_GOD_XZ) < INTERACT_RADIUS
+      : false;
+    const nearMaxKit = this._currentMapId === "test_zone"
+      ? this.distXZ(p, TEST_MAXKIT_XZ) < INTERACT_RADIUS
+      : false;
+
+    if (nearWaveNext) {
+      this.advanceTestWave(world, host);
+      return;
+    }
+
+    if (nearWaveReplay) {
+      this.replayCurrentWave(world, host);
+      return;
+    }
+
+    if (nearBossPillar) {
       if (this._boss?.isAlive) {
         world.chatManager.sendPlayerMessage(host, "Ice Dragon already active!", "CCCCCC");
         return;
       }
-      for (const row of this._zombies) {
-        if (row.entity.isSpawned) row.entity.despawn();
-      }
-      this._zombies = [];
-      this._queuedSpawns = 0;
+      this.abortActiveWave();
       this.spawnIceDragon(world, pe);
-      world.chatManager.sendPlayerMessage(host, "Ice Dragon summoned — fight!", "66CCFF");
+      world.chatManager.sendPlayerMessage(host, "You called the Ice Dragon — fight!", "CC2222");
+      return;
+    }
+
+    if (nearClear) {
+      this.clearAllHostiles(world, host);
+      return;
+    }
+
+    if (nearGod) {
+      this.toggleTestGodMode(world, host);
+      return;
+    }
+
+    if (nearMaxKit) {
+      this.giveTestMaxKit(world, pe, host);
+      return;
     }
   }
 
@@ -2227,6 +2419,9 @@ export class GehennaDirector {
     this._prevF  = false;
     this._prevC  = false;
     this._prevN  = false;
+
+    // Reset god mode for a fresh test session (player can re-toggle if wanted)
+    this._testGodMode = false;
     this._prevV  = false;
     this._lethalUsedAtMs  = 0;
     this._thirdPersonActive = false;
@@ -2246,8 +2441,8 @@ export class GehennaDirector {
     // Reset teddy bear victory song so it can play again on next run
     this._teddyVictorySongPlayed = false;
 
-    // Wave 1 fires after 1.8 s (horde maps only)
-    this._intermissionTimer = hordesEnabledForMap(this._currentMapId)
+    // Wave 1 auto-start (horde maps only — Test Map uses manual pillars).
+    this._intermissionTimer = hordesEnabledForMap(this._currentMapId) && this._currentMapId !== "test_zone"
       ? WAVE_FIRST_INTERMISSION_S
       : 0;
   }
@@ -2259,6 +2454,10 @@ export class GehennaDirector {
     // On the Test Map, give the player EVERY lethal with 999 charges so they can freely test all of them
     if (this._currentMapId === "test_zone") {
       this._lethalCharges = 999; // They can switch lethals in the loadout and always have full charges
+      // REAL TEST ROOM: start with some points and a combat-ready gun feel
+      this._points = Math.max(this._points, 4500);
+      // Start the tester with a solid rifle instead of default pistol
+      this._gunId = "ak47";
     } else {
       this._lethalCharges = startingLethalCharges(this._currentMapId, this._activeLethal);
     }
@@ -2317,28 +2516,8 @@ export class GehennaDirector {
       this.spawnTeddyBears(world);
       this.spawnLethalPickups(world);
       this.spawnWeaponPickups(world);
-      this.spawnBossSpawnController(world);
-    }
-  }
-
-  /** Test Map — ice orb east of spawn; press F to summon the Ice Dragon instantly. */
-  private spawnBossSpawnController(world: World): void {
-    const { x, z } = TEST_BOSS_SPAWN_XZ;
-    const groundTop = this.findGroundTop(world, x, z) ?? 1;
-    this._bossSpawnPedestal = new Entity({
-      name:       "Boss Spawn Controller",
-      tag:        "gehenna-boss-spawn",
-      modelUri:   "models/particles/ice-sphere.glb",
-      modelScale: 2.4,
-      rigidBodyOptions: { type: RigidBodyType.FIXED },
-    });
-    this._bossSpawnPedestal.spawn(world, { x, y: groundTop + 1.5, z });
-    if (this._hostPlayer) {
-      world.chatManager.sendPlayerMessage(
-        this._hostPlayer,
-        "Dragon spawner: ice orb east of hub (~22, 16) — press F there to summon the Ice Dragon.",
-        "66CCFF"
-      );
+      this.spawnTestControlScreens(world);
+      this.spawnDevPortals(world);
     }
   }
 
@@ -2390,7 +2569,7 @@ export class GehennaDirector {
     if (this._hostPlayer) {
       world.chatManager.sendPlayerMessage(
         this._hostPlayer,
-        "Lethal lane (west of hub): Frag · Sticky · C4 · S-Mine — run into one for 999 charges.",
+        "Lethal range (west): Frag · Sticky · C4 · S-Mine — run into one for 999 charges.",
         "00FFAA"
       );
     }
@@ -2426,10 +2605,232 @@ export class GehennaDirector {
     if (this._hostPlayer) {
       world.chatManager.sendPlayerMessage(
         this._hostPlayer,
-        `Weapons range: ${gunCount} guns north of hub (official row + import grid) — walk into one to equip.`,
+        `Gun ranges (north): ${gunCount} pickups — official row + import grid. Walk into one to equip.`,
         "FFD700"
       );
     }
+  }
+
+  /** When the player gets near a test control station, automatically explain what it is (the "overhead UI" in text form). */
+  private tickTestControlHints(host: Player, world: World): void {
+    if (this._currentMapId !== "test_zone") return;
+
+    const now = performance.now();
+    if (now - this._lastTestHintMs < 5500) return; // throttle
+
+    const pe = this.getHostPlayerEntity(world, host);
+    if (!pe) return;
+
+    const p = pe.position;
+    const R = 6.0; // see the hint a bit before you reach the block
+
+    for (const def of this.TEST_CONTROL_DEFS) {
+      if (this.distXZ(p, { x: def.x, y: 0, z: def.z }) < R) {
+        this._lastTestHintMs = now;
+        // Make it read like you're "looking at the screen"
+        world.chatManager.sendPlayerMessage(
+          host,
+          `> ${def.title}  —  ${def.desc}   (stand at the block, look up at the glowing screen, press F)`,
+          "66FFDD"
+        );
+        return;
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Smart low-profile test control "screens" (the overhead UI labels + visual markers)
+  // Each station = one ground "Block" (colored pad + central glass holo block in the map)
+  //               + one overhead glowing entity that acts as the "UI Screen" with name/instructions.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  private readonly TEST_CONTROL_DEFS = [
+    { x: 12,  z: 0,   title: "NEXT WAVE",   desc: "F — Advance to next wave" },
+    { x: -12, z: 0,   title: "REPLAY WAVE", desc: "F — Replay this wave" },
+    { x: 0,   z: 12,  title: "CLEAR HORDE", desc: "F — Nuke all zombies + boss (run continues)" },
+    { x: 0,   z: -12, title: "GOD MODE",    desc: "F — Toggle invincibility (safe testing)" },
+    { x: 12,  z: 12,  title: "MAX KIT",     desc: "F — Strong gun + PaP + points + full ammo/lethals" },
+  ] as const;
+
+  /**
+   * Creates real "Minecraft / Roblox style" floating UI screens for the test room.
+   * Each station gets:
+   *   - A flat rectangular "monitor/panel" (c4-block used as screen body)
+   *   - A bright glowing orb "power indicator" above it
+   *   - The Entity `name` is set to the title + action so it appears as floating label text on/above the screen
+   *   - The whole thing is rotated to face the center of the arena (like a real wall-mounted UI screen)
+   *
+   * Ground "Block" is the tiny single glass block + 1x1 accent (from the generator).
+   */
+  private spawnTestControlScreens(world: World): void {
+    this._testControlScreens = [];
+
+    const PANEL_Y = 4.8;     // height for the main screen panel
+    const GLOW_Y_OFFSET = 1.6; // glowing orb sits above the panel like a status light
+
+    for (const def of this.TEST_CONTROL_DEFS) {
+      const groundTop = this.findGroundTop(world, def.x, def.z) ?? 1;
+
+      // Direction toward arena center (0,0) so the screen "faces" the player area
+      const dx = -def.x;
+      const dz = -def.z;
+      const yaw = Math.atan2(dx, dz) + Math.PI; // +PI to make the front face inward (tuned for HYTOPIA coords)
+
+      const rot = Quaternion.fromEuler(0, yaw, 0);
+
+      // 1. Main "UI Screen" panel — flat rectangular look using the c4 block model as monitor
+      const panelPos: Vector3Like = { x: def.x, y: groundTop + PANEL_Y, z: def.z };
+      const panel = new Entity({
+        name: `${def.title}\n${def.desc}`,
+        tag: "gehenna-test-screen",
+        modelUri: "models/particles/c4-block.glb",
+        modelScale: 2.2,
+        opacity: 0.92,
+        rigidBodyOptions: { type: RigidBodyType.FIXED },
+      });
+      panel.spawn(world, panelPos, rot);
+      this._testControlScreens.push(panel);
+
+      // 2. Bright glowing orb on top of the screen (the "on air" / indicator light)
+      const glowPos: Vector3Like = { x: def.x, y: groundTop + PANEL_Y + GLOW_Y_OFFSET, z: def.z };
+      const glow = new Entity({
+        name: " ", // small, the main text lives on the panel below
+        tag: "gehenna-test-screen",
+        modelUri: "models/particles/green-sphere.glb",
+        modelScale: 0.9,
+        opacity: 0.98,
+        rigidBodyOptions: { type: RigidBodyType.FIXED },
+      });
+      glow.spawn(world, glowPos);
+      this._testControlScreens.push(glow);
+    }
+
+    console.log(`[Test Map] Spawned ${this.TEST_CONTROL_DEFS.length} overhead UI screens (flat panels + glowing indicators)`);
+
+    if (this._hostPlayer) {
+      world.chatManager.sendPlayerMessage(
+        this._hostPlayer,
+        "TEST ROOM UI SCREENS: Look for the floating rectangular panels + green light on top. The text on the panel tells you the function. Stand at the tiny floor block directly below, look up, press F.",
+        "00FFAA"
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Dev Lab portals (Test Map → installed maps in EDIT mode)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /** Spawn one glowing portal pad per installed map, west side of the lab. */
+  private spawnDevPortals(world: World): void {
+    this._portalEntities = [];
+
+    for (const def of PORTAL_DEFS) {
+      const groundTop = this.findGroundTop(world, def.x, def.z) ?? 1;
+
+      // Glowing ring/orb pad on the floor — green sphere reads as a portal core.
+      const pad = new Entity({
+        name: `PORTAL → ${def.label}`,
+        tag: "gehenna-portal",
+        modelUri: "models/particles/green-sphere.glb",
+        modelScale: 1.6,
+        opacity: 0.85,
+        rigidBodyOptions: { type: RigidBodyType.FIXED },
+      });
+      pad.spawn(world, { x: def.x, y: groundTop + 1.0, z: def.z });
+      this._portalEntities.push(pad);
+
+      // Floating label column above the pad so you can read the destination.
+      const label = new Entity({
+        name: `${def.label}\n(stand here · press F to edit)`,
+        tag: "gehenna-portal",
+        modelUri: "models/particles/c4-block.glb",
+        modelScale: 1.4,
+        opacity: 0.9,
+        rigidBodyOptions: { type: RigidBodyType.FIXED },
+      });
+      label.spawn(world, { x: def.x, y: groundTop + 3.2, z: def.z });
+      this._portalEntities.push(label);
+    }
+
+    console.log(`[Test Map] Spawned ${PORTAL_DEFS.length} dev portals`);
+    if (this._hostPlayer) {
+      world.chatManager.sendPlayerMessage(
+        this._hostPlayer,
+        `DEV PORTALS (west): ${PORTAL_DEFS.map(p => p.label).join(", ")}. Stand on a glowing pad, press F to enter that map in EDIT mode (fly + build). Press F again on the return pad to come back.`,
+        "AA88FF"
+      );
+    }
+  }
+
+  /** F-interact handler for portals — returns true if it consumed the press. */
+  private tryPortalInteract(world: World, host: Player, pe: PlayerEntity): boolean {
+    const now = performance.now();
+    if (now - this._lastPortalWarpMs < PORTAL_COOLDOWN_MS) return false;
+    const p = pe.position;
+
+    // In an edit map: a single return pad sits at the map spawn — F warps back to the lab.
+    if (this._devEditMapId) {
+      const spawn = MAP_SPAWN[this._devEditMapId];
+      if (this.distXZ(p, spawn) < PORTAL_TRIGGER_R + 1.5) {
+        this._lastPortalWarpMs = now;
+        this.exitEditMap(world, host);
+        return true;
+      }
+      return false;
+    }
+
+    // In the lab: check each portal pad.
+    if (this._currentMapId !== "test_zone") return false;
+    for (const def of PORTAL_DEFS) {
+      if (this.distXZ(p, { x: def.x, y: 0, z: def.z }) < PORTAL_TRIGGER_R) {
+        this._lastPortalWarpMs = now;
+        this.enterEditMap(world, host, def.mapId, def.label);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Warp into an installed map in free-build EDIT mode (no hordes, fly on). */
+  private enterEditMap(world: World, host: Player, mapId: GehennaMapId, label: string): void {
+    const pe = this.getHostPlayerEntity(world, host);
+    if (!pe) return;
+
+    // Tear down lab props/hostiles, swap world, place the player at its spawn.
+    this.abortActiveWave();
+    this.clearZombies();
+    this.destroyPropEntities();
+    this.restoreAndClearTestMapBlocks();
+
+    this._devEditMapId = mapId;
+    this._currentMapId = mapId;
+    this.ensureMapLoaded(world, mapId);
+    this._applySky(world, mapId);
+    this.teleportHostToMapSpawn(world, host, mapId);
+
+    // Edit freedom: fly on so you can build anywhere; god so stray hazards don't kill you.
+    this.setFlyMode(world, host, pe, true);
+    this._testGodMode = true;
+
+    this.syncHud(host);
+    world.chatManager.sendPlayerMessage(host, `EDIT MODE — ${label}. Fly (Space/Shift), shoot blocks to remove, press F at the spawn pad to return to the lab.`, "AA88FF");
+  }
+
+  /** Return from an edit map back to the Dev Lab. */
+  private exitEditMap(world: World, host: Player): void {
+    const pe = this.getHostPlayerEntity(world, host);
+    this._devEditMapId = null;
+    this._testGodMode = false;
+    if (pe) this.disableFlyMode(world, pe);
+
+    this._currentMapId = "test_zone";
+    this.ensureMapLoaded(world, "test_zone");
+    this._applySky(world, "test_zone");
+    this.spawnWorldProps(world);
+    this.teleportHostToMapSpawn(world, host, "test_zone");
+
+    this.syncHud(host);
+    world.chatManager.sendPlayerMessage(host, "Returned to the Dev Lab.", "AA88FF");
   }
 
   private destroyPropEntities(): void {
@@ -2456,8 +2857,15 @@ export class GehennaDirector {
     });
     this._weaponPickupEntities = [];
 
-    if (this._bossSpawnPedestal?.isSpawned) this._bossSpawnPedestal.despawn();
-    this._bossSpawnPedestal = null;
+    this._testControlScreens.forEach(e => {
+      if (e?.isSpawned) e.despawn();
+    });
+    this._testControlScreens = [];
+
+    this._portalEntities.forEach(e => {
+      if (e?.isSpawned) e.despawn();
+    });
+    this._portalEntities = [];
 
     this._papEntity     = null;
     this._mysteryEntity = null;

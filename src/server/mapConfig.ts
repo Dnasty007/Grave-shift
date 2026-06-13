@@ -24,12 +24,12 @@ export const MAP_WORLD_BOUNDS = {
   maxZ: 23
 } as const;
 
-/** Inclusive bounds for `assets/test-map.json` (World Editor export). */
+/** Inclusive bounds for `assets/test-map.json` (Full Combat Arena generator). */
 export const TEST_ZONE_BOUNDS = {
-  minX: -55,
-  maxX: 46,
-  minZ: -57,
-  maxZ: 44
+  minX: -52,
+  maxX: 52,
+  minZ: -52,
+  maxZ: 52
 } as const;
 
 /** Inclusive bounds for `assets/high-bastion-map.json` (Castle_Map World Editor export). */
@@ -82,8 +82,8 @@ export const MAP_BOUNDS: Record<GehennaMapId, { minX: number; maxX: number; minZ
 /** World-space spawn per zone (Y high enough to drop onto terrain). */
 export const MAP_SPAWN: Record<GehennaMapId, Vector3Like> = {
   industrial_yard: { x: -22, y: 12, z: -4 },
-  /** World Editor `spawn_point` zone (drops onto terrain). */
-  test_zone: { x: -25, y: 8, z: 15 },
+  /** Center hub spawn (Full Combat Arena). */
+  test_zone: { x: 0, y: 8, z: 0 },
   /** Central courtyard — editor spawn zones sit outside this build (z < 35). */
   high_bastion: { x: 0, y: 8, z: 120 },
   /** Central plaza — no editor spawn zones in export. */

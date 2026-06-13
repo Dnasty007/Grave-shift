@@ -100,6 +100,8 @@ function applyGehennaSky(world: World, mapId: GehennaMapId = DEFAULT_MAP_ID): vo
 
 startServer((world) => {
   const gehennaDirector = new GehennaDirector();
+  // Let the Director re-apply sky/lighting when it swaps worlds itself (dev portals).
+  gehennaDirector.setSkyApplier(applyGehennaSky);
   /** Stable handler per player so we can `off` + `on` after each `player.ui.load`. */
   const uiDataHandlers = new WeakMap<Player, (payload: { data: unknown }) => void>();
 
