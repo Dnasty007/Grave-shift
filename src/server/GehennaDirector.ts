@@ -177,6 +177,22 @@ const SPAWN_PALETTE: { id: string; label: string; model: string; scale: number }
   { id: "dragon",  label: "Ice Dragon",   model: "models/bosses/ice-dragon.glb",                scale: 0.4 },
 ];
 
+/** Block-builder palette — block type ids match assets/test-map.json blockTypes. */
+const BUILD_PALETTE: { id: number; label: string }[] = [
+  { id: 6,  label: "Stone Bricks" },
+  { id: 4,  label: "Oak Planks" },
+  { id: 2,  label: "Grass" },
+  { id: 5,  label: "Sand" },
+  { id: 1,  label: "Glass" },
+  { id: 3,  label: "Oak Leaves" },
+  { id: 7,  label: "Red" },
+  { id: 8,  label: "Lime" },
+  { id: 9,  label: "Yellow" },
+  { id: 10, label: "Cyan" },
+  { id: 11, label: "Blue" },
+  { id: 12, label: "Purple" },
+];
+
 // Dog wave tuning
 const DOG_WAVE_INTERVAL  = 5;    // every Nth wave is a dog wave
 const DOG_WAVE_COUNT     = 10;   // dogs spawned in a dog wave
@@ -424,6 +440,10 @@ export class GehennaDirector {
   private _pickaxeMode = false;
   /** Held pickaxe model while pickaxe mode is on (gun is hidden meanwhile). */
   private _pickaxeEntity: Entity | null = null;
+  /** Block-builder mode: LEFT-click places the selected block on the aimed face, RIGHT-click removes. */
+  private _buildMode = false;
+  /** Currently selected block type id for the builder (1..N from the map's blockTypes). */
+  private _buildBlockId = 6; // stone-bricks default
   /** Mouse edge-detect for the dev editor (place / rotate / break). */
   private _prevDevMl = false;
   private _prevDevMr = false;
@@ -616,9 +636,31 @@ export class GehennaDirector {
       }
       case "pickaxe":
         this._pickaxeMode = !this._pickaxeMode;
+        if (this._pickaxeMode) this._buildMode = false; // tools are mutually exclusive
         this.setPickaxeVisual(world, player, pe, this._pickaxeMode);
         reply(this._pickaxeMode ? "Pickaxe ON — LEFT-click a block to break it." : "Pickaxe OFF.");
         break;
+
+      case "build":
+        this._buildMode = !this._buildMode;
+        if (this._buildMode && this._pickaxeMode) { // turn pickaxe off if it was on
+          this._pickaxeMode = false;
+          this.setPickaxeVisual(world, player, pe, false);
+        }
+        reply(this._buildMode
+          ? `Builder ON — placing ${this.buildBlockLabel()}. LEFT-click place, RIGHT-click remove. Pick a block below.`
+          : "Builder OFF.");
+        break;
+
+      case "buildBlock": {
+        const id = parseInt(arg, 10);
+        const def = BUILD_PALETTE.find((b) => b.id === id);
+        if (!def) { reply(`Unknown block: ${arg}`); break; }
+        this._buildBlockId = id;
+        if (!this._buildMode) { this._buildMode = true; this._pickaxeMode = false; this.setPickaxeVisual(world, player, pe, false); }
+        reply(`Selected ${def.label}. Builder ON — LEFT-click place, RIGHT-click remove.`);
+        break;
+      }
 
       // Quick test-room actions exposed in the right dev panel (in addition to the physical F kiosks)
       case "testTool":
@@ -1278,9 +1320,58 @@ export class GehennaDirector {
       return;
     }
 
+    // Block builder: LEFT-click places the selected block on the aimed face,
+    // RIGHT-click removes the aimed block (like creative mode).
+    if (this._buildMode) {
+      if (mlRise) this.placeAimedBlock(host, pe, world);
+      else if (mrRise) this.breakAimedBlock(host, pe, world);
+      return;
+    }
+
     if (this._pickaxeMode && mlRise) {
       this.breakAimedBlock(host, pe, world);
     }
+  }
+
+  /** Builder: place the selected block on the face of the block you're aiming at. */
+  private placeAimedBlock(host: Player, pe: PlayerEntity, world: World): void {
+    const origin = this.getShotOrigin(host, pe);
+    const dir = this.getShotDirection(host);
+    let hit: any = null;
+    try {
+      hit = world.simulation.raycast(origin, dir, 8, {
+        filterExcludeRigidBody: (pe as any).rawRigidBody,
+      });
+    } catch {}
+
+    // Target cell: the empty neighbor on the hit face if we hit a block; otherwise
+    // the cell at the hit point in mid-air (e.g. aiming at the floor mesh).
+    let target: Vector3Like | null = null;
+    if (hit?.hitBlock && hit.hitPoint) {
+      try { target = hit.hitBlock.getNeighborGlobalCoordinateFromHitPoint(hit.hitPoint); } catch {}
+    }
+    if (!target && hit?.hitPoint) {
+      target = { x: Math.floor(hit.hitPoint.x), y: Math.floor(hit.hitPoint.y), z: Math.floor(hit.hitPoint.z) };
+    }
+    if (!target) {
+      // No surface — place a few blocks ahead at eye level.
+      target = { x: Math.floor(origin.x + dir.x * 4), y: Math.floor(origin.y + dir.y * 4), z: Math.floor(origin.z + dir.z * 4) };
+    }
+
+    // Don't bury the player inside the new block.
+    const feet = pe.position;
+    const occupiesPlayer = (target.x === Math.floor(feet.x) && target.z === Math.floor(feet.z) &&
+      (target.y === Math.floor(feet.y) || target.y === Math.floor(feet.y) + 1));
+    if (occupiesPlayer) { this.devReply(host, "Can't place a block inside yourself — step back."); return; }
+
+    try {
+      if (world.chunkLattice.getBlockId(target) !== 0) return; // already filled
+      world.chunkLattice.setBlock(target, this._buildBlockId);
+      // Track placements on the test map so RESET BLOCKS / restart can clear them.
+      if (this._currentMapId === "test_zone") {
+        this._destroyedBlocksThisRun.push({ pos: { ...target }, originalBlockId: 0 });
+      }
+    } catch {}
   }
 
   /** Pickaxe: raycast from the eye and remove the single block hit. */
@@ -1310,6 +1401,10 @@ export class GehennaDirector {
 
   private devReply(host: Player, text: string): void {
     try { host.ui.sendData({ type: "devStatus", text }); } catch {}
+  }
+
+  private buildBlockLabel(): string {
+    return BUILD_PALETTE.find((b) => b.id === this._buildBlockId)?.label ?? `block ${this._buildBlockId}`;
   }
 
   /** Show/hide the held pickaxe model; hide the gun while it's out. */
@@ -2371,7 +2466,7 @@ export class GehennaDirector {
 
     // While editing (grabbing a prop or holding the pickaxe) the mouse drives the
     // editor, not the gun — don't fire/reload underneath the layout tools.
-    if (this._layout.isHolding || this._pickaxeMode) return;
+    if (this._layout.isHolding || this._pickaxeMode || this._buildMode) return;
 
     // Test room quality-of-life: keep the gun fed when the infinite flag is on.
     this.ensureTestGunAmmo();
@@ -3446,6 +3541,7 @@ export class GehennaDirector {
     this._devEditMapId = null;
     this._testGodMode = false;
     this._pickaxeMode = false;
+    this._buildMode = false;
     if (this._pickaxeEntity) {
       try { if (this._pickaxeEntity.isSpawned) this._pickaxeEntity.despawn(); } catch {}
       this._pickaxeEntity = null;

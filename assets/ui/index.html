@@ -1095,7 +1095,7 @@
       panel.classList.toggle('open');
     });
 
-    var btns = panel.querySelectorAll('.dev-btn');
+    var btns = panel.querySelectorAll('[data-dev]');
     for (var i = 0; i < btns.length; i++) {
       (function (btn) {
         btn.addEventListener('click', function (e) {
@@ -1104,6 +1104,12 @@
           var arg = btn.getAttribute('data-arg') || '';
           if (typeof hytopia !== 'undefined') {
             try { hytopia.sendData({ type: 'devTool', action: action, arg: arg }); } catch (eDev) {}
+          }
+          // Highlight the active block swatch.
+          if (action === 'buildBlock') {
+            var sw = panel.querySelectorAll('.dev-blk');
+            for (var k = 0; k < sw.length; k++) sw[k].classList.remove('sel');
+            btn.classList.add('sel');
           }
           var ds = q('dev-status');
           if (ds) ds.textContent = '…' + action + (arg ? ' ' + arg : '');
@@ -2500,7 +2506,22 @@
       <div class="dev-sec">MOVEMENT</div>
       <button class="dev-btn" data-dev="fly">🕊 Toggle Fly (V)</button>
       <div class="dev-sec">BLOCKS</div>
-      <button class="dev-btn" data-dev="pickaxe">⛏ Toggle Pickaxe</button>
+      <button class="dev-btn" data-dev="pickaxe">⛏ Toggle Pickaxe (break)</button>
+      <button class="dev-btn" data-dev="build">🏗 Toggle Builder (place)</button>
+      <div class="dev-blockgrid">
+        <button class="dev-blk" data-dev="buildBlock" data-arg="6"  style="background:#8a8a8a" title="Stone Bricks"></button>
+        <button class="dev-blk" data-dev="buildBlock" data-arg="4"  style="background:#b8945f" title="Oak Planks"></button>
+        <button class="dev-blk" data-dev="buildBlock" data-arg="2"  style="background:#6aaf3a" title="Grass"></button>
+        <button class="dev-blk" data-dev="buildBlock" data-arg="5"  style="background:#e0d29a" title="Sand"></button>
+        <button class="dev-blk" data-dev="buildBlock" data-arg="1"  style="background:#bfe6ee" title="Glass"></button>
+        <button class="dev-blk" data-dev="buildBlock" data-arg="3"  style="background:#3f7a2e" title="Oak Leaves"></button>
+        <button class="dev-blk" data-dev="buildBlock" data-arg="7"  style="background:#c0392b" title="Red"></button>
+        <button class="dev-blk" data-dev="buildBlock" data-arg="8"  style="background:#7ed957" title="Lime"></button>
+        <button class="dev-blk" data-dev="buildBlock" data-arg="9"  style="background:#f1c40f" title="Yellow"></button>
+        <button class="dev-blk" data-dev="buildBlock" data-arg="10" style="background:#3fb6c8" title="Cyan"></button>
+        <button class="dev-blk" data-dev="buildBlock" data-arg="11" style="background:#2f6fd8" title="Blue"></button>
+        <button class="dev-blk" data-dev="buildBlock" data-arg="12" style="background:#8e44ad" title="Purple"></button>
+      </div>
       <div class="dev-sec">TEST ACTIONS (F kiosks also exist)</div>
       <button class="dev-btn dev-sm" data-dev="testTool" data-arg="spawnZombies">🧟 Spawn 5 Zombies</button>
       <button class="dev-btn dev-sm" data-dev="testTool" data-arg="clearHorde">💥 Clear Horde</button>
@@ -3812,6 +3833,17 @@
 }
 .dev-sec:first-child { margin-top: 0; }
 .dev-row { display: flex; gap: 6px; }
+.dev-blockgrid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin: 2px 0 4px; }
+.dev-blk {
+  aspect-ratio: 1 / 1;
+  border: 1px solid rgba(0,0,0,0.4);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.08s, box-shadow 0.08s;
+}
+.dev-blk:hover { transform: scale(1.12); }
+.dev-blk.sel { outline: 2px solid #fff; box-shadow: 0 0 6px rgba(255,255,255,0.8); }
 .dev-btn {
   flex: 1;
   background: rgba(34, 20, 24, 0.9);
