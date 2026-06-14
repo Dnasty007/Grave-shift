@@ -1,0 +1,43 @@
+{
+  "blockTypes": [
+    {
+      "id": 1,
+      "name": "stone-bricks",
+      "textureUri": "blocks/stone-bricks.png",
+      "isCustom": false,
+      "isMultiTexture": false,
+      "isLiquid": false
+    }
+  ],
+  "blocks": {},
+  "zones": [
+    {
+      "id": "zone_spawn_ice",
+      "label": "spawn_point",
+      "type": "box",
+      "position": {
+        "x": 0,
+        "y": 1,
+        "z": 0
+      },
+      "dimensions": {
+        "width": 1,
+        "height": 3,
+        "depth": 1
+      },
+      "color": "#38bdf8",
+      "metadata": {},
+      "from": {
+        "x": 0,
+        "y": 1,
+        "z": 0
+      },
+      "to": {
+        "x": 0,
+        "y": 3,
+        "z": 0
+      }
+    }
+  ],
+  "version": "2.0.0"
+}

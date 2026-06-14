@@ -135,21 +135,37 @@ buildPillar(38, 0, 1, 6, BLOCK.redConcrete); // 3×3 thick boss call-in pillar
 //   Purple block (12, 12)  = MAX KIT (gives strong gun + PaP + points + full ammo/lethals)
 //   Red (east pit)         = Force Ice Dragon
 
-// Legacy wave controls — just the single button block + 1x1 accent
+// OCD CLEAN TEST CONTROL KIOSKS — one neat row, identical minimal kiosks, no clutter
+// 10 stations in a perfectly spaced row at z=14 (north of hub).
+// Each: 3x3 stone base + central glass button (the F interact spot on ground).
+// Overhead screens (in code) are rectangular panels directly above at readable height.
+// One legend screen in front.
+// Legacy pillars kept but outside this clean cluster.
+
+function placeCleanKiosk(cx, cz) {
+  fillRect(cx-1, cz-1, cx+1, cz+1, 1, BLOCK.stoneBricks);
+  setBlock(cx, 2, cz, BLOCK.glass);
+}
+
+// The OCD row (even spacing, aligned, north side)
+placeCleanKiosk(-22.5, 14); // 1 NEXT WAVE
+placeCleanKiosk(-17.5, 14); // 2 REPLAY WAVE
+placeCleanKiosk(-12.5, 14); // 3 CLEAR HORDE
+placeCleanKiosk(-7.5, 14);  // 4 SPAWN ZOMBIES
+placeCleanKiosk(-2.5, 14);  // 5 SPAWN DOGS
+placeCleanKiosk(2.5, 14);   // 6 GOD MODE
+placeCleanKiosk(7.5, 14);   // 7 MAX KIT
+placeCleanKiosk(12.5, 14);  // 8 INFINITE AMMO
+placeCleanKiosk(17.5, 14);  // 9 +5000 PTS
+placeCleanKiosk(22.5, 14);  // 10 RESET BLOCKS
+
+// Legend ground marker (in front of the row)
+placeCleanKiosk(0, 18);
+
+// Legacy pillars (outside the clean cluster, kept as old landmarks)
 setBlock(12, 2, 0, BLOCK.limeConcrete);
 setBlock(-12, 2, 0, BLOCK.yellowConcrete);
-setBlock(12, 1, 0, BLOCK.limeConcrete);
-setBlock(-12, 1, 0, BLOCK.yellowConcrete);
-
-// New test utility stations — extremely minimal (one block + 1x1 accent)
-setBlock(0, 2, 12, BLOCK.glass);   // Clear Horde target
-setBlock(0, 1, 12, BLOCK.cyanConcrete);
-
-setBlock(0, 2, -12, BLOCK.glass);  // God Mode target
-setBlock(0, 1, -12, BLOCK.blueConcrete);
-
-setBlock(12, 2, 12, BLOCK.glass);  // Max Kit target
-setBlock(12, 1, 12, BLOCK.purpleConcrete);
+buildPillar(38, 0, 1, 6, BLOCK.redConcrete);
 
 // Corner explosion test pits (sand, away from lanes).
 for (const [cx, cz] of [[-36, 36], [-36, -36], [20, 36]]) {

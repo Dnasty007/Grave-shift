@@ -61,6 +61,77 @@ export class LayoutEditor {
     return { modelUri, scale, position, rotation };
   }
 
+  /**
+   * Spawn a BRAND-NEW prop from a model URI, in front of the player, and grab it
+   * immediately so you can position it. The id is unique (`user-<model>-<n>`) so
+   * it persists independently. Returns a status line.
+   */
+  spawnProp(world: World, host: Player, pe: PlayerEntity, modelUri: string, label: string, scale = 1.0): string {
+    if (this._heldId) this._heldId = null; // implicitly drop whatever was held
+
+    const layoutId = `user-${label.replace(/\s+/g, "-").toLowerCase()}-${++this._userCounter}`;
+    const eye = pe.position;
+    const { pitch, yaw } = host.camera.orientation;
+    const cp = Math.cos(pitch);
+    const dir = { x: -Math.sin(yaw) * cp, y: Math.sin(pitch), z: -Math.cos(yaw) * cp };
+    const pos = { x: eye.x + dir.x * GRAB_DISTANCE, y: eye.y + dir.y * GRAB_DISTANCE, z: eye.z + dir.z * GRAB_DISTANCE };
+
+    const ent = new Entity({
+      name: layoutId,
+      tag: "gehenna-dev-prop",
+      modelUri,
+      modelScale: scale,
+    });
+    try { ent.spawn(world, pos); } catch {
+      return `Failed to spawn "${label}" (model missing?).`;
+    }
+
+    this._props.set(layoutId, { layoutId, entity: ent, modelUri, scale, rotationDeg: 0, position: { ...pos } });
+    this._heldId = layoutId;
+    return `Spawned "${label}". It follows your aim — scroll to resize, LEFT-click to place, RIGHT-click to rotate.`;
+  }
+  private _userCounter = 0;
+
+  /**
+   * Re-spawn user-created props saved for this map (those whose layoutId starts
+   * with "user-"). Called by the Director after a map loads. Built-in props
+   * (teddies, doors) are spawned by the Director itself and just re-registered.
+   */
+  respawnSavedUserProps(world: World): number {
+    const saved = getLayoutForMap(this._mapId);
+    let n = 0;
+    for (const [layoutId, entry] of Object.entries(saved)) {
+      if (!layoutId.startsWith("user-")) continue;
+      if (this._props.has(layoutId)) continue;
+      const ent = new Entity({
+        name: layoutId,
+        tag: "gehenna-dev-prop",
+        modelUri: entry.modelUri,
+        modelScale: entry.scale,
+      });
+      try {
+        ent.spawn(world, entry.position, entry.rotation);
+        this._props.set(layoutId, {
+          layoutId, entity: ent, modelUri: entry.modelUri,
+          scale: entry.scale, rotationDeg: quatToYawDeg(entry.rotation), position: { ...entry.position },
+        });
+        n++;
+      } catch { void 0; }
+    }
+    return n;
+  }
+
+  /** Delete the held (or nearest) prop entirely and remove its saved override. */
+  deleteHeld(host: Player, pe: PlayerEntity): string {
+    const target = this._heldId ? this._props.get(this._heldId) : this._pickProp(host, pe);
+    if (!target) return "No prop to delete — grab or look at one first.";
+    try { if (target.entity.isSpawned) target.entity.despawn(); } catch {}
+    this._props.delete(target.layoutId);
+    deleteLayoutEntry(this._mapId, target.layoutId);
+    if (this._heldId === target.layoutId) this._heldId = null;
+    return `Deleted "${target.layoutId}".`;
+  }
+
   /** Drop tracking when props are despawned (map swap / teardown). */
   clear(): void {
     this._props.clear();

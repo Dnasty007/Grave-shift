@@ -1,0 +1,43 @@
+{
+  "blockTypes": [
+    {
+      "id": 1,
+      "name": "stone-bricks",
+      "textureUri": "blocks/stone-bricks.png",
+      "isCustom": false,
+      "isMultiTexture": false,
+      "isLiquid": false
+    }
+  ],
+  "blocks": {},
+  "zones": [
+    {
+      "id": "zone_spawn_courtyard",
+      "label": "spawn_point",
+      "type": "box",
+      "position": {
+        "x": 15.68,
+        "y": -59.24,
+        "z": -74.77
+      },
+      "dimensions": {
+        "width": 1,
+        "height": 3,
+        "depth": 1
+      },
+      "color": "#dc2626",
+      "metadata": {},
+      "from": {
+        "x": 15.68,
+        "y": -59.24,
+        "z": -74.77
+      },
+      "to": {
+        "x": 15.68,
+        "y": -57.24,
+        "z": -74.77
+      }
+    }
+  ],
+  "version": "2.0.0"
+}

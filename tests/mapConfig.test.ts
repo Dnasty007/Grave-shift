@@ -9,6 +9,7 @@ import {
   HIGH_BASTION_BOUNDS,
   TEST_ZONE_BOUNDS,
   THE_SPRAWL_BOUNDS,
+  DRACULAS_CASTLE_BOUNDS,
 } from "../src/server/mapConfig.ts";
 
 assert(
@@ -54,6 +55,25 @@ assert(MAP_SPAWN.industrial_yard.x >= MAP_WORLD_BOUNDS.minX);
 assert(MAP_SPAWN.industrial_yard.x <= MAP_WORLD_BOUNDS.maxX);
 assert(MAP_SPAWN.test_zone.x >= TEST_ZONE_BOUNDS.minX);
 assert(MAP_SPAWN.test_zone.x <= TEST_ZONE_BOUNDS.maxX);
+
+assert(
+  isSpawnInMapBounds(MAP_SPAWN.draculas_castle, "draculas_castle"),
+  "draculas_castle spawn must lie inside castle bounds"
+);
+assert.equal(MAP_SPAWN.draculas_castle.x, 15.68);
+assert.equal(MAP_SPAWN.draculas_castle.y, -59.24);
+assert.equal(MAP_SPAWN.draculas_castle.z, -74.77);
+assert.equal(hordesEnabledForMap("draculas_castle"), false);
+assert(MAP_SPAWN.draculas_castle.x >= DRACULAS_CASTLE_BOUNDS.minX);
+
+assert(
+  isSpawnInMapBounds(MAP_SPAWN.ice_map, "ice_map"),
+  "ice_map spawn must lie inside ice map bounds"
+);
+assert.equal(MAP_SPAWN.ice_map.x, 0);
+assert.equal(MAP_SPAWN.ice_map.z, 0);
+assert.equal(hordesEnabledForMap("ice_map"), false);
+
 assert.equal(DEFAULT_MAP_ID, "industrial_yard");
 
 console.log("mapConfig tests passed");

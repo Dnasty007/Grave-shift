@@ -10,6 +10,7 @@ import {
   Player,
   PlayerCameraMode,
   PlayerEntity,
+  Quaternion,
   RigidBodyType,
   World,
   WorldLoopEvent,
@@ -21,6 +22,14 @@ import worldMap from "../../assets/map.json";
 import testMap from "../../assets/test-map.json";
 import castleMap from "../../assets/high-bastion-map.json";
 import sprawlMap from "../../assets/the-sprawl-map.json";
+import draculaMap from "../../assets/draculas-castle-map.json";
+import iceMap from "../../assets/ice-map-map.json";
+import {
+  DRACULA_DOORS,
+  DRACULA_STARTING_MONEY,
+  draculaDoorRequirementsMet,
+  type DraculaDoorDef,
+} from "./draculaDoorsConfig";
 import {
   DEFAULT_MAP_ID,
   type GehennaMapId,
@@ -49,7 +58,6 @@ import { LethalSystem } from "./lethals/LethalSystem";
 import { buildImportedGunPickups, createGun, GUN_DISPLAY_NAME, type GunEntity, type GunId } from "./guns";
 import { IceDragonBoss, iceDragonSpawnY } from "./bosses/IceDragonBoss";
 import { LayoutEditor } from "./devtools/LayoutEditor";
-import { Quaternion } from "hytopia";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants (mirrors legacy GAME_CONFIG — see legacy-playcanvas-client/src/game/config.ts)
@@ -117,14 +125,31 @@ const DRAGON_SPAWN_DISTANCE     = 16;    // metres from the player
  *    - Manual wave + boss control
  *    - Clear / God Mode / Max Kit utility pillars for safe + fast testing
  */
-const TEST_WAVE_NEXT_XZ: Vector3Like   = { x: 12,  y: 0, z: 0 };
-const TEST_WAVE_REPLAY_XZ: Vector3Like = { x: -12, y: 0, z: 0 };
-const TEST_BOSS_PILLAR_XZ: Vector3Like = { x: 38,  y: 0, z: 0 };
+// Interact triggers MUST line up with the kiosk screens in TEST_CONTROL_DEFS
+// (one clean row at z=14). Each x here matches the screen of the same title so
+// the F-prompt works exactly where the panel is shown.
+const TEST_WAVE_NEXT_XZ: Vector3Like   = { x: -22.5, y: 0, z: 14 };
+const TEST_WAVE_REPLAY_XZ: Vector3Like = { x: -17.5, y: 0, z: 14 };
+const TEST_BOSS_PILLAR_XZ: Vector3Like = { x: 38,    y: 0, z: 0  }; // standalone boss pillar
 
-// Smart low-profile test control positions (colored pad + central block in map + overhead glowing screen entity spawned in code)
-const TEST_CLEAR_XZ: Vector3Like  = { x: 0, y: 0, z: 12 };
-const TEST_GOD_XZ: Vector3Like    = { x: 0, y: 0, z: -12 };
-const TEST_MAXKIT_XZ: Vector3Like = { x: 12, y: 0, z: 12 };
+/** Mineways Dracula export (centered) — run scripts/setup-draculas-castle.mjs to refresh OBJ → GLB. */
+const DRACULA_CASTLE_MODEL_URI = "models/environment/Draculas-Castle/Dracula.glb";
+const DRACULA_CASTLE_SCALE = 1.0;
+
+/** Mineways Ice Map — run scripts/setup-ice-map.mjs to refresh OBJ → GLB. */
+const ICE_MAP_MODEL_URI = "models/environment/Ice-Map/Ice_Map.glb";
+const ICE_MAP_SCALE = 1.0;
+
+// Remaining kiosk triggers, also on the z=14 row, matching TEST_CONTROL_DEFS order:
+// CLEAR HORDE · SPAWN ZOMBIES · SPAWN DOGS · GOD MODE · MAX KIT · INFINITE AMMO · +5000 PTS · RESET BLOCKS
+const TEST_CLEAR_XZ: Vector3Like         = { x: -12.5, y: 0, z: 14 };
+const TEST_SPAWN_ZOMBIES_XZ: Vector3Like = { x: -7.5,  y: 0, z: 14 };
+const TEST_SPAWN_DOGS_XZ: Vector3Like    = { x: -2.5,  y: 0, z: 14 };
+const TEST_GOD_XZ: Vector3Like           = { x: 2.5,   y: 0, z: 14 };
+const TEST_MAXKIT_XZ: Vector3Like        = { x: 7.5,   y: 0, z: 14 };
+const TEST_INFINITE_AMMO_XZ: Vector3Like = { x: 12.5,  y: 0, z: 14 };
+const TEST_GIVE_POINTS_XZ: Vector3Like   = { x: 17.5,  y: 0, z: 14 };
+const TEST_RESET_BLOCKS_XZ: Vector3Like  = { x: 22.5,  y: 0, z: 14 };
 
 // ── Dev Lab portals ──────────────────────────────────────────────────────────
 // Stand on a portal pad in the Test Map and press F to warp into that installed
@@ -134,9 +159,23 @@ const PORTAL_DEFS: { mapId: GehennaMapId; label: string; x: number; z: number }[
   { mapId: "industrial_yard", label: "Industrial Yard", x: -24, z: 0 },
   { mapId: "high_bastion",    label: "High Bastion",    x: -24, z: 12 },
   { mapId: "the_sprawl",      label: "The Sprawl",      x: -24, z: -12 },
+  { mapId: "draculas_castle", label: "Dracula's Castle", x: -24, z: 24 },
+  { mapId: "ice_map",         label: "Ice Map",          x: -24, z: 36 },
 ];
 const PORTAL_TRIGGER_R = 2.2;     // how close to a pad before F warps you
 const PORTAL_COOLDOWN_MS = 1200;  // debounce so you don't instantly warp back
+
+/** WorldEdit spawn palette — models the dev panel can spawn into the world. */
+const SPAWN_PALETTE: { id: string; label: string; model: string; scale: number }[] = [
+  { id: "teddy",   label: "Teddy Bear",   model: "models/teddy_bear.glb",                       scale: 1.0 },
+  { id: "door",    label: "Big Door",     model: "models/environment/House/door-big.gltf",      scale: 2.0 },
+  { id: "frame",   label: "Door Frame",   model: "models/environment/House/door-big-frame.gltf", scale: 2.0 },
+  { id: "fence",   label: "Wood Fence",   model: "models/environment/House/fence-wood-1.gltf",  scale: 1.0 },
+  { id: "c4",      label: "C4 Block",     model: "models/particles/c4-block.glb",               scale: 1.0 },
+  { id: "pickaxe", label: "Pickaxe Prop", model: "models/tools/pickaxe/stone-pickaxe.gltf",     scale: 1.0 },
+  { id: "ar15",    label: "AR-15 Prop",   model: "models/items/ar-15.glb",                      scale: 1.0 },
+  { id: "dragon",  label: "Ice Dragon",   model: "models/bosses/ice-dragon.glb",                scale: 0.4 },
+];
 
 // Dog wave tuning
 const DOG_WAVE_INTERVAL  = 5;    // every Nth wave is a dog wave
@@ -170,12 +209,16 @@ const PROP_PAP_POS: Record<GehennaMapId, Vector3Like> = {
   test_zone:       { x: 10, y: 1.0, z: -35 },  // south plaza, east of hub path
   high_bastion:    { x: 0, y: 1.0, z: 0 },
   the_sprawl:      { x: 12, y: 1.0, z: 8 },
+  draculas_castle: { x: 0, y: 8, z: 20 },
+  ice_map:         { x: 0, y: 8, z: 20 },
 };
 const PROP_MYSTERY_POS: Record<GehennaMapId, Vector3Like> = {
   industrial_yard: { x: -30, y: 3.8, z: 4 },
   test_zone:       { x: -10, y: 1.0, z: -35 }, // south plaza, west of hub path
   high_bastion:    { x: 0, y: 1.0, z: 0 },
   the_sprawl:      { x: -12, y: 1.0, z: 8 },
+  draculas_castle: { x: 20, y: 8, z: 0 },
+  ice_map:         { x: 20, y: 8, z: 0 },
 };
 
 // Test Map easter-egg teddies — northeast corner foliage markers.
@@ -193,8 +236,8 @@ const C4_JUMP_RADIUS = 3.8;
 const C4_JUMP_FORCE = 32;        // very strong upward when right on top
 const C4_JUMP_HORIZONTAL = 7;    // allows some creative movement (directional jumps)
 
-/** Host-only desktop dev fly — V or pause menu; WASD move, Space up, Shift down. */
-const FLY_MOVE_SPEED = 18;
+/** Host-only desktop dev fly — V or pause menu; W/S fly along look dir, Space up, Shift down. */
+const FLY_MOVE_SPEED = 22;
 
 // Lethal lane — west range off the hub path.
 const LETHAL_PICKUP_XZ: { x: number; z: number; lethalId: LethalId; label: string; model: string; scale: number }[] = [
@@ -246,6 +289,8 @@ export type GehennaHudPayload = {
   maxHealth: number;
   hostiles: number;
   score: number;
+  /** HUD label for score (e.g. "Money" on Dracula's Castle). */
+  scoreLabel?: string;
   weapon: string;
   magAmmo?: number;
   reserveAmmo?: number;
@@ -364,6 +409,17 @@ export class GehennaDirector {
   private _layoutCommandsRegistered = false;
   /** Live door-frame entity per portal so a moved/saved door carries its trigger. */
   private _portalDoorByMap = new Map<GehennaMapId, Entity>();
+  /** Mineways castle mesh entity (draculas_castle). */
+  private _draculaCastleEntity: Entity | null = null;
+  /** Mineways ice realm mesh entity (ice_map). */
+  private _iceMapEntity: Entity | null = null;
+  /** Locked buyable doors — barrier entity despawned on purchase. */
+  private _draculaDoors: {
+    def: DraculaDoorDef;
+    barrier: Entity;
+    unlocked: boolean;
+  }[] = [];
+  private _draculaDoorsUnlocked = new Set<string>();
   /** Pickaxe tool equipped (left-click breaks the single aimed block). */
   private _pickaxeMode = false;
   /** Held pickaxe model while pickaxe mode is on (gun is hidden meanwhile). */
@@ -440,6 +496,9 @@ export class GehennaDirector {
 
   /** Test Room only: god mode for safe iteration (never die from zombies/boss/explosions while testing). */
   private _testGodMode = false;
+
+  /** Test Room only: when true the current gun gets infinite reserve and skips reload (great for gun balance / animation testing). */
+  private _testInfiniteAmmo = false;
   private _savedMovement: {
     canWalk: (controller: DefaultPlayerEntityController) => boolean;
     canRun: (controller: DefaultPlayerEntityController) => boolean;
@@ -541,6 +600,7 @@ export class GehennaDirector {
     switch (action) {
       case "grab":   reply(this._layout.grab(player, pe) + " — scroll to resize, LEFT-click to place, RIGHT-click to rotate."); break;
       case "drop":   reply(this._layout.drop()); break;
+      case "delete": reply(this._layout.deleteHeld(player, pe)); break;
       case "rotate": reply(this._layout.rotate(parseFloat(arg) || 45)); break;
       case "scale":  reply(this._layout.scale(arg || "1.1")); break;
       case "up":     reply(this._layout.nudgeHeight(0.25)); break;
@@ -548,11 +608,30 @@ export class GehennaDirector {
       case "save":   reply(this._layout.saveAll()); break;
       case "reset":  reply(this._layout.reset()); break;
       case "fly":    this.toggleFlyMode(world, player); reply("Toggled fly."); break;
+      case "spawn": {
+        const def = SPAWN_PALETTE.find((s) => s.id === arg);
+        if (!def) { reply(`Unknown model: ${arg}`); break; }
+        reply(this._layout.spawnProp(world, player, pe, def.model, def.label, def.scale));
+        break;
+      }
       case "pickaxe":
         this._pickaxeMode = !this._pickaxeMode;
         this.setPickaxeVisual(world, player, pe, this._pickaxeMode);
         reply(this._pickaxeMode ? "Pickaxe ON — LEFT-click a block to break it." : "Pickaxe OFF.");
         break;
+
+      // Quick test-room actions exposed in the right dev panel (in addition to the physical F kiosks)
+      case "testTool":
+        if (this._currentMapId !== "test_zone") { reply("Test actions only on the Test Map."); break; }
+        switch (arg) {
+          case "spawnZombies": this.spawnTestZombies(world, player, pe); reply("Spawned 5 zombies."); break;
+          case "clearHorde":   this.clearAllHostiles(world, player); reply("Horde cleared."); break;
+          case "toggleGod":    this.toggleTestGodMode(world, player); reply(this._testGodMode ? "God mode ON" : "God mode OFF"); break;
+          case "resetBlocks":  this.restoreAndClearTestMapBlocks(); reply("Blocks restored."); break;
+          default: reply(`Unknown test tool: ${arg}`);
+        }
+        break;
+
       default:       reply(`Unknown dev action: ${action}`);
     }
   }
@@ -619,8 +698,8 @@ export class GehennaDirector {
     this.stopTeddyVictorySong(); // Stop any victory song when starting a fresh game
     this.resetRunState();
     this.ensureMapLoaded(world, mapId);
-    this.teleportHostToMapSpawn(world, player, mapId);
     this.spawnWorldProps(world);
+    this.teleportHostToMapSpawn(world, player, mapId);
 
     // Equip the starting rifle (official GunEntity — parented to the hand anchor)
     const peStart = this.getHostPlayerEntity(world, player);
@@ -641,12 +720,16 @@ export class GehennaDirector {
     }
 
     const tip = mapId === "test_zone"
-      ? "TEST ROOM — Tiny single floor blocks = buttons. Floating rectangular panels + green light above them = the Minecraft/Roblox-style UI Screens (text on the panel = what it does). Stand under the screen, look up, F to activate. N=full guns, W=999 lethals."
+      ? "TEST ROOM (OCD CLEAN): Neat row of 10 identical stone+glass kiosks to the north. Rectangular UI screen panels floating directly above each (title + what F does). Stand on the glass button on the ground under a panel and press F. Big legend screen in front. N guns / W 999 lethals."
       : mapId === "high_bastion"
         ? "High Bastion — explore only. No horde. Walk the towers and ramparts. LMB fire · R reload · G lethal · F interact · C toggle 1st/3rd person."
         : mapId === "the_sprawl"
           ? "The Sprawl — massive urban zone. Hold the streets. LMB fire · R reload · G lethal · F interact · C toggle 1st/3rd person."
-          : "Wave 1 inbound. LMB fire · R reload · G lethal · F interact · C toggle 1st/3rd person.";
+          : mapId === "draculas_castle"
+            ? "Dracula's Castle — press F at locked doors to buy paths with Money. LMB fire · R reload · G lethal · C toggle 1st/3rd person."
+            : mapId === "ice_map"
+              ? "Ice Map — frozen realm. Explore glaciers and halls. LMB fire · R reload · G lethal · F interact · C toggle 1st/3rd person."
+            : "Wave 1 inbound. LMB fire · R reload · G lethal · F interact · C toggle 1st/3rd person.";
     world.chatManager.sendPlayerMessage(player, tip, "00FFAA");
   }
 
@@ -770,8 +853,8 @@ export class GehennaDirector {
     this.stopTeddyVictorySong(); // Stop victory song on restart / new game
     this.resetRunState();
     this.ensureMapLoaded(world, mapId);
-    this.teleportHostToMapSpawn(world, player, mapId);
     this.spawnWorldProps(world);
+    this.teleportHostToMapSpawn(world, player, mapId);
 
     // Equip the starting rifle for the new run
     const peRestart = this.getHostPlayerEntity(world, player);
@@ -889,7 +972,7 @@ export class GehennaDirector {
       }
       world.chatManager.sendPlayerMessage(
         player,
-        "Dev fly ON — WASD move, Space up, Shift down, V to land",
+        "Dev fly ON — W/S fly where you look, A/D strafe, Space up, Shift down, V to land. Noclip through blocks.",
         "00FFAA"
       );
     } else {
@@ -914,15 +997,16 @@ export class GehennaDirector {
       w?: boolean; a?: boolean; s?: boolean; d?: boolean; sp?: boolean; sh?: boolean;
     };
 
+    // TRUE flight: W/S move along the FULL camera facing direction (pitch + yaw),
+    // so looking up and pressing W actually flies you upward. A/D strafe on the
+    // flat plane; Space/Shift are absolute world up/down.
+    const face = host.camera.facingDirection; // unit vector incl. pitch
     const yaw = host.camera.orientation.yaw;
-    const fwd = { x: -Math.sin(yaw), z: -Math.cos(yaw) };
     const right = { x: -Math.cos(yaw), z: Math.sin(yaw) };
 
-    let mx = 0;
-    let my = 0;
-    let mz = 0;
-    if (inp.w) { mx += fwd.x; mz += fwd.z; }
-    if (inp.s) { mx -= fwd.x; mz -= fwd.z; }
+    let mx = 0, my = 0, mz = 0;
+    if (inp.w) { mx += face.x; my += face.y; mz += face.z; }
+    if (inp.s) { mx -= face.x; my -= face.y; mz -= face.z; }
     if (inp.d) { mx += right.x; mz += right.z; }
     if (inp.a) { mx -= right.x; mz -= right.z; }
     if (inp.sp) my += 1;
@@ -946,18 +1030,10 @@ export class GehennaDirector {
   }
 
   private applyFlyMode(pe: PlayerEntity, enabled: boolean): void {
-    try {
-      pe.setGravityScale(enabled ? 0 : 1);
-      pe.setLinearVelocity({ x: 0, y: 0, z: 0 });
-    } catch {
-      void 0;
-    }
-
     const ctrl = pe.controller as DefaultPlayerEntityController | undefined;
-    if (!ctrl) return;
 
     if (enabled) {
-      if (!this._savedFlyCtrl) {
+      if (!this._savedFlyCtrl && ctrl) {
         this._savedFlyCtrl = {
           tickInput: pe.isTickWithPlayerInputEnabled,
           canWalk: ctrl.canWalk,
@@ -966,12 +1042,26 @@ export class GehennaDirector {
           sticksToPlatforms: ctrl.sticksToPlatforms,
         };
       }
-      pe.setTickWithPlayerInputEnabled(false);
-      ctrl.sticksToPlatforms = false;
+      // Stop the default controller from driving the body, then make the body
+      // KINEMATIC_POSITION: physics + block collision no longer fight setPosition,
+      // so we get true noclip free-flight driven entirely by tickFlyMovement.
+      try {
+        pe.setTickWithPlayerInputEnabled(false);
+        pe.setLinearVelocity({ x: 0, y: 0, z: 0 });
+        pe.setType(RigidBodyType.KINEMATIC_POSITION);
+      } catch { void 0; }
+      if (ctrl) ctrl.sticksToPlatforms = false;
       return;
     }
 
-    if (this._savedFlyCtrl) {
+    // Restore a normal walking, gravity-bound dynamic body.
+    try {
+      pe.setType(RigidBodyType.DYNAMIC);
+      pe.setGravityScale(1);
+      pe.setLinearVelocity({ x: 0, y: 0, z: 0 });
+    } catch { void 0; }
+
+    if (this._savedFlyCtrl && ctrl) {
       pe.setTickWithPlayerInputEnabled(this._savedFlyCtrl.tickInput);
       ctrl.canWalk = this._savedFlyCtrl.canWalk;
       ctrl.canRun = this._savedFlyCtrl.canRun;
@@ -980,7 +1070,7 @@ export class GehennaDirector {
       this._savedFlyCtrl = null;
     } else {
       pe.setTickWithPlayerInputEnabled(true);
-      ctrl.sticksToPlatforms = true;
+      if (ctrl) ctrl.sticksToPlatforms = true;
     }
   }
 
@@ -1087,6 +1177,7 @@ export class GehennaDirector {
       maxHealth:      PLAYER_MAX_HEALTH,
       hostiles:       this._zombies.length + (this._boss?.isAlive ? 1 : 0),
       score:          this._points,
+      scoreLabel:     this._currentMapId === "draculas_castle" ? "Money" : undefined,
       weapon:         this.weaponDisplayName(),
       magAmmo:        gun?.ammo ?? 0,
       reserveAmmo:    gun?.reserveAmmo ?? 0,
@@ -1441,6 +1532,82 @@ export class GehennaDirector {
       "FFD700"
     );
     this.syncHud(host);
+  }
+
+  /** Central handler for F on any of the OCD clean control kiosks (data-driven from DEFS). */
+  private handleTestControl(title: string, world: World, host: Player, pe: PlayerEntity): void {
+    switch (title) {
+      case "NEXT WAVE":     this.advanceTestWave(world, host); break;
+      case "REPLAY WAVE":   this.replayCurrentWave(world, host); break;
+      case "CLEAR HORDE":   this.clearAllHostiles(world, host); break;
+      case "SPAWN ZOMBIES": this.spawnTestZombies(world, host, pe); break;
+      case "SPAWN DOGS":    this.spawnTestDogs(world, host, pe); break;
+      case "GOD MODE":      this.toggleTestGodMode(world, host); break;
+      case "MAX KIT":       this.giveTestMaxKit(world, pe, host); break;
+      case "INFINITE AMMO": this.toggleTestInfiniteAmmo(world, host); break;
+      case "+5000 PTS":
+        this._points += 5000;
+        this.syncHud(host);
+        world.chatManager.sendPlayerMessage(host, "Test: +5000 points", "FFD700");
+        break;
+      case "RESET BLOCKS":
+        this.restoreAndClearTestMapBlocks();
+        world.chatManager.sendPlayerMessage(host, "Test map blocks restored.", "88FFAA");
+        break;
+      default:
+        world.chatManager.sendPlayerMessage(host, `Unknown test control: ${title}`, "FF6666");
+    }
+  }
+
+  /** Spawn a small group of regular zombies for isolated combat / damage / VFX testing. */
+  private spawnTestZombies(world: World, host: Player, pe: PlayerEntity): void {
+    if (this._currentMapId !== "test_zone") return;
+    for (let i = 0; i < 5; i++) {
+      this.spawnOneZombie(world, pe);
+    }
+    world.chatManager.sendPlayerMessage(host, "Test: spawned 5 zombies.", "FFAA66");
+  }
+
+  /** Spawn a dog pack — excellent for testing fast movers and high damage. */
+  private spawnTestDogs(world: World, host: Player, pe: PlayerEntity): void {
+    if (this._currentMapId !== "test_zone") return;
+    for (let i = 0; i < 6; i++) {
+      this.spawnOneDog(world, pe);
+    }
+    world.chatManager.sendPlayerMessage(host, "Test: spawned dog pack.", "FF6666");
+  }
+
+  /** Toggle the infinite-ammo cheat that only works in the test room. */
+  private toggleTestInfiniteAmmo(world: World, host: Player): void {
+    if (this._currentMapId !== "test_zone") return;
+
+    this._testInfiniteAmmo = !this._testInfiniteAmmo;
+
+    if (this._testInfiniteAmmo && this._gun) {
+      this._gun.ammo = this._gun.maxAmmo || this._gun.ammo;
+      this._gun.refillReserve();
+    }
+
+    world.chatManager.sendPlayerMessage(
+      host,
+      this._testInfiniteAmmo
+        ? "TEST INFINITE AMMO ON — current gun will not consume ammo or reload."
+        : "TEST INFINITE AMMO OFF",
+      this._testInfiniteAmmo ? "00FFAA" : "AAAAAA"
+    );
+    this.syncHud(host);
+  }
+
+  /**
+   * Called from tickGun. When the test infinite flag is active we keep the gun topped up
+   * so the normal ammo / reload logic never triggers.
+   */
+  private ensureTestGunAmmo(): void {
+    const gun = this._gun;
+    if (!gun || this._currentMapId !== "test_zone" || !this._testInfiniteAmmo) return;
+
+    if (gun.ammo < (gun.maxAmmo || 1)) gun.ammo = gun.maxAmmo || gun.ammo;
+    if (gun.reserveAmmo < (gun.maxReserve || 0)) gun.reserveAmmo = gun.maxReserve || gun.reserveAmmo;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -2206,6 +2373,9 @@ export class GehennaDirector {
     // editor, not the gun — don't fire/reload underneath the layout tools.
     if (this._layout.isHolding || this._pickaxeMode) return;
 
+    // Test room quality-of-life: keep the gun fed when the infinite flag is on.
+    this.ensureTestGunAmmo();
+
     const inp = host.input;
 
     // R = reload (consume the edge so it doesn't repeat)
@@ -2441,6 +2611,10 @@ export class GehennaDirector {
     // Dev portals take priority over every other F-interact (lab pads + return pad).
     if (this.tryPortalInteract(world, host, pe)) return;
 
+    if (this._currentMapId === "draculas_castle" && this.tryDraculaDoorPurchase(world, host, pe)) {
+      return;
+    }
+
     const p      = pe.position;
     const nearPap = this._papEntity?.isSpawned
       ? this.distXZ(p, this._papEntity.position) < INTERACT_RADIUS
@@ -2550,6 +2724,17 @@ export class GehennaDirector {
       return;
     }
 
+    // Data-driven F for the OCD clean control row (matches the generator exactly).
+    // The floating rectangular panels are visual only — the interact is the glass button on the ground below.
+    if (this._currentMapId === "test_zone") {
+      for (const def of this.TEST_CONTROL_DEFS) {
+        if (this.distXZ(p, { x: def.x, y: 0, z: def.z }) < INTERACT_RADIUS) {
+          this.handleTestControl(def.title, world, host, pe);
+          return;
+        }
+      }
+    }
+
     if (nearClear) {
       this.clearAllHostiles(world, host);
       return;
@@ -2564,6 +2749,19 @@ export class GehennaDirector {
       this.giveTestMaxKit(world, pe, host);
       return;
     }
+
+    // New expanded test kiosks
+    const nearSpawnZombies = this._currentMapId === "test_zone" ? this.distXZ(p, TEST_SPAWN_ZOMBIES_XZ) < INTERACT_RADIUS : false;
+    const nearSpawnDogs    = this._currentMapId === "test_zone" ? this.distXZ(p, TEST_SPAWN_DOGS_XZ)    < INTERACT_RADIUS : false;
+    const nearInfAmmo      = this._currentMapId === "test_zone" ? this.distXZ(p, TEST_INFINITE_AMMO_XZ) < INTERACT_RADIUS : false;
+    const nearGivePts      = this._currentMapId === "test_zone" ? this.distXZ(p, TEST_GIVE_POINTS_XZ)   < INTERACT_RADIUS : false;
+    const nearResetBlocks  = this._currentMapId === "test_zone" ? this.distXZ(p, TEST_RESET_BLOCKS_XZ)  < INTERACT_RADIUS : false;
+
+    if (nearSpawnZombies) { this.spawnTestZombies(world, host, pe); return; }
+    if (nearSpawnDogs)    { this.spawnTestDogs(world, host, pe); return; }
+    if (nearInfAmmo)      { this.toggleTestInfiniteAmmo(world, host); return; }
+    if (nearGivePts)      { this._points += 5000; this.syncHud(host); world.chatManager.sendPlayerMessage(host, "+5000 points (test)", "FFD700"); return; }
+    if (nearResetBlocks)  { this.restoreAndClearTestMapBlocks(); world.chatManager.sendPlayerMessage(host, "Test map blocks restored.", "88FFAA"); return; }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -2599,8 +2797,9 @@ export class GehennaDirector {
     this._prevC  = false;
     this._prevN  = false;
 
-    // Reset god mode for a fresh test session (player can re-toggle if wanted)
+    // Reset god mode + infinite ammo for a fresh test session (player can re-toggle)
     this._testGodMode = false;
+    this._testInfiniteAmmo = false;
     this._prevV  = false;
     this._lethalUsedAtMs  = 0;
     this._thirdPersonActive = false;
@@ -2637,6 +2836,9 @@ export class GehennaDirector {
       this._points = Math.max(this._points, 4500);
       // Start the tester with a solid rifle instead of default pistol
       this._gunId = "ak47";
+    } else if (this._currentMapId === "draculas_castle") {
+      this._lethalCharges = startingLethalCharges(this._currentMapId, this._activeLethal);
+      this._points = Math.max(this._points, DRACULA_STARTING_MONEY);
     } else {
       this._lethalCharges = startingLethalCharges(this._currentMapId, this._activeLethal);
     }
@@ -2667,6 +2869,16 @@ export class GehennaDirector {
   private spawnWorldProps(world: World): void {
     this.destroyPropEntities();
 
+    // Dracula's Castle model is a special large prop (independent of hordes flag).
+    if (this._currentMapId === "draculas_castle") {
+      this.spawnDraculasCastle(world);
+      this.spawnDraculaDoors(world);
+    }
+
+    if (this._currentMapId === "ice_map") {
+      this.spawnIceMap(world);
+    }
+
     const mapId = this._currentMapId;
     if (!hordesEnabledForMap(mapId)) return;
     const papPos = this.snapPropToGround(world, PROP_PAP_POS[mapId]);
@@ -2692,11 +2904,170 @@ export class GehennaDirector {
 
     // Spawn Test Map specific decorations and testing tools
     if (this._currentMapId === "test_zone") {
+      this._layout.setMap("test_zone"); // reset editor BEFORE registering built-in props
       this.spawnTeddyBears(world);
       this.spawnLethalPickups(world);
       this.spawnWeaponPickups(world);
       this.spawnTestControlScreens(world);
       this.spawnDevPortals(world);
+      this._layout.respawnSavedUserProps(world); // restore user-spawned props for this map
+    }
+
+  }
+
+  /** Spawn the Mineways Dracula castle mesh (centered export, scale 1 block = 1 unit). */
+  private spawnDraculasCastle(world: World): void {
+    if (this._draculaCastleEntity?.isSpawned) return;
+
+    const castle = new Entity({
+      name: "Dracula's Castle",
+      tag: "gehenna-dracula-castle",
+      modelUri: DRACULA_CASTLE_MODEL_URI,
+      modelScale: DRACULA_CASTLE_SCALE,
+      modelPreferredShape: ColliderShape.TRIMESH,
+      rigidBodyOptions: { type: RigidBodyType.FIXED },
+    });
+
+    castle.spawn(world, { x: 0, y: 0, z: 0 });
+    this._draculaCastleEntity = castle;
+
+    console.log(`[Dracula's Castle] Spawned ${DRACULA_CASTLE_MODEL_URI} @ scale ${DRACULA_CASTLE_SCALE}`);
+
+    if (this._hostPlayer) {
+      world.chatManager.sendPlayerMessage(
+        this._hostPlayer,
+        `Dracula's Castle loaded — ${DRACULA_STARTING_MONEY} Money to start. Press F at locked doors to buy new paths.`,
+        "CC4444"
+      );
+    }
+  }
+
+  /** Spawn buyable door barriers (Dracula's Castle only). */
+  private spawnDraculaDoors(world: World): void {
+    this.destroyDraculaDoors();
+    this._draculaDoorsUnlocked.clear();
+
+    for (const def of DRACULA_DOORS) {
+      const barrier = new Entity({
+        name: `Dracula Door — ${def.label}`,
+        tag: "gehenna-dracula-door",
+        modelUri: "models/environment/House/door-big.gltf",
+        modelScale: 1.05,
+        rigidBodyOptions: {
+          type: RigidBodyType.FIXED,
+          colliders: [
+            {
+              shape: ColliderShape.BLOCK,
+              halfExtents: {
+                x: def.halfWidth,
+                y: def.halfHeight,
+                z: def.halfDepth,
+              },
+            },
+          ],
+        },
+      });
+
+      barrier.spawn(
+        world,
+        def.position,
+        Quaternion.fromEuler(0, def.rotationY, 0)
+      );
+
+      this._draculaDoors.push({ def, barrier, unlocked: false });
+    }
+
+    console.log(`[Dracula's Castle] Spawned ${DRACULA_DOORS.length} buyable doors`);
+  }
+
+  /** F-interact: spend Money to remove a door barrier. Returns true if handled. */
+  private tryDraculaDoorPurchase(world: World, host: Player, pe: PlayerEntity): boolean {
+    const p = pe.position;
+    let nearest: (typeof this._draculaDoors)[number] | null = null;
+    let nearestDist = INTERACT_RADIUS;
+
+    for (const row of this._draculaDoors) {
+      if (row.unlocked) continue;
+      const d = this.distXZ(p, row.def.position);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearest = row;
+      }
+    }
+
+    if (!nearest) return false;
+
+    const { def } = nearest;
+
+    if (!draculaDoorRequirementsMet(def, this._draculaDoorsUnlocked)) {
+      const need = def.requires?.find((id) => !this._draculaDoorsUnlocked.has(id));
+      const prereq = DRACULA_DOORS.find((d) => d.id === need);
+      world.chatManager.sendPlayerMessage(
+        host,
+        prereq
+          ? `Locked — buy ${prereq.label} first ($${prereq.cost.toLocaleString()}).`
+          : "Locked — clear an earlier door first.",
+        "FFAA66"
+      );
+      return true;
+    }
+
+    if (this._points < def.cost) {
+      world.chatManager.sendPlayerMessage(
+        host,
+        `Need $${def.cost.toLocaleString()} — you have $${this._points.toLocaleString()}.`,
+        "FF6666"
+      );
+      return true;
+    }
+
+    this._points -= def.cost;
+    nearest.unlocked = true;
+    this._draculaDoorsUnlocked.add(def.id);
+
+    if (nearest.barrier.isSpawned) nearest.barrier.despawn();
+
+    world.chatManager.sendPlayerMessage(
+      host,
+      `Purchased ${def.label} for $${def.cost.toLocaleString()} — path opened!`,
+      "44FF88"
+    );
+    this.syncHud(host);
+    return true;
+  }
+
+  private destroyDraculaDoors(): void {
+    for (const row of this._draculaDoors) {
+      if (row.barrier.isSpawned) row.barrier.despawn();
+    }
+    this._draculaDoors = [];
+    this._draculaDoorsUnlocked.clear();
+  }
+
+  /** Spawn the Mineways Ice_Map mesh (centered export, scale 1 block = 1 unit). */
+  private spawnIceMap(world: World): void {
+    if (this._iceMapEntity?.isSpawned) return;
+
+    const ice = new Entity({
+      name: "Ice Map",
+      tag: "gehenna-ice-map",
+      modelUri: ICE_MAP_MODEL_URI,
+      modelScale: ICE_MAP_SCALE,
+      modelPreferredShape: ColliderShape.TRIMESH,
+      rigidBodyOptions: { type: RigidBodyType.FIXED },
+    });
+
+    ice.spawn(world, { x: 0, y: 0, z: 0 });
+    this._iceMapEntity = ice;
+
+    console.log(`[Ice Map] Spawned ${ICE_MAP_MODEL_URI} @ scale ${ICE_MAP_SCALE}`);
+
+    if (this._hostPlayer) {
+      world.chatManager.sendPlayerMessage(
+        this._hostPlayer,
+        "Ice Map loaded — first visit may take a few minutes while the mesh optimizes.",
+        "88CCFF"
+      );
     }
   }
 
@@ -2793,7 +3164,7 @@ export class GehennaDirector {
     }
   }
 
-  /** When the player gets near a test control station, automatically explain what it is (the "overhead UI" in text form). */
+  /** When the player gets near a test control station, automatically explain what it is (the floating rectangular UI screen above the ground button). */
   private tickTestControlHints(host: Player, world: World): void {
     if (this._currentMapId !== "test_zone") return;
 
@@ -2812,7 +3183,7 @@ export class GehennaDirector {
         // Make it read like you're "looking at the screen"
         world.chatManager.sendPlayerMessage(
           host,
-          `> ${def.title}  —  ${def.desc}   (stand at the block, look up at the glowing screen, press F)`,
+          `> ${def.title}  —  ${def.desc}   (stand on the glass button on the ground directly below the rectangular screen above it, press F)`,
           "66FFDD"
         );
         return;
@@ -2821,78 +3192,82 @@ export class GehennaDirector {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Smart low-profile test control "screens" (the overhead UI labels + visual markers)
-  // Each station = one ground "Block" (colored pad + central glass holo block in the map)
-  //               + one overhead glowing entity that acts as the "UI Screen" with name/instructions.
+  // OCD clean test control screens (rectangular panels at readable height, no green balls)
+  // One neat row of 10 identical kiosks + one legend. See spawnTestControlScreens.
   // ─────────────────────────────────────────────────────────────────────────────
 
   private readonly TEST_CONTROL_DEFS = [
-    { x: 12,  z: 0,   title: "NEXT WAVE",   desc: "F — Advance to next wave" },
-    { x: -12, z: 0,   title: "REPLAY WAVE", desc: "F — Replay this wave" },
-    { x: 0,   z: 12,  title: "CLEAR HORDE", desc: "F — Nuke all zombies + boss (run continues)" },
-    { x: 0,   z: -12, title: "GOD MODE",    desc: "F — Toggle invincibility (safe testing)" },
-    { x: 12,  z: 12,  title: "MAX KIT",     desc: "F — Strong gun + PaP + points + full ammo/lethals" },
+    // OCD clean row at z=14 (matches generator exactly) — one neat line of identical kiosks
+    { x: -22.5, z: 14, title: "NEXT WAVE",     desc: "F — Advance to next wave" },
+    { x: -17.5, z: 14, title: "REPLAY WAVE",   desc: "F — Replay this wave from start" },
+    { x: -12.5, z: 14, title: "CLEAR HORDE",   desc: "F — Instantly remove every zombie + boss" },
+    { x: -7.5,  z: 14, title: "SPAWN ZOMBIES", desc: "F — Spawn 5 regular zombies at ring distance" },
+    { x: -2.5,  z: 14, title: "SPAWN DOGS",    desc: "F — Spawn a pack of hellhounds" },
+    { x: 2.5,   z: 14, title: "GOD MODE",      desc: "F — Toggle invincibility (no enemy damage)" },
+    { x: 7.5,   z: 14, title: "MAX KIT",       desc: "F — AK + PaP + 12k pts + full reserves & lethals" },
+    { x: 12.5,  z: 14, title: "INFINITE AMMO", desc: "F — Toggle infinite reserve + no reload (current gun)" },
+    { x: 17.5,  z: 14, title: "+5000 PTS",     desc: "F — Give 5000 points instantly (for PaP / mystery spam)" },
+    { x: 22.5,  z: 14, title: "RESET BLOCKS",  desc: "F — Restore all destroyed test map blocks (clean slate)" },
   ] as const;
 
   /**
-   * Creates real "Minecraft / Roblox style" floating UI screens for the test room.
-   * Each station gets:
-   *   - A flat rectangular "monitor/panel" (c4-block used as screen body)
-   *   - A bright glowing orb "power indicator" above it
-   *   - The Entity `name` is set to the title + action so it appears as floating label text on/above the screen
-   *   - The whole thing is rotated to face the center of the arena (like a real wall-mounted UI screen)
+   * Creates layered "Minecraft / Roblox style" floating UI screens.
+   * For each kiosk we spawn a small stack so it reads as a real screen:
+   *   1. Main rectangular panel (c4-block) with the TITLE as its floating name.
+   *   2. Action bar directly below it with the short instruction as name.
+   *   3. Glowing status orb on top (green-sphere) as the "power / active" indicator.
+   *   4. Tiny "F" prompt sphere in front of the panel for extra clarity.
    *
-   * Ground "Block" is the tiny single glass block + 1x1 accent (from the generator).
+   * Everything is rotated to face the hub center.
+   * The ground "button" is the tiny single glass block on its stone kiosk base (generator).
    */
   private spawnTestControlScreens(world: World): void {
     this._testControlScreens = [];
 
-    const PANEL_Y = 4.8;     // height for the main screen panel
-    const GLOW_Y_OFFSET = 1.6; // glowing orb sits above the panel like a status light
+    const PANEL_Y = 3.2; // Low and readable when standing on the glass button directly below.
 
     for (const def of this.TEST_CONTROL_DEFS) {
       const groundTop = this.findGroundTop(world, def.x, def.z) ?? 1;
+      const pos: Vector3Like = { x: def.x, y: groundTop + 3.2, z: def.z };
 
-      // Direction toward arena center (0,0) so the screen "faces" the player area
-      const dx = -def.x;
-      const dz = -def.z;
-      const yaw = Math.atan2(dx, dz) + Math.PI; // +PI to make the front face inward (tuned for HYTOPIA coords)
-
-      const rot = Quaternion.fromEuler(0, yaw, 0);
-
-      // 1. Main "UI Screen" panel — flat rectangular look using the c4 block model as monitor
-      const panelPos: Vector3Like = { x: def.x, y: groundTop + PANEL_Y, z: def.z };
-      const panel = new Entity({
-        name: `${def.title}\n${def.desc}`,
+      // Clean rectangular "UI Screen" (c4-block as monitor/panel body).
+      // The name provides the floating text the player actually sees (title + what F does).
+      const screen = new Entity({
+        name: `${def.title}\n${def.desc}   (stand on the glass button below • press F)`,
         tag: "gehenna-test-screen",
         modelUri: "models/particles/c4-block.glb",
-        modelScale: 2.2,
-        opacity: 0.92,
+        modelScale: 2.8,
+        opacity: 0.88,
         rigidBodyOptions: { type: RigidBodyType.FIXED },
       });
-      panel.spawn(world, panelPos, rot);
-      this._testControlScreens.push(panel);
 
-      // 2. Bright glowing orb on top of the screen (the "on air" / indicator light)
-      const glowPos: Vector3Like = { x: def.x, y: groundTop + PANEL_Y + GLOW_Y_OFFSET, z: def.z };
-      const glow = new Entity({
-        name: " ", // small, the main text lives on the panel below
-        tag: "gehenna-test-screen",
-        modelUri: "models/particles/green-sphere.glb",
-        modelScale: 0.9,
-        opacity: 0.98,
-        rigidBodyOptions: { type: RigidBodyType.FIXED },
-      });
-      glow.spawn(world, glowPos);
-      this._testControlScreens.push(glow);
+      // Face toward the hub center so the text faces the player when they stand at the button.
+      const yaw = Math.atan2(0 - def.x, 0 - def.z) + Math.PI;
+      const rot = Quaternion.fromEuler(0, yaw, 0);
+      screen.spawn(world, pos, rot);
+      this._testControlScreens.push(screen);
     }
 
-    console.log(`[Test Map] Spawned ${this.TEST_CONTROL_DEFS.length} overhead UI screens (flat panels + glowing indicators)`);
+    // Central LEGEND screen (in front of the row).
+    const legend = new Entity({
+      name: "TEST ROOM — OCD CLEAN\n\nRow of 10 identical stone+glass kiosks (north)\nRectangular panels floating right above each = the UI screens\nText on each panel = title + exactly what F does\nStand on the glass button under a panel and press F\n\nNo mystery green balls. Everything is low, aligned, and obvious.",
+      tag: "gehenna-test-screen",
+      modelUri: "models/particles/c4-block.glb",
+      modelScale: 3.8,
+      opacity: 0.82,
+      rigidBodyOptions: { type: RigidBodyType.FIXED },
+    });
+    const legendPos: Vector3Like = { x: 0, y: 3.5, z: 18 };
+    const legendRot = Quaternion.fromEuler(0, Math.PI, 0);
+    legend.spawn(world, legendPos, legendRot);
+    this._testControlScreens.push(legend);
+
+    console.log(`[Test Map] Spawned ${this.TEST_CONTROL_DEFS.length} clean rectangular UI screens + 1 legend (low, no green balls, OCD row)`);
 
     if (this._hostPlayer) {
       world.chatManager.sendPlayerMessage(
         this._hostPlayer,
-        "TEST ROOM UI SCREENS: Look for the floating rectangular panels + green light on top. The text on the panel tells you the function. Stand at the tiny floor block directly below, look up, press F.",
+        "TEST ROOM (cleaned & OCD'd): Neat row of 10 kiosks to the north. Each has a small stone base + glass button on the GROUND. Look up — the rectangular panel right above it is the UI screen (title + what F does). Stand on the button and press F. Big legend screen in front explains the whole thing.",
         "00FFAA"
       );
     }
@@ -2906,7 +3281,8 @@ export class GehennaDirector {
   private spawnDevPortals(world: World): void {
     this._portalEntities = [];
     this._portalDoorByMap.clear();
-    this._layout.setMap("test_zone");
+    // NOTE: _layout.setMap("test_zone") is called by spawnWorldProps before the
+    // built-in props register, so we must NOT clear it again here.
 
     for (const def of PORTAL_DEFS) {
       const groundTop = this.findGroundTop(world, def.x, def.z) ?? 1;
@@ -3021,6 +3397,7 @@ export class GehennaDirector {
     // Re-fetch the player entity AFTER the world swap, then place + spawn the return door.
     this.teleportHostToMapSpawn(world, host, mapId);
     this.spawnReturnDoor(world, mapId);
+    this._layout.respawnSavedUserProps(world); // restore user-spawned props in this edit map
 
     // God on so stray map hazards can't kill you while editing. Movement stays normal
     // (walk works immediately); press V any time to fly for high builds.
@@ -3121,6 +3498,13 @@ export class GehennaDirector {
     this._portalDoorByMap.clear();
     this._layout.clear();
 
+    if (this._draculaCastleEntity?.isSpawned) this._draculaCastleEntity.despawn();
+    this._draculaCastleEntity = null;
+    this.destroyDraculaDoors();
+
+    if (this._iceMapEntity?.isSpawned) this._iceMapEntity.despawn();
+    this._iceMapEntity = null;
+
     this._papEntity     = null;
     this._mysteryEntity = null;
   }
@@ -3153,7 +3537,7 @@ export class GehennaDirector {
     mapId: GehennaMapId
   ): void {
     const entity = this.getHostPlayerEntity(world, player);
-    const pos    = MAP_SPAWN[mapId];
+    const pos = MAP_SPAWN[mapId];
     if (entity && pos) {
       try { entity.setPosition(pos); } catch { /* ignore */ }
     }
@@ -3188,7 +3572,9 @@ export class GehennaDirector {
       mapId === "test_zone" ? testMap
         : mapId === "high_bastion" ? castleMap
           : mapId === "the_sprawl" ? sprawlMap
-            : worldMap
+            : mapId === "draculas_castle" ? draculaMap
+              : mapId === "ice_map" ? iceMap
+              : worldMap
     ) as WorldMap;
     world.loadMap(data);
     this._loadedMapId = mapId;

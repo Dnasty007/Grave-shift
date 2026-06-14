@@ -42,6 +42,8 @@ const SKYBOX_NIGHT = "skyboxes/black";
  * - "test_zone": bright clear day for mechanics QA and visibility during testing
  * - "high_bastion": overcast daylight for castle exploration
  * - "the_sprawl": amber urban dusk for the mega city map
+ * - "ice_map": cold arctic daylight for frozen exploration
+ * - "draculas_castle": bright daylight for castle exploration
  */
 function applyGehennaSky(world: World, mapId: GehennaMapId = DEFAULT_MAP_ID): void {
   if (mapId === "the_sprawl") {
@@ -67,6 +69,35 @@ function applyGehennaSky(world: World, mapId: GehennaMapId = DEFAULT_MAP_ID): vo
     world.setDirectionalLightIntensity(0.95);
     world.setDirectionalLightPosition({ x: -30, y: 100, z: 45 });
     world.setFogColor({ r: 140, g: 148, b: 165 });
+    world.setFogNear(90);
+    world.setFogFar(280);
+    return;
+  }
+
+  if (mapId === "ice_map") {
+    world.setSkyboxUri(SKYBOX_DAY);
+    world.setSkyboxIntensity(0.75);
+    world.setAmbientLightColor({ r: 180, g: 210, b: 240 });
+    world.setAmbientLightIntensity(0.9);
+    world.setDirectionalLightColor({ r: 220, g: 235, b: 255 });
+    world.setDirectionalLightIntensity(0.95);
+    world.setDirectionalLightPosition({ x: 50, y: 100, z: -40 });
+    world.setFogColor({ r: 190, g: 215, b: 235 });
+    world.setFogNear(70);
+    world.setFogFar(260);
+    return;
+  }
+
+  if (mapId === "draculas_castle") {
+    // Bright daylight for castle exploration / layout work
+    world.setSkyboxUri(SKYBOX_DAY);
+    world.setSkyboxIntensity(0.9);
+    world.setAmbientLightColor({ r: 220, g: 225, b: 235 });
+    world.setAmbientLightIntensity(0.85);
+    world.setDirectionalLightColor({ r: 255, g: 248, b: 230 });
+    world.setDirectionalLightIntensity(1.05);
+    world.setDirectionalLightPosition({ x: -40, y: 120, z: 50 });
+    world.setFogColor({ r: 180, g: 190, b: 210 });
     world.setFogNear(90);
     world.setFogFar(280);
     return;
