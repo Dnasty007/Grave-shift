@@ -15,3 +15,10 @@ legacy-playcanvas-client/public/maps/*.obj
 legacy-playcanvas-client/public/maps/*.glb
 legacy-playcanvas-client/public/maps/*.mtl
 legacy-playcanvas-client/public/maps/*.png
+
+# Huge map mesh exports — exceed GitHub's 100MB limit; kept local only.
+# (Dracula's Castle + Ice Map: ~80MB and ~125MB GLBs + generated .optimized data.)
+assets/models/environment/Ice-Map/
+assets/models/environment/Draculas-Castle/
+assets/ice-map/
+assets/draculas-castle/
