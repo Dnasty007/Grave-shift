@@ -567,6 +567,8 @@ export class GehennaDirector {
 
   // ── HUD throttle ─────────────────────────────────────────────────────────────
   private _lastHudPushMs = 0;
+  private _lastRoundTimerPushMs = 0;
+  private _lastPerksPushMs = 0;
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Tick handler
@@ -1297,6 +1299,9 @@ export class GehennaDirector {
 
     const dtS = tickDeltaMs / 1000;
 
+    // Update round timer
+    this._roundTimer.updateTimer(dtS);
+
     // Dev edit mode never runs the horde, even on maps that normally have it.
     if (!this._devEditMapId && hordesEnabledForMap(this._currentMapId)) {
       this.tickWaveDirector(dtS, w, host, pe);
@@ -1311,6 +1316,9 @@ export class GehennaDirector {
       if (!this._sessionStarted) return;
     }
 
+    // Update barricades
+    this._barricadeSystem.updateBarricadeRegeneration(dtS);
+
     this.tickCameraToggle(host, w);
     this.tickFlyMode(host, pe, w);
     this.tickGun(host, w);
@@ -1324,6 +1332,8 @@ export class GehennaDirector {
     this.tickTestControlHints(host, w);
     this.tickDevInteract(host, pe, w);
     this.maybeThrottleHud(host, 80);
+    this.maybeThrottleRoundTimer(host, 100);
+    this.maybeThrottlePerksState(host, 500);
   }
 
   /**
@@ -2702,6 +2712,10 @@ export class GehennaDirector {
     this.resetWaveDirector();
     if (this._lethalSystem) this._lethalSystem.reset();
 
+    // Clean up player systems
+    this._perksSystem.removePlayer(host);
+    this._meleeSystem.removePlayer(host);
+
     /* Stay on HUD until the client dismisses the death overlay: MAIN MENU (quit) or DEPLOY AGAIN (restart). */
     world.chatManager.sendPlayerMessage(host, "You went down. Run ended.", "FF4444");
   }
@@ -2942,6 +2956,15 @@ export class GehennaDirector {
     this._mysteryBusyUntilMs     = 0;
     this._mysteryCooldownUntilMs = 0;
     this._pendingMysteryWeapon   = null;
+
+    // Initialize CoD WaW systems
+    if (this._hostPlayer) {
+      this._perksSystem.initializePlayer(this._hostPlayer);
+      this._meleeSystem.initializePlayer(this._hostPlayer);
+      this._perksSystem.resetPerksForNewRound(this._hostPlayer);
+    }
+    this._roundTimer.resetToRound1();
+    this._barricadeSystem.resetAllBarricades();
 
     this.applyLoadoutLethals();
     if (this._lethalSystem) this._lethalSystem.reset();
@@ -3683,6 +3706,52 @@ export class GehennaDirector {
     if (performance.now() - this._lastHudPushMs >= minIntervalMs) {
       this.syncHud(player);
     }
+  }
+
+  private maybeThrottleRoundTimer(player: Player, minIntervalMs: number = 100): void {
+    if (performance.now() - this._lastRoundTimerPushMs >= minIntervalMs) {
+      this.sendRoundTimerData(player);
+      this._lastRoundTimerPushMs = performance.now();
+    }
+  }
+
+  private maybeThrottlePerksState(player: Player, minIntervalMs: number = 500): void {
+    if (performance.now() - this._lastPerksPushMs >= minIntervalMs) {
+      this.sendPerksStateData(player);
+      this._lastPerksPushMs = performance.now();
+    }
+  }
+
+  private sendRoundTimerData(player: Player): void {
+    try {
+      const payload: GehennaRoundTimerPayload = {
+        type: "roundTimer",
+        roundTimeRemaining: this._roundTimer.getRoundTimeRemaining(),
+        isIntermission: this._roundTimer.isInIntermission(),
+        intermissionTime: this._roundTimer.getIntermissionTimeRemaining(),
+      };
+      player.ui.sendData(payload);
+    } catch {}
+  }
+
+  private sendPerksStateData(player: Player): void {
+    try {
+      const perkState = this._perksSystem.getPlayerPerks(player);
+      if (!perkState) return;
+
+      const perks = Array.from(perkState.perks) as PerkId[];
+      const doublePointsActive = this._perksSystem.isDoublePointsActive(
+        player,
+        performance.now()
+      );
+
+      const payload: GehennaPerksStatePayload = {
+        type: "perksState",
+        perks,
+        doublePointsActive,
+      };
+      player.ui.sendData(payload);
+    } catch {}
   }
 
   private weaponDisplayName(): string {
