@@ -58,6 +58,11 @@ import { LethalSystem } from "./lethals/LethalSystem";
 import { buildImportedGunPickups, createGun, GUN_DISPLAY_NAME, type GunEntity, type GunId } from "./guns";
 import { IceDragonBoss, iceDragonSpawnY } from "./bosses/IceDragonBoss";
 import { LayoutEditor } from "./devtools/LayoutEditor";
+import { PerksSystem, PERK_DEFS, type PerkId } from "./perks/PerksSystem";
+import { BarricadeSystem } from "./barricades/BarricadeSystem";
+import { RoundTimer } from "./roundTimer/RoundTimer";
+import { MeleeSystem } from "./melee/MeleeWeapon";
+import { getMapLoadConfig, getRandomLoadingTip } from "./mapLoader/MapLoaderConfig";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants (mirrors legacy GAME_CONFIG — see legacy-playcanvas-client/src/game/config.ts)
@@ -203,10 +208,11 @@ const DOG_ATTACK_RANGE   = 1.1;
 const DOG_ATTACK_DAMAGE  = 50;   // Much scarier than regular zombies (2 hits can kill) — triggers heavier red flash + shake + lower-pitched hit sound
 const DOG_ATTACK_COOLDOWN_S = 0.75;
 
-// Economy (legacy GAME_CONFIG.pointsPerHit/Kill/Headshot)
-const PTS_HIT      = 15;
-const PTS_KILL     = 100;
-const PTS_HEADSHOT = 175;
+// Economy (CoD WaW-style points)
+const PTS_HIT      = 10;     // Hit marker (will get more from kills)
+const PTS_KILL     = 100;    // Gun kill
+const PTS_HEADSHOT = 130;    // Headshot kill (was 175 in original, WaW uses 130)
+const PTS_KNIFE    = 130;    // Melee/knife kill (early game farming)
 
 // Pack-a-Punch
 const PAP_COST          = 5_000;
@@ -342,12 +348,35 @@ export type GehennaPlayerHitPayload = {
   isDog?: boolean;
 };
 
+export type GehennaRoundTimerPayload = {
+  type: "roundTimer";
+  roundTimeRemaining: number;
+  isIntermission: boolean;
+  intermissionTime?: number;
+};
+
+export type GehennaPerksStatePayload = {
+  type: "perksState";
+  perks: PerkId[];
+  doublePointsActive: boolean;
+};
+
+export type GehennaLoadingProgressPayload = {
+  type: "loadingProgress";
+  progress: number;
+  mapId: GehennaMapId;
+  loadingTip: string;
+};
+
 export type GehennaUiPayload =
   | GehennaScreenPayload
   | GehennaRoundPayload
   | GehennaHudPayload
   | GehennaRunEndPayload
-  | GehennaPlayerHitPayload;
+  | GehennaPlayerHitPayload
+  | GehennaRoundTimerPayload
+  | GehennaPerksStatePayload
+  | GehennaLoadingProgressPayload;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal types
@@ -389,6 +418,12 @@ export class GehennaDirector {
 
   /** Real physics-based lethal throwables (replaces the old static PendingLethalBlast timer hack) */
   private _lethalSystem!: LethalSystem; // assigned in applyLoadoutLethals during resetRunState
+
+  // CoD WaW Systems
+  private _perksSystem = new PerksSystem();
+  private _barricadeSystem = new BarricadeSystem();
+  private _roundTimer = new RoundTimer();
+  private _meleeSystem = new MeleeSystem();
 
   // Zombie horde
   private _zombies: ZombieRow[] = [];

@@ -1061,6 +1061,21 @@
         var balEl2 = q('mod-shop-balance');
         if (balEl2) balEl2.textContent = data.value.toLocaleString() + ' SOULS';
       }
+
+      if (data.type === 'roundTimer') {
+        updateRoundTimer(data.roundTimeRemaining, data.isIntermission, data.intermissionTime);
+        return;
+      }
+
+      if (data.type === 'perksState') {
+        updatePerksDisplay(data.perks, data.doublePointsActive);
+        return;
+      }
+
+      if (data.type === 'loadingProgress') {
+        updateLoadingScreen(data.progress || 0, data.mapId, data.loadingTip);
+        return;
+      }
     };
     hytopia.onData(_gehennaOnDataCallback);
   }
@@ -1520,6 +1535,111 @@
       waveBannerTimer = setTimeout(function () {
         if (waveBanner) waveBanner.classList.remove('is-visible');
       }, 3200);
+    }
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     ROUND TIMER HUD UPDATE (CoD WaW-style countdown)
+  ═══════════════════════════════════════════════════════════ */
+  function updateRoundTimer(secondsRemaining, isIntermission, intermissionTime) {
+    var timerEl = q('timer-display');
+    if (!timerEl) return;
+
+    var timeToShow = secondsRemaining || 0;
+    if (isIntermission && typeof intermissionTime === 'number') {
+      timeToShow = intermissionTime;
+    }
+
+    var mins = Math.floor(timeToShow / 60);
+    var secs = Math.floor(timeToShow % 60);
+    var formatted = mins + ':' + (secs < 10 ? '0' : '') + secs;
+    timerEl.textContent = formatted;
+
+    // Color coding: red if critical (<30s)
+    if (timeToShow < 30 && !isIntermission) {
+      timerEl.style.color = '#ff6b6b';
+      timerEl.style.textShadow = '0 0 12px rgba(255,107,107,0.8)';
+    } else {
+      timerEl.style.color = '#ffaa77';
+      timerEl.style.textShadow = '0 0 8px rgba(255,170,119,0.5)';
+    }
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     PERKS HUD UPDATE (display purchased perks)
+  ═══════════════════════════════════════════════════════════ */
+  var PERK_CONFIG = {
+    quick_revive: { name: 'QUICK REVIVE', color: '#ffb6b6' },
+    jugger_nog: { name: 'JUGGER-NOG', color: '#a0ebe3' },
+    speed_cola: { name: 'SPEED COLA', color: '#fffacd' },
+    double_points: { name: 'DOUBLE POINTS', color: '#c5f4e8' },
+  };
+
+  function updatePerksDisplay(perks, doublePointsActive) {
+    var perksList = q('perks-list');
+    var perksHud = q('perks-hud');
+    if (!perksList) return;
+
+    // Clear existing perks
+    perksList.innerHTML = '';
+
+    if (!perks || perks.length === 0) {
+      perksHud.setAttribute('aria-hidden', 'true');
+      return;
+    }
+
+    perksHud.setAttribute('aria-hidden', 'false');
+
+    // Add each perk
+    perks.forEach(function (perkId) {
+      var cfg = PERK_CONFIG[perkId];
+      if (!cfg) return;
+
+      var perkEl = document.createElement('span');
+      perkEl.className = 'perk-item';
+      perkEl.setAttribute('data-perk', perkId);
+      perkEl.style.color = cfg.color;
+      perkEl.textContent = cfg.name;
+
+      // Special indicator for active double points
+      if (perkId === 'double_points' && doublePointsActive) {
+        perkEl.textContent += ' ★';
+      }
+
+      perksList.appendChild(perkEl);
+    });
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     LOADING OVERLAY UPDATE
+  ═══════════════════════════════════════════════════════════ */
+  function updateLoadingScreen(progress, mapId, loadingTip) {
+    var overlay = q('loading-overlay');
+    var fillEl = q('loading-fill');
+    var percentEl = q('loading-percent');
+    var tipEl = q('loading-tip');
+    var imgEl = q('loading-image');
+
+    if (!overlay) return;
+
+    // Show overlay if progress < 100
+    if (progress < 100) {
+      overlay.style.display = 'flex';
+    } else {
+      overlay.style.display = 'none';
+    }
+
+    // Update progress bar
+    if (fillEl) fillEl.style.width = Math.max(0, Math.min(100, progress)) + '%';
+    if (percentEl) percentEl.textContent = Math.round(progress) + '%';
+
+    // Update loading tip
+    if (tipEl && loadingTip) tipEl.textContent = loadingTip;
+
+    // Update background image based on map
+    if (imgEl && mapId) {
+      var imagePath = 'assets/ui/map-images/' + mapId + '-loading.jpg';
+      imgEl.src = imagePath;
     }
   }
 
@@ -2449,6 +2569,12 @@
     </div>
   </div>
 
+  <!-- ROUND TIMER (top-left, below health) -->
+  <div id="round-timer-hud" class="round-timer-hud" aria-hidden="true">
+    <span class="timer-label">TIME</span>
+    <span class="timer-value" id="timer-display">3:00</span>
+  </div>
+
   <!-- BOTTOM LEFT: Round tracker -->
   <div class="round-tracker" aria-hidden="true">
     <span class="round-label">ROUND</span>
@@ -2476,6 +2602,13 @@
       <span class="lethal-name" id="lethal-name">FRAG</span>
       <span class="lethal-charges" id="lethal-charges">0</span>
     </span>
+  </div>
+
+  <!-- PERKS HUD (bottom-right, above ammo) -->
+  <div id="perks-hud" class="perks-hud" aria-hidden="true">
+    <div class="perks-list" id="perks-list">
+      <!-- Populated dynamically -->
+    </div>
   </div>
 
   <!-- ═══════════════════════════════════════════════════════════
@@ -2767,6 +2900,27 @@
   <div id="damage-flash"
        style="position:fixed;inset:0;pointer-events:none;z-index:9997;opacity:0;background:radial-gradient(ellipse at 50% 48%, rgba(185,12,12,0.0) 32%, rgba(125,6,6,0.82) 78%);mix-blend-mode:screen;"
        aria-hidden="true"></div>
+
+  <!-- LOADING OVERLAY (full-screen loading screen) -->
+  <div id="loading-overlay" class="loading-overlay" style="display:none;position:fixed;inset:0;z-index:9100;" role="status" aria-live="polite" aria-label="Loading zone">
+    <div class="loading-card">
+      <h2 class="loading-title">ENTERING ZONE</h2>
+      <div class="loading-image-container">
+        <img id="loading-image" class="loading-image" src="assets/icons/maps/industrial-yard.png" alt="Map preview" />
+        <div class="loading-image-overlay"></div>
+      </div>
+      <div class="loading-tip">
+        <span class="tip-label">TIP:</span>
+        <span class="tip-text" id="loading-tip">Loading...</span>
+      </div>
+      <div class="loading-progress-container">
+        <div class="loading-progress-bar">
+          <div class="loading-progress-fill" id="loading-fill"></div>
+        </div>
+        <span class="loading-percent" id="loading-percent">0%</span>
+      </div>
+    </div>
+  </div>
 
 </div>
 
@@ -5851,6 +6005,195 @@ kbd {
   background: rgba(55,0,0,0.7);
   box-shadow: 0 0 18px rgba(130,0,0,0.35);
   color: rgba(229,229,229,0.88);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   ROUND TIMER HUD — displays countdown (top-left, below health)
+   ───────────────────────────────────────────────────────────── */
+.round-timer-hud {
+  position: absolute;
+  top: calc(88px + env(safe-area-inset-top));
+  left: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  font-family: var(--font-ui, monospace);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: #ffaa77;
+  text-shadow: 0 0 8px rgba(255,170,119,0.5);
+  pointer-events: none;
+}
+.round-timer-hud .timer-label {
+  font-size: 0.5rem;
+  color: #aaa;
+  opacity: 0.7;
+}
+.round-timer-hud .timer-value {
+  font-size: 1rem;
+  font-weight: 700;
+  font-family: 'Cinzel', serif;
+  letter-spacing: 0.05em;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   PERKS HUD — display purchased perks (bottom-right, above ammo)
+   ───────────────────────────────────────────────────────────── */
+.perks-hud {
+  position: absolute;
+  bottom: calc(180px + env(safe-area-inset-bottom));
+  right: calc(18px + env(safe-area-inset-right));
+  max-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: var(--font-ui, monospace);
+  font-size: 0.5rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  pointer-events: none;
+  z-index: 20;
+}
+.perks-hud .perks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.perk-item {
+  padding: 6px 10px;
+  background: rgba(40,20,10,0.7);
+  border: 1px solid;
+  border-radius: 3px;
+  text-shadow: 0 0 4px rgba(255,255,255,0.3);
+  transition: background 0.2s, box-shadow 0.2s;
+}
+/* Perk color coding */
+.perk-item[data-perk="quick_revive"] {
+  border-color: rgba(255,107,107,0.6);
+  color: #ffb6b6;
+}
+.perk-item[data-perk="jugger_nog"] {
+  border-color: rgba(78,205,196,0.6);
+  color: #a0ebe3;
+}
+.perk-item[data-perk="speed_cola"] {
+  border-color: rgba(255,230,109,0.6);
+  color: #fffacd;
+}
+.perk-item[data-perk="double_points"] {
+  border-color: rgba(149,225,211,0.6);
+  color: #c5f4e8;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   LOADING OVERLAY — full-screen loading with progress bar
+   ───────────────────────────────────────────────────────────── */
+.loading-overlay {
+  background: rgba(0,0,0,0.95);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(2px);
+  opacity: 1;
+  transition: opacity 0.3s ease;
+}
+.loading-overlay[style*="display:none"] {
+  display: none !important;
+}
+.loading-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  max-width: 600px;
+  width: 90%;
+  pointer-events: auto;
+}
+.loading-title {
+  font-family: 'Cinzel Decorative', serif;
+  font-size: 2.2rem;
+  font-weight: 700;
+  color: #ffaa77;
+  text-shadow: 0 0 20px rgba(255,170,119,0.6);
+  letter-spacing: 0.05em;
+  margin: 0;
+  text-align: center;
+}
+.loading-image-container {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 2px solid #ffaa77;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 0 30px rgba(255,170,119,0.3);
+}
+.loading-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.loading-image-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255,170,119,0.1) 0%, rgba(78,205,196,0.1) 100%);
+  pointer-events: none;
+}
+.loading-tip {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  max-width: 500px;
+  font-family: var(--font-ui, monospace);
+  font-size: 0.75rem;
+  color: #aaa;
+}
+.loading-tip .tip-label {
+  color: #ffaa77;
+  font-weight: 700;
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.loading-tip .tip-text {
+  font-style: italic;
+  line-height: 1.4;
+}
+.loading-progress-container {
+  width: 100%;
+  max-width: 500px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+}
+.loading-progress-bar {
+  width: 100%;
+  height: 6px;
+  background: rgba(60,30,15,0.8);
+  border: 1px solid rgba(255,170,119,0.4);
+  border-radius: 3px;
+  overflow: hidden;
+  box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
+}
+.loading-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #ffaa77 0%, #ffcc99 50%, #ffaa77 100%);
+  width: 0%;
+  transition: width 0.2s ease;
+  box-shadow: 0 0 10px rgba(255,170,119,0.8);
+}
+.loading-percent {
+  font-family: 'Cinzel', serif;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #ffaa77;
+  text-shadow: 0 0 8px rgba(255,170,119,0.5);
 }
 
 /* ── Responsive: stack on narrow screens ── */
