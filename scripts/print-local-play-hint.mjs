@@ -3,8 +3,9 @@
  * Run automatically before `npm run dev` via npm `predev` hook.
  */
 const port = process.env.PORT ?? "8080";
-const join = `localhost:${port}`;
-const httpsUrl = `https://${join}/`;
+/** Matches the dev server's TLS certificate (see check-game-server.mjs). */
+const join = process.env.PLAY_LOCAL_JOIN ?? `local.hytopiahosting.com:${port}`;
+const httpsUrl = `https://${join.split(":")[0]}:${port}/`;
 const clientPort = process.env.PLAY_LOCAL_CLIENT_PORT ?? "5174";
 
 console.log(`

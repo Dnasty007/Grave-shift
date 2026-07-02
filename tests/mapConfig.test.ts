@@ -70,8 +70,9 @@ assert(
   isSpawnInMapBounds(MAP_SPAWN.ice_map, "ice_map"),
   "ice_map spawn must lie inside ice map bounds"
 );
-assert.equal(MAP_SPAWN.ice_map.x, 0);
-assert.equal(MAP_SPAWN.ice_map.z, 0);
+assert.equal(MAP_SPAWN.ice_map.x, 12.96);
+assert.equal(MAP_SPAWN.ice_map.y, -10.77);
+assert.equal(MAP_SPAWN.ice_map.z, 2.06);
 assert.equal(hordesEnabledForMap("ice_map"), false);
 
 assert.equal(DEFAULT_MAP_ID, "industrial_yard");

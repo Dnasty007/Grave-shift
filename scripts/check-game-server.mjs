@@ -5,7 +5,8 @@
 import https from "node:https";
 
 const port = process.env.PORT || "8080";
-const host = process.env.CHECK_HOST || "localhost";
+/** Hytopia dev TLS cert is issued for this hostname (not bare localhost). */
+const host = process.env.CHECK_HOST || "local.hytopiahosting.com";
 const url = `https://${host}:${port}/`;
 
 const req = https.get(

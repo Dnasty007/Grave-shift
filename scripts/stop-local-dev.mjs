@@ -1,6 +1,6 @@
 /**
  * Free default Hytopia + Vite dev ports (Windows-friendly).
- * Kills the owning process for LISTENING sockets on known dev ports.
+ * Kills owning processes for TCP listeners and UDP binders on known dev ports.
  */
 import { execSync } from "node:child_process";
 
@@ -9,7 +9,8 @@ const pids = new Set();
 
 for (const port of ports) {
   try {
-    const out = execSync(`cmd /c netstat -ano ^| findstr ":${port} " ^| findstr LISTENING`, {
+    // Match TCP LISTENING and UDP bound sockets (Hytopia uses UDP on 8080).
+    const out = execSync(`cmd /c netstat -ano ^| findstr ":${port} "`, {
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
     });

@@ -31,6 +31,13 @@ import {
   type DraculaDoorDef,
 } from "./draculaDoorsConfig";
 import {
+  ICE_CRATE_COST,
+  ICE_CRATE_INTERACT_RADIUS_XZ,
+  ICE_CRATE_MODEL_SCALE,
+  ICE_CRATE_MODEL_URI,
+  ICE_STARTING_MONEY,
+} from "./iceCratesConfig";
+import {
   DEFAULT_MAP_ID,
   type GehennaMapId,
   hordesEnabledForMap,
@@ -175,6 +182,7 @@ const SPAWN_PALETTE: { id: string; label: string; model: string; scale: number }
   { id: "pickaxe", label: "Pickaxe Prop", model: "models/tools/pickaxe/stone-pickaxe.gltf",     scale: 1.0 },
   { id: "ar15",    label: "AR-15 Prop",   model: "models/items/ar-15.glb",                      scale: 1.0 },
   { id: "dragon",  label: "Ice Dragon",   model: "models/bosses/ice-dragon.glb",                scale: 0.4 },
+  { id: "chest",   label: "Reinforced Chest", model: ICE_CRATE_MODEL_URI,                       scale: ICE_CRATE_MODEL_SCALE },
 ];
 
 /** Block-builder palette — block type ids match assets/test-map.json blockTypes. */
@@ -429,6 +437,8 @@ export class GehennaDirector {
   private _draculaCastleEntity: Entity | null = null;
   /** Mineways ice realm mesh entity (ice_map). */
   private _iceMapEntity: Entity | null = null;
+  /** Reinforced chests opened this run (keyed by entity name; chests are dev-placed props). */
+  private _iceCratesUsed = new Set<string>();
   /** Locked buyable doors — barrier entity despawned on purchase. */
   private _draculaDoors: {
     def: DraculaDoorDef;
@@ -770,7 +780,7 @@ export class GehennaDirector {
           : mapId === "draculas_castle"
             ? "Dracula's Castle — press F at locked doors to buy paths with Money. LMB fire · R reload · G lethal · C toggle 1st/3rd person."
             : mapId === "ice_map"
-              ? "Ice Map — frozen realm. Explore glaciers and halls. LMB fire · R reload · G lethal · F interact · C toggle 1st/3rd person."
+              ? "Ice Map — press F at chests ($500) for a random gun or max ammo. Explore only — no horde. LMB fire · R reload · G lethal · C toggle 1st/3rd person."
             : "Wave 1 inbound. LMB fire · R reload · G lethal · F interact · C toggle 1st/3rd person.";
     world.chatManager.sendPlayerMessage(player, tip, "00FFAA");
   }
@@ -1219,7 +1229,9 @@ export class GehennaDirector {
       maxHealth:      PLAYER_MAX_HEALTH,
       hostiles:       this._zombies.length + (this._boss?.isAlive ? 1 : 0),
       score:          this._points,
-      scoreLabel:     this._currentMapId === "draculas_castle" ? "Money" : undefined,
+      scoreLabel:     this._currentMapId === "draculas_castle" || this._currentMapId === "ice_map"
+        ? "Money"
+        : undefined,
       weapon:         this.weaponDisplayName(),
       magAmmo:        gun?.ammo ?? 0,
       reserveAmmo:    gun?.reserveAmmo ?? 0,
@@ -1237,7 +1249,7 @@ export class GehennaDirector {
             bossName:      "ICE DRAGON",
           }
         : {}),
-      ...(this._currentMapId === "test_zone" ? { testMode: true } : {}),
+      ...(this._currentMapId === "test_zone" || this._devEditMapId !== null ? { testMode: true } : {}),
       ...overrides
     };
     player.ui.sendData(payload);
@@ -2710,6 +2722,11 @@ export class GehennaDirector {
       return;
     }
 
+    // Reinforced chests are dev-placed props and can exist on any map.
+    if (this.tryIceCratePurchase(world, host, pe)) {
+      return;
+    }
+
     const p      = pe.position;
     const nearPap = this._papEntity?.isSpawned
       ? this.distXZ(p, this._papEntity.position) < INTERACT_RADIUS
@@ -2874,6 +2891,7 @@ export class GehennaDirector {
     this._health     = PLAYER_MAX_HEALTH;
     this._points     = 0;
     this._runStartMs = performance.now();
+    this._iceCratesUsed.clear(); // dev-placed chests reset every run, any map
 
     this._kills     = 0;
     this._headshots = 0;
@@ -2934,6 +2952,9 @@ export class GehennaDirector {
     } else if (this._currentMapId === "draculas_castle") {
       this._lethalCharges = startingLethalCharges(this._currentMapId, this._activeLethal);
       this._points = Math.max(this._points, DRACULA_STARTING_MONEY);
+    } else if (this._currentMapId === "ice_map") {
+      this._lethalCharges = startingLethalCharges(this._currentMapId, this._activeLethal);
+      this._points = Math.max(this._points, ICE_STARTING_MONEY);
     } else {
       this._lethalCharges = startingLethalCharges(this._currentMapId, this._activeLethal);
     }
@@ -2975,6 +2996,14 @@ export class GehennaDirector {
     }
 
     const mapId = this._currentMapId;
+
+    // Restore dev-placed props (reinforced chests etc.) saved for this map in
+    // normal play. test_zone does this itself after registering built-in props.
+    if (mapId !== "test_zone") {
+      this._layout.setMap(mapId);
+      this._layout.respawnSavedUserProps(world);
+    }
+
     if (!hordesEnabledForMap(mapId)) return;
     const papPos = this.snapPropToGround(world, PROP_PAP_POS[mapId]);
     const mysteryPos = this.snapPropToGround(world, PROP_MYSTERY_POS[mapId]);
@@ -3160,10 +3189,74 @@ export class GehennaDirector {
     if (this._hostPlayer) {
       world.chatManager.sendPlayerMessage(
         this._hostPlayer,
-        "Ice Map loaded — first visit may take a few minutes while the mesh optimizes.",
+        "Ice Map loaded — press F at reinforced chests ($500) for guns or max ammo. No zombie horde on this map.",
         "88CCFF"
       );
     }
+  }
+
+  /**
+   * F-interact: spend Money at a reinforced chest for a random gun or full ammo.
+   * Chests are DEV-PLACED props (dev panel → Spawn → Reinforced Chest, then saved
+   * via the layout editor) — any spawned entity using the chest model is buyable,
+   * once per chest per run.
+   */
+  private tryIceCratePurchase(world: World, host: Player, pe: PlayerEntity): boolean {
+    let nearest: Entity | null = null;
+    let nearestDist = ICE_CRATE_INTERACT_RADIUS_XZ;
+    for (const ent of world.entityManager.getAllEntities()) {
+      if (!ent.isSpawned || ent.modelUri !== ICE_CRATE_MODEL_URI) continue;
+      if (this._iceCratesUsed.has(ent.name)) continue;
+      const d = Math.hypot(pe.position.x - ent.position.x, pe.position.z - ent.position.z);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearest = ent;
+      }
+    }
+    if (!nearest) return false;
+
+    if (this._points < ICE_CRATE_COST) {
+      world.chatManager.sendPlayerMessage(
+        host,
+        `Need $${ICE_CRATE_COST} — you have $${this._points.toLocaleString()}.`,
+        "FF6666"
+      );
+      return true;
+    }
+
+    this._points -= ICE_CRATE_COST;
+    this._iceCratesUsed.add(nearest.name);
+    this.grantIceCrateReward(world, host, pe);
+    this.syncHud(host);
+    return true;
+  }
+
+  private grantIceCrateReward(world: World, host: Player, pe: PlayerEntity): void {
+    const rollGun = Math.random() < 0.45;
+    const kindLabel = "Reinforced Chest";
+
+    if (rollGun) {
+      const pool = MYSTERY_POOL.filter((id) => id !== this._gunId);
+      const pick = pool[Math.floor(Math.random() * pool.length)] ?? MYSTERY_POOL[0]!;
+      this.equipGun(world, pe, pick);
+      world.chatManager.sendPlayerMessage(
+        host,
+        `${kindLabel} — $${ICE_CRATE_COST}: ${GUN_DISPLAY_NAME[pick]}!`,
+        "FFD700"
+      );
+      return;
+    }
+
+    const gun = this._gun;
+    if (gun) {
+      gun.ammo = gun.maxAmmo;
+      gun.refillReserve();
+    }
+    world.chatManager.sendPlayerMessage(
+      host,
+      `${kindLabel} — $${ICE_CRATE_COST}: Max ammo refilled.`,
+      "88CCFF"
+    );
   }
 
   private spawnTeddyBears(world: World): void {

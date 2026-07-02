@@ -6,7 +6,7 @@ import { mergeConfig } from "vite";
 import base from "./vite.config.js";
 
 /** host:port for ?join= (no scheme); must match PLAY_LOCAL_JOIN in play-local.mjs */
-const joinHost = process.env.PLAY_LOCAL_JOIN ?? "localhost:8080";
+const joinHost = process.env.PLAY_LOCAL_JOIN ?? "local.hytopiahosting.com:8080";
 
 function playLocalClientUrl(server) {
   const addr = server.httpServer?.address();

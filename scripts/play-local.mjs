@@ -1,7 +1,7 @@
 /**
  * Local HYTOPIA web client: clone upstream if needed, install client deps, run Vite on 127.0.0.1:5174.
  * Opens http://127.0.0.1:<port>/?join=… unless PLAY_LOCAL_NO_OPEN=1.
- * PLAY_LOCAL_JOIN (default localhost:8080), PLAY_LOCAL_CLIENT_PORT (default 5174).
+ * PLAY_LOCAL_JOIN (default local.hytopiahosting.com:8080), PLAY_LOCAL_CLIENT_PORT (default 5174).
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, copyFileSync } from "node:fs";
@@ -14,8 +14,8 @@ const repoDir = join(root, "hytopia-client");
 const clientDir = join(repoDir, "client");
 const clientPkg = join(clientDir, "package.json");
 const cloneUrl = "https://github.com/hytopiagg/hytopia-source.git";
-/** host:port for ?join= (no scheme). */
-const joinHost = process.env.PLAY_LOCAL_JOIN ?? "localhost:8080";
+/** host:port for ?join= (no scheme). Cert matches local.hytopiahosting.com, not bare localhost. */
+const joinHost = process.env.PLAY_LOCAL_JOIN ?? "local.hytopiahosting.com:8080";
 const clientPort = process.env.PLAY_LOCAL_CLIENT_PORT ?? "5174";
 const certUrl = `https://${joinHost}/`;
 

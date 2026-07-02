@@ -9,6 +9,8 @@
     "generate-test-map": "node scripts/generate-test-map.mjs",
     "setup-draculas-castle": "node scripts/setup-draculas-castle.mjs",
     "setup-ice-map": "node scripts/setup-ice-map.mjs",
+    "extract-ice-chests": "node scripts/extract-ice-chest-positions.mjs",
+    "strip-ice-chests": "node scripts/strip-ice-map-chests.mjs",
     "prestart": "node scripts/print-local-play-hint.mjs",
     "start": "hytopia start",
     "predev": "node scripts/print-local-play-hint.mjs",

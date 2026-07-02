@@ -8,6 +8,7 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import obj2gltf from "obj2gltf";
 import sharp from "sharp";
 
@@ -88,6 +89,18 @@ async function upscaleTextures(texDir) {
   console.log(`Texture upscale done in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 }
 
+function stripChestGeometry() {
+  const objPath = join(modelDir, objName);
+  console.log("Stripping baked chest geometry from OBJ (replaced by reinforced chest entities)…");
+  const result = spawnSync(process.execPath, [join(__dirname, "strip-ice-map-chests.mjs"), objPath], {
+    stdio: "inherit",
+  });
+  if (result.status !== 0) {
+    console.error("strip-ice-map-chests.mjs failed");
+    process.exit(result.status ?? 1);
+  }
+}
+
 async function convertToGlb() {
   const objPath = join(modelDir, objName);
   const glbPath = join(modelDir, glbName);
@@ -122,12 +135,12 @@ function writeMapJson() {
         id: "zone_spawn_ice",
         label: "spawn_point",
         type: "box",
-        position: { x: 0, y: 1, z: 0 },
+        position: { x: 12.96, y: -10.77, z: 2.06 },
         dimensions: { width: 1, height: 3, depth: 1 },
         color: "#38bdf8",
         metadata: {},
-        from: { x: 0, y: 1, z: 0 },
-        to: { x: 0, y: 3, z: 0 },
+        from: { x: 12.96, y: -10.77, z: 2.06 },
+        to: { x: 12.96, y: -8.77, z: 2.06 },
       },
     ],
     version: "2.0.0",
@@ -140,6 +153,7 @@ function writeMapJson() {
 copyExport();
 await upscaleTextures(join(modelDir, "tex"));
 await upscaleTextures(join(archiveDir, "tex"));
+stripChestGeometry();
 await convertToGlb();
 writeMapJson();
 console.log("Ice Map setup complete. Restart npm run dev to load the map.");

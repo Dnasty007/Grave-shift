@@ -116,8 +116,8 @@ export const MAP_SPAWN: Record<GehennaMapId, Vector3Like> = {
   the_sprawl: { x: 0, y: 8, z: 0 },
   /** Dracula's Castle — fixed courtyard spawn (player-tested). */
   draculas_castle: { x: 15.68, y: -59.24, z: -74.77 },
-  /** Ice Map — centered Mineways export, drop onto surface at origin. */
-  ice_map:         { x: 0, y: 8, z: 0 },
+  /** Ice Map — player-tested spawn on the ice surface. */
+  ice_map:         { x: 12.96, y: -10.77, z: 2.06 },
 };
 
 /** Per-map sandbox flags. Test Zone grants unlimited lethal charges for mechanics QA. */
