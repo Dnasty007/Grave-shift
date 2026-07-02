@@ -1037,6 +1037,7 @@
         updateLethal(data.lethalName, data.lethalCharges);
         updateBossHealth(data.bossHealth, data.bossMaxHealth, data.bossName);
         updateDevPanel(!!data.testMode);
+        updatePerks(data.perks);
         return;
       }
 
@@ -1451,6 +1452,31 @@
       healthBar.classList.toggle('is-low', pct <= 25);
     }
     if (healthVal) healthVal.textContent = String(Math.max(0, Math.round(h)));
+  }
+
+  /* Perk badges under the RIG bar — server sends perk ids (jugg/speed/dtap). */
+  var PERK_BADGES = {
+    jugg:  { label: 'JUG',  color: '#ff4646' },
+    speed: { label: 'SPD',  color: '#50ff78' },
+    dtap:  { label: '2TAP', color: '#ffdc50' }
+  };
+  var lastPerkKey = '';
+  function updatePerks(perks) {
+    var row = q('perk-row');
+    if (!row) return;
+    var list = Array.isArray(perks) ? perks : [];
+    var key = list.join(',');
+    if (key === lastPerkKey) return; // avoid rebuilding DOM every HUD tick
+    lastPerkKey = key;
+    row.innerHTML = '';
+    for (var i = 0; i < list.length; i++) {
+      var def = PERK_BADGES[list[i]];
+      if (!def) continue;
+      var b = document.createElement('span');
+      b.textContent = def.label;
+      b.style.cssText = 'font-size:9px;font-weight:bold;letter-spacing:0.08em;padding:2px 5px;border:1px solid ' + def.color + ';color:' + def.color + ';border-radius:3px;background:rgba(0,0,0,0.45);';
+      row.appendChild(b);
+    }
   }
 
   function updateHostiles(n) {
@@ -2408,6 +2434,7 @@
         <div class="health-bar-fill" id="health-bar-fill"></div>
       </div>
       <span class="stat-value" id="health-val">100</span>
+      <div id="perk-row" style="display:flex; gap:4px; margin-top:4px;"></div>
     </div>
 
     <div class="hud-top-right">

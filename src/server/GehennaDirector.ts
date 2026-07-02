@@ -106,6 +106,26 @@ const HEADSHOT_Y_THRESHOLD = 0.3; // × row.scale, above entity.position.y
 const ZOMBIE_MODEL_SCALE = 1.0;
 const DOG_MODEL_SCALE    = 0.85;
 
+// ── Zombie variants ──────────────────────────────────────────────────────────
+// Walkers are the baseline. Runners are fast glass cannons; Brutes are slow
+// tanks that hit twice as hard and pay a kill bonus. Variants mix in as rounds
+// climb so late waves demand target prioritisation, not just bigger numbers.
+type ZombieVariant = "walker" | "runner" | "brute";
+const RUNNER_FROM_ROUND = 3;
+const RUNNER_CHANCE     = 0.20;
+const RUNNER_SCALE      = 0.85;
+const RUNNER_SPEED_MULT = 1.55;
+const RUNNER_HP_MULT    = 0.55;
+const RUNNER_TINT       = { r: 255, g: 110, b: 100 }; // feral red
+const BRUTE_FROM_ROUND  = 5;
+const BRUTE_CHANCE      = 0.12;
+const BRUTE_SCALE       = 1.4;
+const BRUTE_SPEED_MULT  = 0.62;
+const BRUTE_HP_MULT     = 3.0;
+const BRUTE_MELEE_MULT  = 2.0;   // 70 dmg — two swings down you without Juggernaut
+const BRUTE_KILL_BONUS  = 100;   // extra points for dropping one
+const BRUTE_TINT        = { r: 110, g: 110, b: 125 }; // ashen hulk
+
 
 // Zombie body-centre offset for explosion distance checks, per 1.0 of model scale.
 const BODY_CENTER_Y = -0.27;  // × row.scale — offset from capsule centre → mid-torso
@@ -245,6 +265,32 @@ const PROP_MYSTERY_POS: Record<GehennaMapId, Vector3Like> = {
   ice_map:         { x: 20, y: 8, z: 0 },
 };
 
+// ── Perks ────────────────────────────────────────────────────────────────────
+// Classic-zombies perk machines: tinted Pack-a-Punch models in a row near the
+// PaP. Buy once per run with F; effects reset on death/new run. Machines are
+// registered with the layout editor, so the dev can grab/move/save them.
+type PerkId = "jugg" | "speed" | "dtap";
+const PERK_DEFS: { id: PerkId; label: string; cost: number; tint: { r: number; g: number; b: number }; desc: string }[] = [
+  { id: "jugg",  label: "JUGGERNAUT",  cost: 2500, tint: { r: 255, g: 70,  b: 70 },  desc: "Max health 100 → 200" },
+  { id: "speed", label: "SPEED COLA",  cost: 3000, tint: { r: 80,  g: 255, b: 120 }, desc: "Reload 45% faster" },
+  { id: "dtap",  label: "DOUBLE TAP",  cost: 2000, tint: { r: 255, g: 220, b: 80 },  desc: "+33% fire rate, +15% damage" },
+];
+const PERK_INTERACT_RADIUS   = 2.6;
+const PERK_ROW_SPACING       = 2.4;  // metres between machines along X
+const JUGG_MAX_HEALTH        = 200;
+const SPEED_COLA_RELOAD_MULT = 0.55;
+const DTAP_FIRE_RATE_MULT    = 1.33;
+const DTAP_DAMAGE_MULT       = 1.15;
+/** Leftmost machine of the 3-machine perk row, per horde map (ground-snapped). */
+const PROP_PERKS_POS: Record<GehennaMapId, Vector3Like> = {
+  industrial_yard: { x: -4, y: 3.8, z: -8 },
+  test_zone:       { x: -2, y: 1.0, z: -35 }, // south plaza, between Mystery (west) and PaP (east)
+  high_bastion:    { x: 4, y: 1.0, z: 0 },
+  the_sprawl:      { x: 2, y: 1.0, z: 8 },
+  draculas_castle: { x: -20, y: 8, z: 0 },
+  ice_map:         { x: -20, y: 8, z: 0 },
+};
+
 // Test Map easter-egg teddies — northeast corner foliage markers.
 const TEDDY_POSITIONS: Vector3Like[] = [
   { x: 42, y: 1.2, z: 42 },
@@ -329,6 +375,8 @@ export type GehennaHudPayload = {
   bossName?: string;
   /** When true the client can show a persistent TEST ROOM banner / dev tools hint. */
   testMode?: boolean;
+  /** Perk ids owned this run (jugg/speed/dtap) — HUD renders badges. */
+  perks?: string[];
 };
 
 export type GehennaRunEndPayload = {
@@ -368,6 +416,9 @@ type ZombieRow = {
   attackCooldownS: number; // seconds until next melee hit allowed
   isDog:           boolean;
   scale:           number; // per-zombie modelScale — used for headshot height + explosion offsets
+  variant:         ZombieVariant;
+  meleeDamage:     number; // per-variant melee (brutes hit harder)
+  killBonus:       number; // extra points paid on kill (brutes)
 };
 
 // Mystery box rolls among the official zombies-fps guns (minus whatever you're holding).
@@ -482,6 +533,10 @@ export class GehennaDirector {
   private _health    = PLAYER_MAX_HEALTH;
   private _points    = 0;
   private _runStartMs = 0;
+  /** Perks owned this run (cleared on death / new run). */
+  private _perks = new Set<PerkId>();
+  /** Spawned perk machine entities, parallel to PERK_DEFS order. */
+  private _perkMachines: Entity[] = [];
 
   // ── Run stats ────────────────────────────────────────────────────────────────
   private _kills      = 0;
@@ -747,6 +802,11 @@ export class GehennaDirector {
     this._sessionStarted = true;
     this._hostPlayer = player;
 
+    const bestRound = this.getBestRound(player);
+    if (bestRound > 0 && this._world) {
+      this._world.chatManager.sendPlayerMessage(player, `Personal best on this map: round ${bestRound}. Beat it.`, "FFD700");
+    }
+
     this.stopTeddyVictorySong(); // Stop any victory song when starting a fresh game
     this.resetRunState();
     this.ensureMapLoaded(world, mapId);
@@ -841,6 +901,7 @@ export class GehennaDirector {
 
     // Save whatever the player earned during this run (no penalties).
     if (this._sessionStarted && this._runStartMs > 0) {
+      this.persistBestRun(player);
       const survivedSeconds = Math.floor((performance.now() - this._runStartMs) / 1000);
       player.ui.sendData({
         type:            "runEnd",
@@ -1226,7 +1287,7 @@ export class GehennaDirector {
     const payload: GehennaHudPayload = {
       type:           "gehennaHud",
       health:         this._health,
-      maxHealth:      PLAYER_MAX_HEALTH,
+      maxHealth:      this.playerMaxHealth(),
       hostiles:       this._zombies.length + (this._boss?.isAlive ? 1 : 0),
       score:          this._points,
       scoreLabel:     this._currentMapId === "draculas_castle" || this._currentMapId === "ice_map"
@@ -1249,6 +1310,7 @@ export class GehennaDirector {
             bossName:      "ICE DRAGON",
           }
         : {}),
+      perks:          [...this._perks],
       ...(this._currentMapId === "test_zone" || this._devEditMapId !== null ? { testMode: true } : {}),
       ...overrides
     };
@@ -1604,7 +1666,7 @@ export class GehennaDirector {
     this._testGodMode = !this._testGodMode;
 
     if (this._testGodMode) {
-      this._health = PLAYER_MAX_HEALTH; // top up when enabling
+      this._health = this.playerMaxHealth(); // top up when enabling
     }
 
     world.chatManager.sendPlayerMessage(
@@ -1837,9 +1899,37 @@ export class GehennaDirector {
     }
   }
 
+  /** Roll the variant for a fresh zombie based on the current round. */
+  private rollZombieVariant(): ZombieVariant {
+    const r = Math.random();
+    if (this._round >= BRUTE_FROM_ROUND && r < BRUTE_CHANCE) return "brute";
+    if (this._round >= RUNNER_FROM_ROUND && r < BRUTE_CHANCE + RUNNER_CHANCE) return "runner";
+    return "walker";
+  }
+
   private spawnOneZombie(world: World, pe: PlayerEntity): void {
     const base = pe.position;
-    const zScale = ZOMBIE_MODEL_SCALE;
+
+    const variant = this.rollZombieVariant();
+    const zScale =
+      variant === "runner" ? ZOMBIE_MODEL_SCALE * RUNNER_SCALE
+      : variant === "brute" ? ZOMBIE_MODEL_SCALE * BRUTE_SCALE
+      : ZOMBIE_MODEL_SCALE;
+    const speed =
+      variant === "runner" ? this._waveZombieSpeed * RUNNER_SPEED_MULT
+      : variant === "brute" ? this._waveZombieSpeed * BRUTE_SPEED_MULT
+      : this._waveZombieSpeed;
+    const hp =
+      variant === "runner" ? this._waveZombieHealth * RUNNER_HP_MULT
+      : variant === "brute" ? this._waveZombieHealth * BRUTE_HP_MULT
+      : this._waveZombieHealth;
+    const meleeDamage = variant === "brute" ? Z_ATTACK_DAMAGE * BRUTE_MELEE_MULT : Z_ATTACK_DAMAGE;
+    const killBonus   = variant === "brute" ? BRUTE_KILL_BONUS : 0;
+    const tint =
+      variant === "runner" ? RUNNER_TINT
+      : variant === "brute" ? BRUTE_TINT
+      : undefined;
+
     const capHalf = 0.45 * zScale;
     const capRad  = 0.28 * zScale;
 
@@ -1865,6 +1955,7 @@ export class GehennaDirector {
         tag:        "gehenna-zombie",
         modelUri:   "models/enemies/zombie.gltf",
         modelScale: zScale,
+        tintColor:  tint,
         rigidBodyOptions: {
           type: RigidBodyType.KINEMATIC_VELOCITY,
           colliders: [
@@ -1879,19 +1970,21 @@ export class GehennaDirector {
       });
       zEnt.spawn(world, spawnPos);
 
+      // Animation follows the zombie's OWN speed (runners always sprint,
+      // brutes always lumber) rather than the wave average.
       const RUN_THRESHOLD = Z_BASE_SPEED + 5 * Z_SPEED_PER_WAVE;
-      if (this._waveZombieSpeed >= RUN_THRESHOLD) {
+      if (speed >= RUN_THRESHOLD) {
         const runAnim = zEnt.getModelAnimation("run");
         if (runAnim) {
           runAnim.setLoopMode(EntityModelAnimationLoopMode.LOOP);
-          runAnim.setPlaybackRate(Math.min(this._waveZombieSpeed / RUN_THRESHOLD, 1.5));
+          runAnim.setPlaybackRate(Math.min(speed / RUN_THRESHOLD, 1.5));
           runAnim.play();
         }
       } else {
         const walkAnim = zEnt.getModelAnimation("walk");
         if (walkAnim) {
           walkAnim.setLoopMode(EntityModelAnimationLoopMode.LOOP);
-          const t = (this._waveZombieSpeed - Z_BASE_SPEED) / (RUN_THRESHOLD - Z_BASE_SPEED);
+          const t = Math.max(0, (speed - Z_BASE_SPEED) / (RUN_THRESHOLD - Z_BASE_SPEED));
           walkAnim.setPlaybackRate(0.5 + t * 0.5);
           walkAnim.play();
         }
@@ -1899,11 +1992,14 @@ export class GehennaDirector {
 
       this._zombies.push({
         entity:          zEnt,
-        hp:              this._waveZombieHealth,
-        speed:           this._waveZombieSpeed,
+        hp,
+        speed,
         attackCooldownS: 0,
         isDog:           false,
-        scale:           zScale
+        scale:           zScale,
+        variant,
+        meleeDamage,
+        killBonus
       });
       return;
     }
@@ -1965,7 +2061,10 @@ export class GehennaDirector {
         speed:           DOG_SPEED,
         attackCooldownS: 0,
         isDog:           true,
-        scale:           dogScale
+        scale:           dogScale,
+        variant:         "walker",
+        meleeDamage:     DOG_ATTACK_DAMAGE,
+        killBonus:       0
       });
       return;
     }
@@ -1998,7 +2097,7 @@ export class GehennaDirector {
       const len = Math.hypot(dx, dz);
 
       const attackRange  = row.isDog ? DOG_ATTACK_RANGE   : Z_ATTACK_RANGE;
-      const attackDmg    = row.isDog ? DOG_ATTACK_DAMAGE   : Z_ATTACK_DAMAGE; // 35 / 50 dmg → very punishing without Jug perk
+      const attackDmg    = row.meleeDamage; // per-variant: 35 walker/runner, 70 brute, 50 dog
       const attackCooldown = row.isDog ? DOG_ATTACK_COOLDOWN_S : Z_ATTACK_COOLDOWN_S;
 
       if (len <= attackRange) {
@@ -2356,7 +2455,7 @@ export class GehennaDirector {
         if (row.entity.isSpawned) row.entity.despawn();
         this._zombies = this._zombies.filter((z) => z !== row);
         this._kills += 1;
-        this._points += PTS_KILL;
+        this._points += PTS_KILL + row.killBonus;
       } else {
         this._points += PTS_HIT;
       }
@@ -2452,6 +2551,7 @@ export class GehennaDirector {
       resolveHit: (origin, direction, length, primary) => this.resolveGunHit(origin, direction, length, primary),
       onAmmoChanged: () => { if (this._hostPlayer) this.syncHud(this._hostPlayer); },
     });
+    this.applyGunPerks(gun); // Speed Cola / Double Tap carry across weapon swaps
     gun.spawn(world, { x: 0, y: 0, z: -0.2 }, Quaternion.fromEuler(-90, 0, 0));
     this._gun = gun;
     gun.setParentAnimations();
@@ -2624,6 +2724,10 @@ export class GehennaDirector {
       if (row.entity.isSpawned) row.entity.despawn();
       this._zombies = this._zombies.filter((z) => z !== row);
       this._kills += 1;
+      if (row.killBonus > 0) {
+        this._points += row.killBonus;
+        world.chatManager.sendPlayerMessage(host, `BRUTE DOWN  +${row.killBonus} bonus`, "FF9944");
+      }
 
       if (headshot) {
         this._headshots += 1;
@@ -2652,9 +2756,41 @@ export class GehennaDirector {
   // Run end
   // ─────────────────────────────────────────────────────────────────────────────
 
+  /** Persist per-map best round/kills across sessions (Hytopia player persistence). */
+  private persistBestRun(host: Player): void {
+    try {
+      const data = host.getPersistedData() ?? {};
+      const key = `best_${this._currentMapId}`;
+      const prev = (data[key] ?? {}) as { round?: number; kills?: number };
+      const prevRound = prev.round ?? 0;
+      const bestRound = Math.max(prevRound, this._round);
+      const bestKills = Math.max(prev.kills ?? 0, this._kills);
+      if (bestRound > prevRound && prevRound > 0) {
+        this._world?.chatManager.sendPlayerMessage(host, `NEW BEST — round ${bestRound} on this map!`, "FFD700");
+      }
+      if (bestRound !== prev.round || bestKills !== prev.kills) {
+        host.setPersistedData({ [key]: { round: bestRound, kills: bestKills } });
+      }
+    } catch {
+      void 0; // persistence not loaded yet — never block the run-end flow
+    }
+  }
+
+  /** Read this map's persisted best round (0 if none). */
+  private getBestRound(host: Player): number {
+    try {
+      const data = host.getPersistedData() ?? {};
+      const prev = (data[`best_${this._currentMapId}`] ?? {}) as { round?: number };
+      return prev.round ?? 0;
+    } catch {
+      return 0;
+    }
+  }
+
   private endRun(world: World, host: Player): void {
     this._downs += 1;
     const survivedSeconds = Math.floor((performance.now() - this._runStartMs) / 1000);
+    this.persistBestRun(host);
 
     // Send career stats to UI (updateAccountStats in index.html handles these)
     host.ui.sendData({
@@ -2719,6 +2855,10 @@ export class GehennaDirector {
     if (this.tryPortalInteract(world, host, pe)) return;
 
     if (this._currentMapId === "draculas_castle" && this.tryDraculaDoorPurchase(world, host, pe)) {
+      return;
+    }
+
+    if (this.tryPerkPurchase(world, host, pe)) {
       return;
     }
 
@@ -2888,6 +3028,7 @@ export class GehennaDirector {
     // Restore any blocks we destroyed on the Test Map so it resets fresh for the next run
     this.restoreAndClearTestMapBlocks();
 
+    this._perks.clear(); // perks are per-run (clear BEFORE the health reset below)
     this._health     = PLAYER_MAX_HEALTH;
     this._points     = 0;
     this._runStartMs = performance.now();
@@ -3037,6 +3178,8 @@ export class GehennaDirector {
       this._layout.respawnSavedUserProps(world); // restore user-spawned props for this map
     }
 
+    // Perk machine row (after test_zone's setMap so layout registration sticks).
+    this.spawnPerkMachines(world);
   }
 
   /** Spawn the Mineways Dracula castle mesh (centered export, scale 1 block = 1 unit). */
@@ -3193,6 +3336,92 @@ export class GehennaDirector {
         "88CCFF"
       );
     }
+  }
+
+  // ── Perks ──────────────────────────────────────────────────────────────────
+
+  /** Current health cap — Juggernaut doubles it for the run. */
+  private playerMaxHealth(): number {
+    return this._perks.has("jugg") ? JUGG_MAX_HEALTH : PLAYER_MAX_HEALTH;
+  }
+
+  /** Apply owned gun perks to a (newly equipped or just-bought-for) gun. */
+  private applyGunPerks(gun: GunEntity): void {
+    if (this._perks.has("speed")) {
+      gun.reloadTimeMs = Math.round(gun.reloadTimeMs * SPEED_COLA_RELOAD_MULT);
+    }
+    if (this._perks.has("dtap")) {
+      gun.fireRate = gun.fireRate * DTAP_FIRE_RATE_MULT;
+      gun.damage   = gun.damage * DTAP_DAMAGE_MULT;
+    }
+  }
+
+  /** Row of 3 tinted perk machines near the PaP (horde maps). Layout-editable. */
+  private spawnPerkMachines(world: World): void {
+    this._perkMachines = [];
+    const base = PROP_PERKS_POS[this._currentMapId];
+
+    for (let i = 0; i < PERK_DEFS.length; i++) {
+      const def = PERK_DEFS[i]!;
+      const raw: Vector3Like = { x: base.x + i * PERK_ROW_SPACING, y: base.y, z: base.z };
+      const pos = this.snapPropToGround(world, raw);
+
+      const machine = new Entity({
+        name:       `${def.label} — $${def.cost}\n${def.desc}   (press F)`,
+        tag:        "gehenna-perk",
+        modelUri:   "models/props/pack-a-punch-machine.gltf",
+        modelScale: 0.85,
+        tintColor:  def.tint,
+        rigidBodyOptions: { type: RigidBodyType.FIXED },
+      });
+      machine.spawn(world, pos);
+      this._perkMachines.push(machine);
+      // Dev can grab/move/save the machines like any layout prop.
+      this._layout.register(`perk-${def.id}`, machine, "models/props/pack-a-punch-machine.gltf", 0.85, pos);
+    }
+  }
+
+  /** F-interact: buy the nearest unowned perk machine within reach. */
+  private tryPerkPurchase(world: World, host: Player, pe: PlayerEntity): boolean {
+    let nearestIdx = -1;
+    let nearestDist = PERK_INTERACT_RADIUS;
+    for (let i = 0; i < this._perkMachines.length; i++) {
+      const m = this._perkMachines[i];
+      if (!m?.isSpawned) continue;
+      const d = Math.hypot(pe.position.x - m.position.x, pe.position.z - m.position.z);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearestIdx = i;
+      }
+    }
+    if (nearestIdx < 0) return false;
+
+    const def = PERK_DEFS[nearestIdx]!;
+    if (this._perks.has(def.id)) {
+      world.chatManager.sendPlayerMessage(host, `${def.label} already active.`, "AAAAAA");
+      return true;
+    }
+    if (this._points < def.cost) {
+      world.chatManager.sendPlayerMessage(
+        host,
+        `${def.label} costs $${def.cost} — you have $${this._points.toLocaleString()}.`,
+        "FF6666"
+      );
+      return true;
+    }
+
+    this._points -= def.cost;
+    this._perks.add(def.id);
+
+    if (def.id === "jugg") {
+      this._health = this.playerMaxHealth(); // heal to the new 200 cap
+    } else if (this._gun) {
+      this.applyGunPerks(this._gun); // speed/dtap hit the equipped gun immediately
+    }
+
+    world.chatManager.sendPlayerMessage(host, `${def.label} acquired — ${def.desc}!`, "44FF88");
+    this.syncHud(host);
+    return true;
   }
 
   /**
@@ -3654,6 +3883,11 @@ export class GehennaDirector {
   private destroyPropEntities(): void {
     if (this._papEntity?.isSpawned)     this._papEntity.despawn();
     if (this._mysteryEntity?.isSpawned) this._mysteryEntity.despawn();
+
+    this._perkMachines.forEach((m) => {
+      if (m?.isSpawned) m.despawn();
+    });
+    this._perkMachines = [];
 
     this._teddyEntities.forEach(t => {
       if (t?.isSpawned) t.despawn();
