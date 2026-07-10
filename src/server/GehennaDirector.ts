@@ -390,6 +390,8 @@ export type GehennaRunEndPayload = {
   revives: number;
   survivedSeconds: number;
   headshots: number;
+  /** "quit" = pause abort; omit/"death" = went down in-run. */
+  reason?: "death" | "quit";
 };
 
 export type GehennaPlayerHitPayload = {
@@ -884,9 +886,11 @@ export class GehennaDirector {
     }
   }
 
-  /** Return to main menu from an active run.
-   *  Acts as an "insta-die" — all XP / stats earned are saved via runEnd before
-   *  the menu is shown. No score penalty applied. */
+  /** Quit from pause, or leave the death overlay for the main menu.
+   *  Active run: same as dying (runEnd + teardown) but reason "quit" — client shows
+   *  the death stats screen, then returns to menu (auto or MAIN MENU). Do NOT push
+   *  menu immediately or the death overlay is wiped by setScreen().
+   *  Already ended: tear down leftovers and show the main menu. */
   quitToMenu(world: World, player: Player): void {
     if (!this.isSessionHost(player)) {
       if (!this.isSolePlayerInWorld(world, player)) {
@@ -899,8 +903,22 @@ export class GehennaDirector {
       }
     }
 
-    // Save whatever the player earned during this run (no penalties).
+    const pe = this.getHostPlayerEntity(world, player);
+    if (pe) {
+      this.disableFlyMode(world, pe);
+      try {
+        pe.setLinearVelocity({ x: 0, y: 0, z: 0 });
+      } catch {
+        void 0;
+      }
+    } else {
+      this.disableFlyMode(world);
+    }
+
+    // Active run → insta-die: save stats + death overlay. Keep the map loaded so the
+    // client isn't left on a torn-down black world while the overlay fades in.
     if (this._sessionStarted && this._runStartMs > 0) {
+      this._downs += 1;
       this.persistBestRun(player);
       const survivedSeconds = Math.floor((performance.now() - this._runStartMs) / 1000);
       player.ui.sendData({
@@ -913,37 +931,36 @@ export class GehennaDirector {
         downs:           this._downs,
         revives:         this._revives,
         survivedSeconds,
-        headshots:       this._headshots
+        headshots:       this._headshots,
+        reason:          "quit",
       } satisfies GehennaRunEndPayload);
+
+      this._sessionStarted = false;
+      this._round = 0;
+      this._health = 0;
+      this.despawnGun();
+      this.clearZombies();
+      this.resetWaveDirector();
+      this.stopTeddyVictorySong();
+      if (this._lethalSystem) this._lethalSystem.reset();
+      this.setGamePaused(world, player, false);
+      this.syncHud(player);
+      // Keep pointer unlocked so death-overlay buttons work (same as real death).
+      try { player.ui.lockPointer(false); } catch { void 0; }
+      world.chatManager.sendPlayerMessage(player, "Mission aborted — run ended.", "FF4444");
+      return;
     }
 
+    // Death overlay dismissed (or already out of a run) → main menu.
     this.despawnGun();
     this.clearZombies();
     this.destroyPropEntities();
     this.resetWaveDirector();
-    this.stopTeddyVictorySong(); // Stop victory song when returning to main menu
-
-    // IMPORTANT: actually put the blocks back before we forget which ones we deleted.
-    // This fixes the bug where "destroy trees → die → Main Menu → New Game on Test Map"
-    // left the trees permanently gone (the tracking list was discarded without restoring).
+    this.stopTeddyVictorySong();
     this.restoreAndClearTestMapBlocks();
-
     this._sessionStarted = false;
     this._round = 0;
-
-    /* Insta-die in run terms: zero HP, stop movement, lobby spawn — then main menu. */
     this._health = 0;
-    const pe = this.getHostPlayerEntity(world, player);
-    if (pe) {
-      this.disableFlyMode(world, pe);
-      try {
-        pe.setLinearVelocity({ x: 0, y: 0, z: 0 });
-      } catch {
-        void 0;
-      }
-    } else {
-      this.disableFlyMode(world);
-    }
     this.teleportHostToMapSpawn(world, player, DEFAULT_MAP_ID);
     this.syncHud(player);
     this.setGamePaused(world, player, false);
@@ -2803,7 +2820,8 @@ export class GehennaDirector {
       downs:           this._downs,
       revives:         this._revives,
       survivedSeconds,
-      headshots:       this._headshots
+      headshots:       this._headshots,
+      reason:          "death",
     } satisfies GehennaRunEndPayload);
 
     // Tear down active session

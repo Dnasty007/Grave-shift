@@ -22,3 +22,6 @@ assets/models/environment/Ice-Map/
 assets/models/environment/Draculas-Castle/
 assets/ice-map/
 assets/draculas-castle/
+
+# Local Hytopia save-state backend (player persistence dev data)
+dev/

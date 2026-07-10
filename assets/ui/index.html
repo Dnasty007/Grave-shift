@@ -10,7 +10,7 @@
     { type: 'round',   value: N }          → update round tracker + trigger wave banner
     { type: 'gehennaHud', health, maxHealth, hostiles, score, weapon, magAmmo, reserveAmmo }
     { type: 'gehenna', round: N }          → legacy compat: same as { type:'round', value:N }
-    { type: 'runEnd', kills, wave, score, shotsFired, shotsHit, downs, revives, survivedSeconds, headshots } → death overlay + account save
+    { type: 'runEnd', kills, wave, score, shotsFired, shotsHit, downs, revives, survivedSeconds, headshots, reason? } → death overlay + account save (reason "quit" auto-returns to menu)
 
   UI → Server:
     hytopia.sendData({ type: 'startGame' })
@@ -619,12 +619,36 @@
   }
 
   /* ── Death / Run-End Screen ──────────────────────────────── */
+  var _quitDeathAutoTimer = null;
+  var QUIT_DEATH_AUTO_MS = 5000;
+
   function fmtTime(s) {
     var m = Math.floor(s / 60), sec = s % 60;
     return m + ':' + (sec < 10 ? '0' : '') + sec;
   }
 
+  function clearQuitDeathAutoTimer() {
+    if (_quitDeathAutoTimer) {
+      clearTimeout(_quitDeathAutoTimer);
+      _quitDeathAutoTimer = null;
+    }
+  }
+
+  /** Leave death overlay for main menu (after real death, or after quit abort). */
+  function leaveDeathToMainMenu() {
+    clearQuitDeathAutoTimer();
+    hideDeathScreen();
+    if (typeof hytopia !== 'undefined') {
+      try { hytopia.sendData({ type: 'gamePause', paused: false }); } catch (e0) {}
+      try { hytopia.sendData({ type: 'gehennaQuit' }); } catch (e1) {}
+      try { hytopia.sendData({ type: 'quitToMenu' }); } catch (e2) {}
+    }
+  }
+
   function showDeathScreen(data) {
+    clearQuitDeathAutoTimer();
+    closePauseMenu(false);
+
     // Clear any in-progress hit reaction (flash/shake) the moment we die
     if (damageFlash) {
       damageFlash.style.transition = 'none';
@@ -640,6 +664,7 @@
     var hits    = typeof data.shotsHit        === 'number' ? data.shotsHit        : 0;
     var heads   = typeof data.headshots       === 'number' ? data.headshots       : 0;
     var secs    = typeof data.survivedSeconds === 'number' ? data.survivedSeconds : 0;
+    var isQuit  = data.reason === 'quit';
 
     /* Snapshot XP *before* saving so we can animate the bar transition */
     var acctBefore = getAccount();
@@ -686,13 +711,35 @@
       }, 900);
     }
 
-    /* Show overlay with entrance animation */
+    /* Quit abort: no redeploy — only MAIN MENU (or auto after a few seconds). */
+    var btnRestart = document.getElementById('btn-death-restart');
+    if (btnRestart) btnRestart.style.display = isQuit ? 'none' : '';
+
+    var hint = document.getElementById('dr-quit-auto-hint');
+    if (hint) {
+      hint.style.display = isQuit ? 'block' : 'none';
+      hint.textContent = isQuit ? 'Returning to main menu…' : '';
+    }
+
+    /* Show overlay — force visible immediately (quit used to leave a black empty world
+     * while opacity sat at 0 waiting on the CSS fade). */
     var overlay = document.getElementById('death-overlay');
     if (!overlay) return;
     overlay.style.display = 'flex';
-    overlay.classList.remove('dr-visible');
-    void overlay.offsetWidth;
+    overlay.style.opacity = '1';
+    overlay.style.pointerEvents = 'auto';
+    overlay.style.zIndex = '9999';
     overlay.classList.add('dr-visible');
+
+    /* The stats card fades in via `.dr-visible .death-card { opacity:1 }` — but that
+     * CSS transition can silently fail to fire when display flips none→flex in the same
+     * frame (this was the "black screen with no stats" bug). Force the card visible with
+     * inline styles so it never depends on the transition landing. */
+    var card = overlay.querySelector('.death-card');
+    if (card) {
+      card.style.opacity = '1';
+      card.style.transform = 'none';
+    }
 
     /* Restart handprint slam animations — force reflow trick so they replay every death */
     overlay.querySelectorAll('.dr-hand').forEach(function(h) {
@@ -703,11 +750,31 @@
 
     /* HUD root uses pointer-events:none; overlay must opt in. Unlock pointer for buttons. */
     if (typeof hytopia !== 'undefined' && hytopia.lockPointer) hytopia.lockPointer(false);
+
+    if (isQuit) {
+      _quitDeathAutoTimer = setTimeout(function () {
+        _quitDeathAutoTimer = null;
+        leaveDeathToMainMenu();
+      }, QUIT_DEATH_AUTO_MS);
+    }
   }
 
   function hideDeathScreen() {
+    clearQuitDeathAutoTimer();
     var overlay = document.getElementById('death-overlay');
-    if (overlay) { overlay.style.display = 'none'; overlay.classList.remove('dr-visible'); }
+    if (overlay) {
+      overlay.style.display = 'none';
+      overlay.style.opacity = '';
+      overlay.style.pointerEvents = '';
+      overlay.style.zIndex = '';
+      overlay.classList.remove('dr-visible');
+      var card = overlay.querySelector('.death-card');
+      if (card) { card.style.opacity = ''; card.style.transform = ''; }
+    }
+    var btnRestart = document.getElementById('btn-death-restart');
+    if (btnRestart) btnRestart.style.display = '';
+    var hint = document.getElementById('dr-quit-auto-hint');
+    if (hint) { hint.style.display = 'none'; hint.textContent = ''; }
   }
 
   /* Brief on-screen level-up flash */
@@ -1360,15 +1427,15 @@
         _pauseSetView('confirm');
       });
 
-      /* Confirm YES → server quits run (same token shape as gehennaRestart / uiReady) */
+      /* Confirm YES → end run like death (stats overlay); server tags reason=quit */
       if (btnConfirmYes) btnConfirmYes.addEventListener('click', function (e) {
         try { e.stopPropagation(); } catch (eqy) {}
-        if (typeof hytopia !== 'undefined') {
-          hytopia.sendData({ type: 'gamePause', paused: false });
-          hytopia.sendData({ type: 'gehennaQuit' });
-          hytopia.sendData({ type: 'quitToMenu' });
-        }
         closePauseMenu(false);
+        if (typeof hytopia !== 'undefined') {
+          try { hytopia.lockPointer(false); } catch (eL) {}
+          try { hytopia.sendData({ type: 'gamePause', paused: false }); } catch (eP) {}
+          try { hytopia.sendData({ type: 'gehennaQuit' }); } catch (eQ) {}
+        }
       });
 
       /* Confirm NO → back to main pause panel */
@@ -1381,16 +1448,13 @@
       var btnDeathMenu    = q('btn-death-menu');
       if (btnDeathRestart) btnDeathRestart.addEventListener('click', function () {
         playUiClick();
+        clearQuitDeathAutoTimer();
         hideDeathScreen();
         if (typeof hytopia !== 'undefined') hytopia.sendData({ type: 'gehennaRestart' });
       });
       if (btnDeathMenu) btnDeathMenu.addEventListener('click', function () {
         playUiClick();
-        hideDeathScreen();
-        if (typeof hytopia !== 'undefined') {
-          hytopia.sendData({ type: 'gehennaQuit' });
-          hytopia.sendData({ type: 'quitToMenu' });
-        }
+        leaveDeathToMainMenu();
       });
     })();
 
@@ -2412,6 +2476,7 @@
           <button type="button" class="dr-btn dr-btn--menu" id="btn-death-menu">
             <span class="dr-btn-icon" aria-hidden="true">⊗</span>MAIN MENU
           </button>
+          <p id="dr-quit-auto-hint" class="dr-quit-auto-hint" style="display:none;" aria-live="polite"></p>
         </div>
       </div><!-- /.death-right -->
 
@@ -5881,6 +5946,15 @@ kbd {
   background: rgba(55,0,0,0.7);
   box-shadow: 0 0 18px rgba(130,0,0,0.35);
   color: rgba(229,229,229,0.88);
+}
+.dr-quit-auto-hint {
+  width: 100%;
+  margin: 10px 0 0;
+  text-align: center;
+  font-size: 0.55rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 180, 180, 0.72);
 }
 
 /* ── Responsive: stack on narrow screens ── */
